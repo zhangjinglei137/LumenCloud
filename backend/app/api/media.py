@@ -72,6 +72,75 @@ async def get_media_detail(media_id: str, db: AsyncSession = Depends(get_db)):
     )
 
 
+@router.get("/library")
+async def list_emby_library(
+    page: int = Query(1, ge=1),
+    item_type: str = Query("all", description="movie/tv/all"),
+    db: AsyncSession = Depends(get_db),
+):
+    """从 Emby 获取全部影视库内容，叠加本地状态。相当于影视广场的默认视图。"""
+    from app.models import Media, Subscription
+
+    all_items = []
+    types_to_fetch = []
+    if item_type in ("movie", "all"):
+        types_to_fetch.append("Movie")
+    if item_type in ("tv", "all"):
+        types_to_fetch.append("Series")
+
+    for etype in types_to_fetch:
+        try:
+            resp = await emby_service.get_items_by_type(etype)
+            all_items.extend(resp.get("Items", []))
+        except Exception:
+            pass
+
+    page_size = 24
+    start = (page - 1) * page_size
+    page_items = all_items[start:start + page_size]
+
+    results = []
+    for item in page_items:
+        tmdb_id = _extract_tmdb_id(item.get("ProviderIds", {}))
+        user_data = item.get("UserData", {})
+
+        entry = {
+            "emby_id": item.get("Id"),
+            "title": item.get("Name", ""),
+            "type": "movie" if item.get("Type") == "Movie" else "tv",
+            "year": item.get("ProductionYear"),
+            "image_tag": item.get("ImageTags", {}).get("Primary"),
+            "play_count": user_data.get("PlayCount", 0),
+            "is_favorite": user_data.get("IsFavorite", False),
+            "is_played": user_data.get("Played", False),
+            "tmdb_id": tmdb_id,
+            "community_rating": item.get("CommunityRating"),
+            "local_media_id": None,
+            "library_status": None,
+            "subscription_count": 0,
+        }
+
+        if tmdb_id:
+            result = await db.execute(select(Media).where(Media.tmdb_id == tmdb_id))
+            local = result.scalar_one_or_none()
+            if local:
+                entry["local_media_id"] = local.id
+                entry["library_status"] = local.status.value
+                sub_count = (await db.execute(
+                    select(func.count(Subscription.id)).where(Subscription.media_id == local.id)
+                )).scalar() or 0
+                entry["subscription_count"] = sub_count
+
+        results.append(entry)
+
+    return {
+        "items": results,
+        "total": len(all_items),
+        "page": page,
+        "has_more": len(page_items) == page_size,
+    }
+
+
 @router.get("/", response_model=list[MediaListItem])
 async def list_media(
     status: str = None, media_type: str = None,
@@ -96,3 +165,16 @@ async def list_media(
             created_at=m.created_at,
         ))
     return items
+
+
+def _extract_tmdb_id(provider_ids: dict) -> int | None:
+    """从 Emby ProviderIds 中提取 TMDB ID"""
+    if not provider_ids:
+        return None
+    for key, value in provider_ids.items():
+        if key.lower().startswith("tmdb"):
+            try:
+                return int(value)
+            except (ValueError, TypeError):
+                pass
+    return None

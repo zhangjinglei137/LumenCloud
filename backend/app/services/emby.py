@@ -48,5 +48,19 @@ class EmbyService:
             resp.raise_for_status()
             return sum(item.get("UserData", {}).get("PlayCount", 0) for item in resp.json().get("Items", []))
 
+    async def get_items_by_type(self, item_type: str) -> dict:
+        """获取特定类型的 Emby 库内容。item_type: Movie / Series"""
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{await self._get_base_url()}/Items", params={
+                "api_key": await self._get_api_key(),
+                "Recursive": "true",
+                "IncludeItemTypes": item_type,
+                "Fields": "ProviderIds,UserData,ImageTags,ProductionYear,CommunityRating",
+                "SortBy": "SortName",
+                "Limit": "200",
+            })
+            resp.raise_for_status()
+            return resp.json()
+
 
 emby_service = EmbyService()
