@@ -118,8 +118,13 @@ async def list_emby_library(
 
 @router.get("/{media_id}", response_model=MediaDetail)
 async def get_media_detail(media_id: str, db: AsyncSession = Depends(get_db)):
+    # 先按 UUID 查
     result = await db.execute(select(Media).where(Media.id == media_id))
     media = result.scalar_one_or_none()
+    # 失败时按 tmdb_id 查
+    if media is None and media_id.isdigit():
+        result = await db.execute(select(Media).where(Media.tmdb_id == int(media_id)))
+        media = result.scalar_one_or_none()
     if media is None:
         raise HTTPException(status_code=404, detail="Media not found")
 

@@ -233,7 +233,7 @@ function getPosterUrl(item: any): string {
 }
 
 function goDetail(item: any) {
-  const id = item.local_media_id || item.emby_id || item.tmdb_id
+  const id = item.local_media_id || item.tmdb_id || item.emby_id
   if (id) {
     router.push(`/media/${id}`)
   }
