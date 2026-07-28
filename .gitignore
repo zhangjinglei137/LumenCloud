@@ -9,3 +9,6 @@ dist/
 *.egg-info/
 *.log
 .DS_Store
+.idea/
+docs/
+n8n/

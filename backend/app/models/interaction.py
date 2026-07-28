@@ -90,3 +90,13 @@ class CleanupRecord(Base):
     quark_file_id: Mapped[str] = mapped_column(String(256), nullable=False)
     file_name: Mapped[str] = mapped_column(String(512), nullable=True)
     cleaned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class SystemConfig(Base):
+    """系统配置键值存储"""
+    __tablename__ = "system_configs"
+
+    key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    description: Mapped[str] = mapped_column(String(512), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

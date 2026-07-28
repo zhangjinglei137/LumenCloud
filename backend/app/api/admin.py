@@ -66,3 +66,24 @@ async def delete_media(
         raise HTTPException(status_code=404, detail="Media not found")
     await db.delete(media)
     return {"message": f"{media.title} deleted"}
+
+
+from pydantic import BaseModel
+
+class ConfigUpdateRequest(BaseModel):
+    key: str
+    value: str
+
+
+@router.get("/configs")
+async def get_configs(current_user: User = Depends(get_admin_user)):
+    from app.services.config_service import config_service
+    return await config_service.get_all()
+
+
+@router.put("/configs")
+async def update_config(req: ConfigUpdateRequest, current_user: User = Depends(get_admin_user)):
+    from app.services.config_service import config_service
+    await config_service.set(req.key, req.value)
+    config_service.clear()
+    return {"message": f"{req.key} updated"}

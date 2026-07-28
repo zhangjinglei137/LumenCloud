@@ -1,19 +1,26 @@
 import httpx
-from app.config import settings
+from app.services.config_service import config_service
 
 
 class CloudSaverService:
     def __init__(self):
-        self.base_url = settings.CLOUDSAVER_BASE_URL
-        self.username = settings.CLOUDSAVER_USERNAME
-        self.password = settings.CLOUDSAVER_PASSWORD
         self._token: str | None = None
 
+    async def _get_base_url(self) -> str:
+        return await config_service.get("CLOUDSAVER_BASE_URL")
+
+    async def _get_username(self) -> str:
+        return await config_service.get("CLOUDSAVER_USERNAME")
+
+    async def _get_password(self) -> str:
+        return await config_service.get("CLOUDSAVER_PASSWORD")
+
     async def _login(self) -> str:
+        base_url = await self._get_base_url()
         async with httpx.AsyncClient() as client:
-            resp = await client.post(f"{self.base_url}/api/user/login", json={
-                "username": self.username,
-                "password": self.password,
+            resp = await client.post(f"{base_url}/api/user/login", json={
+                "username": await self._get_username(),
+                "password": await self._get_password(),
             })
             data = resp.json()
             self._token = data["data"]["token"]
@@ -27,7 +34,7 @@ class CloudSaverService:
     async def search(self, keyword: str) -> dict:
         token = await self._get_token()
         async with httpx.AsyncClient() as client:
-            resp = await client.get(f"{self.base_url}/api/search", params={
+            resp = await client.get(f"{await self._get_base_url()}/api/search", params={
                 "keyword": keyword,
             }, headers={"Authorization": f"Bearer {token}"})
             resp.raise_for_status()
@@ -36,7 +43,7 @@ class CloudSaverService:
     async def quark_save(self, payload: dict) -> dict:
         token = await self._get_token()
         async with httpx.AsyncClient() as client:
-            resp = await client.post(f"{self.base_url}/api/quark/save", json=payload, headers={
+            resp = await client.post(f"{await self._get_base_url()}/api/quark/save", json=payload, headers={
                 "Authorization": f"Bearer {token}",
             })
             resp.raise_for_status()

@@ -22,6 +22,8 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    from app.services.config_service import config_service
+    await config_service.seed()
     yield
 
 

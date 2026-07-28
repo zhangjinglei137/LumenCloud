@@ -1,64 +1,52 @@
 import httpx
-from app.config import settings
+from app.services.config_service import config_service
 
 
 class EmbyService:
-    def __init__(self):
-        self.base_url = settings.EMBY_BASE_URL
-        self.api_key = settings.EMBY_API_KEY
+    async def _get_base_url(self) -> str:
+        return await config_service.get("EMBY_BASE_URL")
+
+    async def _get_api_key(self) -> str:
+        return await config_service.get("EMBY_API_KEY")
 
     async def authenticate_user(self, username: str, password: str) -> dict | None:
+        base_url = await self._get_base_url()
         async with httpx.AsyncClient() as client:
             resp = await client.post(
-                f"{self.base_url}/Users/AuthenticateByName",
+                f"{base_url}/Users/AuthenticateByName",
                 json={"Username": username, "Pw": password},
-                headers={
-                    "X-Emby-Authorization":
-                    'Emby UserId="", Client="LumenCloud", Device="Web", DeviceId="lumen", Version="1.0"',
-                },
+                headers={"X-Emby-Authorization": 'Emby UserId="", Client="LumenCloud", Device="Web", DeviceId="lumen", Version="1.0"'},
             )
-            if resp.status_code == 200:
-                return resp.json()
-            return None
+            return resp.json() if resp.status_code == 200 else None
 
     async def get_items_by_provider(self, tmdb_id: int) -> dict:
         async with httpx.AsyncClient() as client:
-            resp = await client.get(f"{self.base_url}/Items", params={
-                "api_key": self.api_key,
-                "Recursive": "true",
-                "HasTmdbId": "true",
-                "Fields": "ProviderIds",
-                "AnyProviderIdEquals": f"tmdb.{tmdb_id}",
+            resp = await client.get(f"{await self._get_base_url()}/Items", params={
+                "api_key": await self._get_api_key(),
+                "Recursive": "true", "HasTmdbId": "true",
+                "Fields": "ProviderIds", "AnyProviderIdEquals": f"tmdb.{tmdb_id}",
             })
             resp.raise_for_status()
             return resp.json()
 
     async def get_missing_episodes(self, parent_id: str) -> dict:
         async with httpx.AsyncClient() as client:
-            resp = await client.get(f"{self.base_url}/emby/Shows/Missing", params={
-                "ParentId": parent_id,
-                "api_key": self.api_key,
-                "IncludeUnaired": "true",
-                "IncludeSpecials": "false",
+            resp = await client.get(f"{await self._get_base_url()}/emby/Shows/Missing", params={
+                "ParentId": parent_id, "api_key": await self._get_api_key(),
+                "IncludeUnaired": "true", "IncludeSpecials": "false",
             })
             resp.raise_for_status()
             return resp.json()
 
     async def get_play_count(self, tmdb_id: int) -> int:
         async with httpx.AsyncClient() as client:
-            resp = await client.get(f"{self.base_url}/Items", params={
-                "api_key": self.api_key,
-                "Recursive": "true",
-                "HasTmdbId": "true",
-                "Fields": "UserData",
-                "AnyProviderIdEquals": f"tmdb.{tmdb_id}",
+            resp = await client.get(f"{await self._get_base_url()}/Items", params={
+                "api_key": await self._get_api_key(),
+                "Recursive": "true", "HasTmdbId": "true",
+                "Fields": "UserData", "AnyProviderIdEquals": f"tmdb.{tmdb_id}",
             })
             resp.raise_for_status()
-            data = resp.json()
-            total = 0
-            for item in data.get("Items", []):
-                total += item.get("UserData", {}).get("PlayCount", 0)
-            return total
+            return sum(item.get("UserData", {}).get("PlayCount", 0) for item in resp.json().get("Items", []))
 
 
 emby_service = EmbyService()
