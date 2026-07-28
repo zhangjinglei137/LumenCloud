@@ -6,6 +6,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from app.config import settings
 from app.database import engine, Base
+from app.api.setup import router as setup_router
 from app.api.auth import router as auth_router
 from app.api.media import router as media_router
 from app.api.subscription import router as subscription_router
@@ -22,8 +23,6 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    from app.services.config_service import config_service
-    await config_service.seed()
     yield
 
 
@@ -37,6 +36,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(setup_router)  # 无需认证，必须在最前面注册
 app.include_router(auth_router)
 app.include_router(media_router)
 app.include_router(subscription_router)

@@ -1,5 +1,6 @@
 <template>
-  <div class="login-page">
+  <SetupWizard v-if="showSetup" />
+  <div v-else class="login-page">
     <el-card class="login-card" shadow="always">
       <template #header>
         <div class="login-header">
@@ -43,18 +44,32 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
+import { reactive, ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { User, Lock } from '@element-plus/icons-vue'
+import axios from 'axios'
 import { useAuthStore } from '../stores/auth'
+import SetupWizard from './SetupWizard.vue'
 
 const router = useRouter()
 const authStore = useAuthStore()
 const formRef = ref<any>(null)
 const loading = ref(false)
+const showSetup = ref(false)
 
 const form = reactive({ username: '', password: '' })
+
+onMounted(async () => {
+  try {
+    const { data } = await axios.get('/api/setup/status')
+    if (data.needs_setup) {
+      showSetup.value = true
+    }
+  } catch {
+    // ignore: proceed to normal login if backend is unreachable
+  }
+})
 
 const rules = {
   username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],

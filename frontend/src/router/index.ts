@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import axios from 'axios'
 import { useAuthStore } from '../stores/auth'
 
 const router = createRouter({
@@ -15,13 +16,32 @@ const router = createRouter({
 })
 
 router.beforeEach(async (to, _from, next) => {
+  // 始终允许访问 login
+  if (to.path === '/login') { next(); return }
+
   const token = localStorage.getItem('token')
-  if (to.meta.requiresAuth && !token) return next('/login')
+
+  // 检查是否需要首次设置
+  try {
+    const { data } = await axios.get('/api/setup/status')
+    if (data.needs_setup) {
+      next('/login')  // LoginView 会检测 setup 状态并显示向导
+      return
+    }
+  } catch { /* ignore */ }
+
+  if (to.meta.requiresAuth && !token) {
+    next('/login')
+    return
+  }
 
   if (to.meta.requiresAdmin && token) {
     const authStore = useAuthStore()
     if (!authStore.user) await authStore.fetchUser()
-    if (!authStore.user?.is_admin) return next('/')
+    if (!authStore.user?.is_admin) {
+      next('/')
+      return
+    }
   }
 
   next()

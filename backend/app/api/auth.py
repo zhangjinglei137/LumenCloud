@@ -12,6 +12,19 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 @router.post("/login", response_model=TokenResponse)
 async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
+    # 检查是否为首次启动的临时管理员登录
+    if req.username and req.password:
+        from app.api.setup import get_temp_admin, TEMP_ADMIN_ID
+        needs, _, temp_pwd = await get_temp_admin()
+        if needs and req.password == temp_pwd:
+            result = await db.execute(select(User).where(User.id == TEMP_ADMIN_ID))
+            user = result.scalar_one()
+            jwt_token = create_jwt(user.id)
+            return TokenResponse(
+                access_token=jwt_token,
+                user=UserInfo(id=user.id, username=user.username, emby_user_id=user.emby_user_id, is_admin=True),
+            )
+
     emby_result = await emby_service.authenticate_user(req.username, req.password)
     if emby_result is None:
         raise HTTPException(status_code=401, detail="Emby authentication failed")
