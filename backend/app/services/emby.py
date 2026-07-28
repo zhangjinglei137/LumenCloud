@@ -62,5 +62,23 @@ class EmbyService:
             resp.raise_for_status()
             return resp.json()
 
+    async def get_user_views(self) -> dict:
+        """获取 Emby 用户视图（媒体库分类目录）"""
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{await self._get_base_url()}/Users", params={
+                "api_key": await self._get_api_key(),
+            })
+            resp.raise_for_status()
+            users = resp.json()
+            if not users:
+                return {"Items": []}
+            # 用第一个用户的视图
+            user_id = users[0]["Id"]
+            resp2 = await client.get(f"{await self._get_base_url()}/Users/{user_id}/Views", params={
+                "api_key": await self._get_api_key(),
+            })
+            resp2.raise_for_status()
+            return resp2.json()
+
 
 emby_service = EmbyService()
