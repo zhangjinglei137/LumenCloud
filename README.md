@@ -120,6 +120,34 @@ docker compose up -d
 
 > 单容器同时提供前端页面和后端 API。前端 SPA 由 FastAPI 直出，无需额外 Nginx 容器。
 
+## 本地开发
+
+前后端分离运行，支持热更新：
+
+```bash
+# 1. 安装依赖
+cd backend && pip install -r requirements.txt
+cd ../frontend && npm install
+
+# 2. 复制并编辑配置
+cp .env.example .env
+# 编辑 .env，填入 DATABASE_URL / REDIS_URL / JWT_SECRET
+# 其他服务配置（TMDB、Emby等）在系统启动后通过管理后台设置
+
+# 3. 启动后端 (终端1)
+cd backend
+uvicorn app.main:app --reload --port 8000
+
+# 4. 启动前端 (终端2)
+cd frontend
+npm run dev
+# → http://localhost:5173 (Vite 自动代理 /api 到 localhost:8000)
+
+# 5. 启动 Worker (终端3，需要测试下载流水线时)
+cd backend
+arq app.tasks.worker.WorkerSettings
+```
+
 ### 4. 首次设置管理员
 
 ```bash
