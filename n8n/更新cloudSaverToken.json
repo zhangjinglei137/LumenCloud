@@ -1,0 +1,218 @@
+{
+  "name": "更新cloudSaverToken",
+  "nodes": [
+    {
+      "parameters": {
+        "operation": "get",
+        "propertyName": "cloudSaverToken",
+        "key": "cloudSaverToken",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        208,
+        0
+      ],
+      "id": "c9a4add8-9781-4e6d-87ac-a2e8d6d62e49",
+      "name": "Redis",
+      "credentials": {
+        "redis": {
+          "id": "XGwARzWZ2DCCmib6",
+          "name": "Redis account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "7904e41e-99c0-47bb-82a6-c1d5ca381aad",
+              "leftValue": "={{ $json.cloudSaverToken }}",
+              "rightValue": "null",
+              "operator": {
+                "type": "string",
+                "operation": "empty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        416,
+        0
+      ],
+      "id": "d72763be-228e-4678-9eee-35d143cca92d",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://192.168.3.31:8008/api/user/login",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"username\":\"admin\",\"password\":\"54pwd@2022\"}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        672,
+        -16
+      ],
+      "id": "10dba16b-8344-4f6b-9b27-8ffe51951482",
+      "name": "登录"
+    },
+    {
+      "parameters": {
+        "operation": "set",
+        "key": "=cloudSaverToken",
+        "value": "={{ $json.data.token }}",
+        "keyType": "string",
+        "expire": true,
+        "ttl": 7000
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        976,
+        -16
+      ],
+      "id": "fb5e7360-2406-4af0-9371-223046009e0a",
+      "name": "存入token",
+      "credentials": {
+        "redis": {
+          "id": "XGwARzWZ2DCCmib6",
+          "name": "Redis account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "96e793d3-0173-4bf3-9527-d321393fc6b9",
+      "name": "When Executed by Another Workflow"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "34b7ca4c-8521-47b7-910a-dc36c706bdb7",
+              "name": "cloudSaverToken",
+              "value": "={{ $json.cloudSaverToken }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        544,
+        -192
+      ],
+      "id": "a243a925-49e1-4831-9a42-e7b585c578e0",
+      "name": "输出token"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Redis": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "登录",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "输出token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "登录": {
+      "main": [
+        [
+          {
+            "node": "存入token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "存入token": {
+      "main": [
+        [
+          {
+            "node": "Redis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Redis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false,
+    "timeSavedMode": "fixed",
+    "callerPolicy": "any"
+  },
+  "versionId": "8c844e7f-7d99-4b51-93e5-3fd072f404db",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "fb657763e011083e612436a662f68acdc885b47ed1f558c08d645fadcc94bff7"
+  },
+  "id": "YPjtX8mZn90TmAM8vERXl",
+  "tags": []
+}

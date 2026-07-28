@@ -1,0 +1,202 @@
+{
+  "name": "NasTools目录同步",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -592,
+        -32
+      ],
+      "id": "f4bd830c-79ce-4324-b4fe-2398118b67c4",
+      "name": "开始"
+    },
+    {
+      "parameters": {
+        "jsCode": "async function getSessionCookie() {\n    // 1. 登录参数 + 原生转换为form表单格式\n    const loginData = { next: '', username: 'admin', password: '54pwd@2022', remember: 'on' };\n    const formData = Object.keys(loginData)\n        .map(k => `${encodeURIComponent(k)}=${encodeURIComponent(loginData[k])}`)\n        .join('&');\n\n    // 2. 请求配置（保留核心必要项）\n    const options = {\n        method: 'POST',\n        uri: 'http://192.168.3.31:3000/',\n        body: formData,\n        headers: {\n            'Content-Type': 'application/x-www-form-urlencoded',\n            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'\n        },\n        timeout: 10000,\n        followRedirect: true,\n        resolveWithFullResponse: true, // 必须保留：获取响应头\n        simple: false // 允许所有状态码\n    };\n\n    // 3. 发送请求 + 解析Cookie\n    let result = {};\n    try {\n        const res = await this.helpers.request(options);\n        let cookie = '';\n        // 解析session cookie\n        const setCookie = res.headers['set-cookie'];\n        if (setCookie && Array.isArray(setCookie)) {\n            cookie = setCookie.find(c => c.startsWith('session='))?.split(';')[0] || '';\n        }\n        // 0标记：有请求无cookie；有cookie则返回实际值\n        result = {\n            status: \"success\",\n            cookie: cookie || '0',\n            message: cookie ? '获取cookie成功' : '登录成功但无cookie'\n        };\n    } catch (err) {\n        // 1标记：请求错误\n        result = {\n            status: \"error\",\n            cookie: '1',\n            message: err.message,\n            details: err.response?.body || \"无详细信息\"\n        };\n    }\n\n    // 4. n8n标准返回格式\n    return [{\n        json: {\n            totalRequests: 1,\n            details: [result]\n        }\n    }];\n}\n\nreturn getSessionCookie();"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -368,
+        -32
+      ],
+      "id": "0136b6b3-9d70-403e-a995-613a89f76944",
+      "name": "登录NasTools"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://192.168.3.31:3000/do",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "random",
+              "value": "=Number(Math.random().toFixed(8)).toString()"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "cookie",
+              "value": "={{ $json.details[0].cookie }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"cmd\":\"run_directory_sync\",\"data\":{\"sid\":[]}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        528,
+        -32
+      ],
+      "id": "f34b0325-a430-44d7-a851-40f27a35c6e1",
+      "name": "目录同步"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://192.168.3.31:3000/do",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "random",
+              "value": "=Number(Math.random().toFixed(8)).toString()"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "cookie",
+              "value": "={{ $json.details[0].cookie }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"cmd\":\"restart\",\"data\":{}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        -144,
+        -32
+      ],
+      "id": "fcb6e0cb-a430-44ad-98b5-3406cf930126",
+      "name": "重启"
+    },
+    {
+      "parameters": {
+        "jsCode": "async function getSessionCookie() {\n    // 1. 登录参数 + 原生转换为form表单格式\n    const loginData = { next: '', username: 'admin', password: '54pwd@2022', remember: 'on' };\n    const formData = Object.keys(loginData)\n        .map(k => `${encodeURIComponent(k)}=${encodeURIComponent(loginData[k])}`)\n        .join('&');\n\n    // 2. 请求配置（保留核心必要项）\n    const options = {\n        method: 'POST',\n        uri: 'http://192.168.3.31:3000/',\n        body: formData,\n        headers: {\n            'Content-Type': 'application/x-www-form-urlencoded',\n            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'\n        },\n        timeout: 10000,\n        followRedirect: true,\n        resolveWithFullResponse: true, // 必须保留：获取响应头\n        simple: false // 允许所有状态码\n    };\n\n    // 3. 发送请求 + 解析Cookie\n    let result = {};\n    try {\n        const res = await this.helpers.request(options);\n        let cookie = '';\n        // 解析session cookie\n        const setCookie = res.headers['set-cookie'];\n        if (setCookie && Array.isArray(setCookie)) {\n            cookie = setCookie.find(c => c.startsWith('session='))?.split(';')[0] || '';\n        }\n        // 0标记：有请求无cookie；有cookie则返回实际值\n        result = {\n            status: \"success\",\n            cookie: cookie || '0',\n            message: cookie ? '获取cookie成功' : '登录成功但无cookie'\n        };\n    } catch (err) {\n        // 1标记：请求错误\n        result = {\n            status: \"error\",\n            cookie: '1',\n            message: err.message,\n            details: err.response?.body || \"无详细信息\"\n        };\n    }\n\n    // 4. n8n标准返回格式\n    return [{\n        json: {\n            totalRequests: 1,\n            details: [result]\n        }\n    }];\n}\n\nreturn getSessionCookie();"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        304,
+        -32
+      ],
+      "id": "34c9d014-8f53-489d-8b27-3eb33d6b1092",
+      "name": "登录NasTools1"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        80,
+        -32
+      ],
+      "id": "04792ed2-8b08-4c79-9cc5-d35f52cda819",
+      "name": "Wait",
+      "webhookId": "33420086-947b-4f66-9615-8d542b04f154"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "开始": {
+      "main": [
+        [
+          {
+            "node": "登录NasTools",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "登录NasTools": {
+      "main": [
+        [
+          {
+            "node": "重启",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "目录同步": {
+      "main": [
+        []
+      ]
+    },
+    "重启": {
+      "main": [
+        [
+          {
+            "node": "Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "登录NasTools1": {
+      "main": [
+        [
+          {
+            "node": "目录同步",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait": {
+      "main": [
+        [
+          {
+            "node": "登录NasTools1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "882c2b73-70fc-4253-821c-cfc9987e6575",
+  "meta": {
+    "instanceId": "fb657763e011083e612436a662f68acdc885b47ed1f558c08d645fadcc94bff7"
+  },
+  "id": "co0YKtqDdNQIZJat0nsJU",
+  "tags": []
+}

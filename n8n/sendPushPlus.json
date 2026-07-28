@@ -1,0 +1,146 @@
+{
+  "name": "sendPushPlus",
+  "nodes": [
+    {
+      "parameters": {
+        "url": "http://www.pushplus.plus/send",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "token",
+              "value": "={{ $json.value }}"
+            },
+            {
+              "name": "title",
+              "value": "= {{$('开始').item.json.title }} "
+            },
+            {
+              "name": "content",
+              "value": "= {{$('开始').item.json.content }} "
+            },
+            {
+              "name": "template",
+              "value": "={{$('开始').item.json.template||'txt'}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        720,
+        352
+      ],
+      "id": "0eac192f-e466-49a8-a9b8-a33ce6edc169",
+      "name": "HTTP Request"
+    },
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "c055762a-8fe7-4141-a639-df2372f30060",
+      "typeVersion": 1.1,
+      "name": "开始",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "position": [
+        272,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "schema": {
+          "__rl": true,
+          "value": "public",
+          "mode": "list",
+          "cachedResultName": "public"
+        },
+        "table": {
+          "__rl": true,
+          "value": "config",
+          "mode": "list",
+          "cachedResultName": "config"
+        },
+        "returnAll": true,
+        "where": {
+          "values": [
+            {
+              "column": "key",
+              "value": "push_plus_token"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        496,
+        352
+      ],
+      "id": "ff5331e8-bfaa-4d8b-b335-7c7dbc677df4",
+      "name": "获取pushPlusToken",
+      "credentials": {
+        "postgres": {
+          "id": "8M4IiahXMXvHgI3X",
+          "name": "Postgres account"
+        }
+      }
+    }
+  ],
+  "pinData": {
+    "开始": [
+      {
+        "json": {
+          "title": "🎬 遮天",
+          "content": "<b>资源摘要：</b> 处理完成: 1 成功, 0 失败<br><b>文件数量：</b> 1 P<br><hr><b>01.</b> <code>遮天 - S01E141 - 第 141 集.mp4</code><hr><small style=\"color: gray;\">📅 统计时间：2026/1/26 08:13:57</small>",
+          "template": "html"
+        },
+        "pairedItem": {
+          "item": 0
+        }
+      }
+    ]
+  },
+  "connections": {
+    "开始": {
+      "main": [
+        [
+          {
+            "node": "获取pushPlusToken",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "获取pushPlusToken": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false,
+    "timeSavedMode": "fixed",
+    "callerPolicy": "any"
+  },
+  "versionId": "cd0263c4-651b-4c96-b916-46adccab02a2",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "fb657763e011083e612436a662f68acdc885b47ed1f558c08d645fadcc94bff7"
+  },
+  "id": "p3BULaw5LqExxysm",
+  "tags": []
+}

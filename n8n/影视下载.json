@@ -1,0 +1,1021 @@
+{
+  "name": "影视下载",
+  "nodes": [
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YPjtX8mZn90TmAM8vERXl",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/YPjtX8mZn90TmAM8vERXl",
+          "cachedResultName": "更新cloudSaverToken"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1024,
+        -464
+      ],
+      "id": "51fbaafc-f454-4b03-998f-05ccdb30e2d9",
+      "name": "获取cloudSaverToken"
+    },
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        800,
+        -464
+      ],
+      "id": "0b33be59-ecd5-4456-94b5-7a62f493a939",
+      "name": "开始"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "p3BULaw5LqExxysm",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/p3BULaw5LqExxysm",
+          "cachedResultName": "sendPushPlus"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        5504,
+        -624
+      ],
+      "id": "140d6384-c2b7-4bf3-8399-3da887db2d81",
+      "name": "发送pushplus"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 1. 获取输入节点数据\nconst ariaData = $input.first().json;\n\n// 2. 基础信息提取\nconst parentName = $('开始').first().json.media || '未知资源';\nconst summary = ariaData.summary || '未命名';\nconst fileList = ariaData.details || [];\nconst fileCount = fileList.length;\n\n// 3. 构建美观的标题\nconst formattedTitle = `🎬 ${parentName}`;\n\n// 4. 构建美观的正文 (HTML 格式)\nlet contentHtml = \"\";\n\n// 头部：资源简介\ncontentHtml += `<b>资源摘要：</b> ${summary}<br>`;\ncontentHtml += `<b>文件数量：</b> ${fileCount}<br>`;\ncontentHtml += `<hr>`; // 分割线\n\n// 中间：带样式的列表\nif (fileCount > 0) {\n  const listItems = fileList.map((i, index) => {\n    // 序号加粗，文件名放在代码块样式中（看起来更工整）\n    const idx = (index + 1).toString().padStart(2, '0');\n    return `<b>${idx}:</b> <code>  ${i.fileName}</code>`;\n  });\n  contentHtml += listItems.join('<br>');\n} else {\n  contentHtml += `<i>⚠️ 暂无有效文件清单</i>`;\n}\n\n// 尾部：时间戳\ncontentHtml += `<hr>`;\nconst now = new Date().toLocaleString('zh-CN', { hour12: false });\ncontentHtml += `<small style=\"color: gray;\">📅 统计时间：${now}</small>`;\n\nreturn {\n  title: formattedTitle,\n  content: contentHtml,\n  template:\"html\"\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5280,
+        -624
+      ],
+      "id": "7d01ea32-ec5b-432b-88d5-6dadea600bbd",
+      "name": "整理pushplus"
+    },
+    {
+      "parameters": {
+        "url": "https://api.themoviedb.org/3/search/multi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "api_key",
+              "value": "={{ $('获取TMDB Key').item.json.value }}"
+            },
+            {
+              "name": "query",
+              "value": "={{ $('开始').item.json.media }}"
+            },
+            {
+              "name": "language",
+              "value": "zh-CN"
+            },
+            {
+              "name": "page",
+              "value": "1"
+            }
+          ]
+        },
+        "options": {
+          "proxy": "http://192.168.3.31:7897"
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        2368,
+        -432
+      ],
+      "id": "f5ddcb4f-d827-4abc-b52e-aabe454a5e91",
+      "name": "获取TMDBID"
+    },
+    {
+      "parameters": {
+        "url": "http://192.168.3.31:8096/Items",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "api_key",
+              "value": "={{ $('获取EmbyKey').item.json.value }}"
+            },
+            {
+              "name": "Recursive",
+              "value": "true"
+            },
+            {
+              "name": "HasTmdbId",
+              "value": "true"
+            },
+            {
+              "name": "Fields",
+              "value": "ProviderIds"
+            },
+            {
+              "name": "AnyProviderIdEquals",
+              "value": "=tmdb.{{ $json.tmdb_id }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        2368,
+        -624
+      ],
+      "id": "3af4e475-8417-4849-8ad8-d566e6f230d1",
+      "name": "获取EMBYID"
+    },
+    {
+      "parameters": {
+        "url": "=http://192.168.3.31:8096/emby/Shows/Missing",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "ParentId",
+              "value": "={{ $json.Items.first().Id }}"
+            },
+            {
+              "name": "api_key",
+              "value": "={{ $('获取EmbyKey').item.json.value }}"
+            },
+            {
+              "name": "IncludeUnaired",
+              "value": "true"
+            },
+            {
+              "name": "IncludeSpecials",
+              "value": "false"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        2592,
+        -624
+      ],
+      "id": "451fd033-7ca5-423e-86a8-89470f536e28",
+      "name": "查看遗漏集"
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "schema": {
+          "__rl": true,
+          "value": "public",
+          "mode": "list",
+          "cachedResultName": "public"
+        },
+        "table": {
+          "__rl": true,
+          "value": "config",
+          "mode": "list",
+          "cachedResultName": "config"
+        },
+        "where": {
+          "values": [
+            {
+              "column": "key",
+              "value": "open_list_key"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1248,
+        -464
+      ],
+      "id": "74f1f2b8-f3cb-4fad-ac5d-99458bc04438",
+      "name": "获取openListKey",
+      "credentials": {
+        "postgres": {
+          "id": "8M4IiahXMXvHgI3X",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "schema": {
+          "__rl": true,
+          "value": "public",
+          "mode": "list",
+          "cachedResultName": "public"
+        },
+        "table": {
+          "__rl": true,
+          "value": "config",
+          "mode": "list",
+          "cachedResultName": "config"
+        },
+        "returnAll": true,
+        "where": {
+          "values": [
+            {
+              "column": "key",
+              "value": "emby_api_key"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1472,
+        -464
+      ],
+      "id": "caedd4a6-8c4c-4823-a9ee-c16c89985bf5",
+      "name": "获取EmbyKey",
+      "credentials": {
+        "postgres": {
+          "id": "8M4IiahXMXvHgI3X",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "schema": {
+          "__rl": true,
+          "mode": "list",
+          "value": "public"
+        },
+        "table": {
+          "__rl": true,
+          "value": "config",
+          "mode": "list",
+          "cachedResultName": "config"
+        },
+        "returnAll": true,
+        "where": {
+          "values": [
+            {
+              "column": "key",
+              "value": "tmdb_api_key"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1696,
+        -464
+      ],
+      "id": "f946689f-127b-4b81-8b97-382f0ef55e6f",
+      "name": "获取TMDB Key",
+      "credentials": {
+        "postgres": {
+          "id": "8M4IiahXMXvHgI3X",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "=http://192.168.3.31:8008/api/search",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "keyword",
+              "value": "={{ $('开始').item.json.media }}"
+            },
+            {
+              "name": "lastMessageId"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('获取cloudSaverToken').item.json.cloudSaverToken }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        3712,
+        -624
+      ],
+      "id": "d6fa2823-d574-4756-930b-fcb65f93ce5b",
+      "name": "获取网盘资源",
+      "executeOnce": false
+    },
+    {
+      "parameters": {
+        "jsCode": "// 1. 获取上一个节点的输出数据（n8n中$input.all()获取所有输入项）\nconst inputData = $input.all();\n// 初始化存储网盘链接的数组\nlet tianyiLinkList = [];\nlet quarkLinkList = [];\n\n// 2. 处理输入数据，先获取最外层的data数组\nif (inputData && inputData.length > 0) {\n  // 取第一个输入项的json数据（适配n8n的输出格式）\n  const firstInput = inputData[0].json;\n  const dataArray = firstInput.data || [];\n\n  // 3. 循环data数组\n  for (const dataItem of dataArray) {\n    // 4. 判断list是否为空\n    const list = dataItem.list || [];\n    if (list.length === 0) {\n      continue; // list为空则跳过当前data项\n    }\n\n    // 5. 循环非空的list数组\n    for (const listItem of list) {\n      const title = listItem.title || '';\n      // 6. 判断title是否包含\"影视名称\n      if (title.toLowerCase().includes($('开始').first().json.media.toLowerCase())) {\n        const cloudLinks = listItem.cloudLinks || [];\n        // 7. 循环cloudLinks，筛选cloudType为'tianyi'或'quark'的link\n        for (const linkItem of cloudLinks) {\n          if (linkItem.link) {\n            if (linkItem.cloudType === 'tianyi') {\n              tianyiLinkList.push(linkItem.link); // 存入天翼云盘链接数组\n            } else if (linkItem.cloudType === 'quark') {\n              quarkLinkList.push(linkItem.link); // 存入夸克网盘链接数组\n            }\n          }\n        }\n      }\n    }\n  }\n\n  // 8. 对链接数组进行去重处理（使用Set去重，再转回数组）\n  const uniqueTianyiLinkList = [...new Set(tianyiLinkList)];\n  const uniqueQuarkLinkList = [...new Set(quarkLinkList)];\n\n  // 9. 提取链接中的分享码\n  const tianyiShareCodeList = [];\n  const quarkShareCodeList = [];\n  \n  // 天翼云盘分享码正则匹配（兼容两种格式：/t/xxx 和 /web/share?code=xxx）\n  const tianyiShareCodeRegex = /https:\\/\\/cloud\\.189\\.cn\\/(?:t\\/|web\\/share\\?code=)([^&\\/]+)/;\n  \n  // 夸克网盘分享码正则匹配（格式：/s/xxx）\n  const quarkShareCodeRegex = /https:\\/\\/pan\\.quark\\.cn\\/s\\/([^&\\/]+)/;\n  \n  console.log(`🔍 开始提取天翼云盘分享码，共有 ${uniqueTianyiLinkList.length} 个链接`);\n  for (const link of uniqueTianyiLinkList) {\n    const match = link.match(tianyiShareCodeRegex);\n    if (match && match[1]) {\n      const shareCode = match[1];\n      // 过滤：只保留长度为12的分享码\n      if (shareCode.length === 12) {\n        tianyiShareCodeList.push(shareCode); // 提取天翼云盘分享码\n        console.log(`✅ 保留天翼云盘分享码: ${shareCode} (长度: ${shareCode.length})`);\n      } else {\n        console.log(`⏭️ 过滤天翼云盘分享码: ${shareCode} (长度: ${shareCode.length}, 需要长度12)`);\n      }\n    }\n  }\n  \n  console.log(`🔍 开始提取夸克网盘分享码，共有 ${uniqueQuarkLinkList.length} 个链接`);\n  for (const link of uniqueQuarkLinkList) {\n    const match = link.match(quarkShareCodeRegex);\n    if (match && match[1]) {\n      const shareCode = match[1];\n      // 过滤：只保留长度为12的分享码\n      if (shareCode.length === 12) {\n        quarkShareCodeList.push(shareCode); // 提取夸克网盘分享码\n        console.log(`✅ 保留夸克网盘分享码: ${shareCode} (长度: ${shareCode.length})`);\n      } else {\n        console.log(`⏭️ 过滤夸克网盘分享码: ${shareCode} (长度: ${shareCode.length}, 需要长度12)`);\n      }\n    }\n  }\n\n  // 计算总分享码数量\n  const shareCodeCount = tianyiShareCodeList.length + quarkShareCodeList.length;\n  \n  console.log(`📊 分享码提取结果统计:`);\n  console.log(`   天翼云盘分享码: ${tianyiShareCodeList.length} 个 (长度12)`);\n  console.log(`   夸克网盘分享码: ${quarkShareCodeList.length} 个 (长度12)`);\n  console.log(`   总计有效分享码: ${shareCodeCount} 个`);\n  \n  if (tianyiShareCodeList.length > 0) {\n    console.log(`   天翼云盘分享码列表: ${tianyiShareCodeList.join(', ')}`);\n  }\n  if (quarkShareCodeList.length > 0) {\n    console.log(`   夸克网盘分享码列表: ${quarkShareCodeList.join(', ')}`);\n  }\n  \n  // 输出最终结果（n8n中通过return输出，供后续节点使用）\n  return {\n    tianyi: tianyiShareCodeList, // 天翼云盘分享码列表\n    quark: quarkShareCodeList, // 夸克网盘分享码列表\n    count: shareCodeCount // 总分享码数量\n  };\n} else {\n  // 无输入数据时的兜底输出\n  return {\n    tianyi: [],\n    quark: [],\n    count: 0,\n  };\n}"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3936,
+        -624
+      ],
+      "id": "d1bfd964-e505-467d-a6f6-a8b933ffb722",
+      "name": "提取分享码"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 1. 获取n8n查看遗漏集节点的输入数据\nconst inputData = $('过滤遗漏集').all();\n// 初始化最终输出的结果数组\nlet result = [];\n\n// 辅助函数：从S06E17格式的字符串中提取季数和集数\nfunction extractSeasonEpisode(seStr) {\n    const match = seStr.match(/S(\\d+)E(\\d+)/i);\n    if (match) {\n        return {\n            season: match[1],\n            episode: match[2]\n        };\n    }\n    return null;\n}\n\n// 辅助函数：从aria2文件路径中提取季集信息\nfunction extractEpisodeFromPath(path, mediaName) {\n    if (!path || typeof path !== 'string') return null;\n    \n    // 检查路径是否包含指定的媒体名称\n    if (!path.includes(mediaName)) return null;\n    \n    // 尝试匹配SxxExx格式\n    const seMatch = path.match(/S\\d+E\\d+/i);\n    if (seMatch) {\n        return extractSeasonEpisode(seMatch[0]);\n    }\n    \n    // 尝试匹配\"第 x 集\"格式\n    const cnMatch = path.match(/第\\s*(\\d+)\\s*集/i);\n    if (cnMatch) {\n        // 如果没有匹配到季数，默认为第1季\n        return {\n            season: \"1\",\n            episode: cnMatch[1]\n        };\n    }\n    \n    return null;\n}\n\n// 2. 获取媒体名称用于匹配aria2文件\nconst mediaName = $('开始').first().json.media || '';\nconsole.log(`📺 当前媒体名称: ${mediaName}`);\n\n// 3. 从n8n节点获取Aria2任务数据，构建已存在任务的排除列表\nlet aria2ExcludedEpisodes = new Set();\n\n\ntry {\n    // 获取Aria2下载任务节点数据\n    const aria2DownloadData = $('Aria2下载任务').all();\n    console.log(`📥 获取到Aria2下载任务数据条数: ${aria2DownloadData.length}`);\n    \n    // 处理Aria2下载任务\n    for (const taskData of aria2DownloadData) {\n        if (taskData.json && taskData.json.result && Array.isArray(taskData.json.result)) {\n            for (const resultItem of taskData.json.result) {\n                if (resultItem.files && Array.isArray(resultItem.files)) {\n                    for (const file of resultItem.files) {\n                        const episodeInfo = extractEpisodeFromPath(file.path, mediaName);\n                        if (episodeInfo) {\n                            const key = `S${episodeInfo.season.padStart(2, '0')}E${episodeInfo.episode.padStart(2, '0')}`;\n                            aria2ExcludedEpisodes.add(key);\n                            console.log(`❌ 排除Aria2下载任务中的剧集: ${key} (路径: ${file.path})`);\n                        }\n                    }\n                }\n            }\n        }\n    }\n    \n    // 获取Aria2等待任务节点数据\n    const aria2WaitingData = $('Aria2等待任务').all();\n    console.log(`📥 获取到Aria2等待任务数据条数: ${aria2WaitingData.length}`);\n    \n    // 处理Aria2等待任务\n    for (const taskData of aria2WaitingData) {\n        if (taskData.json && taskData.json.result && Array.isArray(taskData.json.result)) {\n            for (const resultItem of taskData.json.result) {\n                if (resultItem.files && Array.isArray(resultItem.files)) {\n                    for (const file of resultItem.files) {\n                        const episodeInfo = extractEpisodeFromPath(file.path, mediaName);\n                        if (episodeInfo) {\n                            const key = `S${episodeInfo.season.padStart(2, '0')}E${episodeInfo.episode.padStart(2, '0')}`;\n                            aria2ExcludedEpisodes.add(key);\n                            console.log(`❌ 排除Aria2等待任务中的剧集: ${key} (路径: ${file.path})`);\n                        }\n                    }\n                }\n            }\n        }\n    }\n    \n    console.log(`📊 总共排除 ${aria2ExcludedEpisodes.size} 个已有下载任务的剧集`);\n    if (aria2ExcludedEpisodes.size > 0) {\n        console.log(`📋 排除的剧集列表: ${Array.from(aria2ExcludedEpisodes).join(', ')}`);\n    }\n} catch (error) {\n    console.error('❌ 处理Aria2任务数据时出错:', error.message);\n    console.error('堆栈:', error.stack);\n}\n\n// 4. 校验输入数据是否有效\nif (inputData && inputData.length > 0) {\n    // 取第一个输入项的json数据（n8n标准格式）\n    const firstInput = inputData[0].json;\n    // 获取Items数组（核心数据）\n    const items = firstInput.Items || [];\n    \n    console.log(`📋 从查看遗漏集节点获取到 ${items.length} 个剧集数据`);\n    \n    // 5. 遍历Items数组，提取所需字段\n    for (const item of items) {\n        // 提取季数（ParentIndexNumber）和集数（IndexNumber），并转为字符串\n        const season = (item.ParentIndexNumber || '').toString();\n        const index = (item.IndexNumber || '').toString();\n\n        // 6. 仅当季数和集数都有值时，检查是否应该排除\n        if (season && index) {\n            // 构建与aria2中相同的格式用于比较\n            const episodeKey = `S${season.padStart(2, '0')}E${index.padStart(2, '0')}`;\n            \n            // 检查是否在排除列表中\n            if (aria2ExcludedEpisodes.has(episodeKey)) {\n                console.log(`⏭️ 跳过已存在于aria2任务中的剧集: 第${season}季第${index}集 (${episodeKey})`);\n                continue;\n            }\n            \n            // 添加到结果数组\n            result.push({\n                s: season,\n                e: index\n            });\n            \n            console.log(`✅ 保留遗漏集: 第${season}季第${index}集`);\n        }\n    }\n} else {\n    console.warn('⚠️ 无效的输入数据或输入数据为空');\n}\n\ntry {\n\n    const embyData = $('检查Emby遗漏集').all();\n    console.log(embyData)\n    \n\tconsole.log(`📺 获取Emby检查结果: ${embyData.length} 条`);\n\n    for (const item of embyData) {\n\n        const data = item.json;\n        console.log(data)\n\n        const season = data.season;\n        const episode = data.episode;\n        const exists = data.exists;\n        // 只处理不存在的\n        if (exists) continue;\n\n        // 构造 key\n        const episodeKey =\n            `S${String(season).padStart(2, '0')}` +\n            `E${String(episode).padStart(2, '0')}`;\n\n        // 如果已经在 aria2 里就跳过\n        if (aria2ExcludedEpisodes.has(episodeKey)) {\n            console.log(`⏭️ Emby存在但已在下载队列: ${episodeKey}`);\n            continue;\n        }\n\n        // 加入结果集合（统一结构）\n        result.push({\n            s: season.toString(),\n            e: episode.toString()\n        });\n\n        console.log(`📦 加入Emby遗漏集: ${episodeKey}`);\n    }\n\n} catch (error) {\n    console.error('❌ Emby数据合并失败:', error.message);\n}\n\nconsole.log(`🎯 最终结果: ${result.length} 个遗漏剧集`);\n// 7. 输出最终结果\nreturn result;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3488,
+        -624
+      ],
+      "id": "feafc022-e72a-44fd-87f4-7eba5c46340b",
+      "name": "解析遗漏集"
+    },
+    {
+      "parameters": {
+        "jsCode": "const axios = require('axios');\n\nconst sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));\n\nconsole.log('==========================================');\nconsole.log('📦 提取分享码信息脚本开始执行');\nconsole.log('==========================================');\n\nconst startTime = Date.now();\n\nconst inputData = $input.all()[0]?.json || {};\n\nconst tianyiShareCodeList = inputData.tianyi || [];\nconst quarkShareCodeList = inputData.quark || [];\nconst totalCount = inputData.count || 0;\n\nconsole.log('\\n📥 输入数据检查');\nconsole.log('------------------------------------------');\nconsole.log('inputData =', JSON.stringify(inputData, null, 2));\nconsole.log('tianyi数量 =', tianyiShareCodeList.length);\nconsole.log('quark数量 =', quarkShareCodeList.length);\nconsole.log('totalCount =', totalCount);\n\nconst results = {\n  tianyi: [],\n  quark: []\n};\n\ntry {\n\n  if (totalCount <= 0) {\n    console.log('\\n⚠️ count 为 0，直接结束');\n    return [results];\n  }\n\n  console.log('\\n🔑 开始获取 Token');\n  console.log('------------------------------------------');\n\n  let bearerToken = null;\n\n  try {\n\n    const tokenNode = $('获取cloudSaverToken');\n\n    console.log('tokenNode存在:', !!tokenNode);\n\n    const tokenFirst = tokenNode.first();\n\n    console.log('tokenFirst:', JSON.stringify(tokenFirst, null, 2));\n\n    bearerToken = tokenFirst?.json?.cloudSaverToken;\n\n    console.log('bearerToken是否存在:', !!bearerToken);\n\n    if (bearerToken) {\n      console.log('✅ Token获取成功');\n      console.log('Token长度:', bearerToken.length);\n      console.log('Token前20位:', bearerToken.substring(0, 20));\n    }\n\n  } catch (err) {\n\n    console.error('❌ 获取Token异常');\n    console.error(err);\n    console.error(err.stack);\n\n    return [results];\n  }\n\n  if (!bearerToken) {\n\n    console.error('❌ bearerToken为空');\n\n    return [results];\n  }\n\n  /*\n   * ==========================================\n   * 天翼云盘\n   * ==========================================\n   */\n\n  console.log('\\n📤 开始处理天翼云盘');\n  console.log('==========================================');\n\n  for (let i = 0; i < tianyiShareCodeList.length; i++) {\n\n    const shareCode = tianyiShareCodeList[i];\n\n    console.log('\\n------------------------------------------');\n    console.log(`📌 当前处理第 ${i + 1} 个`);\n    console.log(`shareCode = ${shareCode}`);\n\n    const requestStartTime = Date.now();\n\n    try {\n\n      const url = 'http://192.168.3.31:8008/api/tianyi/share-info';\n\n      console.log('请求URL:', url);\n\n      const requestConfig = {\n        params: {\n          shareCode: shareCode,\n          receiveCode: ''\n        },\n        headers: {\n          Authorization: `Bearer ${bearerToken}`,\n          'Content-Type': 'application/json'\n        },\n        timeout: 5000,\n        validateStatus: () => true\n      };\n\n      console.log('请求配置:');\n      console.log(JSON.stringify(requestConfig, null, 2));\n\n      console.log('🚀 开始发送请求...');\n\n      const response = await axios.get(url, requestConfig);\n\n      const requestEndTime = Date.now();\n\n      console.log('✅ 请求完成');\n      console.log('耗时(ms):', requestEndTime - requestStartTime);\n\n      console.log('HTTP状态码:', response.status);\n\n      console.log('response headers:');\n      console.log(JSON.stringify(response.headers, null, 2));\n\n      console.log('response.data 类型:', typeof response.data);\n\n      console.log('response.data:');\n      console.log(JSON.stringify(response.data, null, 2));\n\n      if (response.data?.success) {\n\n        console.log('✅ success=true');\n\n        const resultItem = {\n          ...response.data.data,\n          shareCode\n        };\n\n        results.tianyi.push(resultItem);\n\n        console.log('✅ 已加入results');\n\n      } else {\n\n        console.log('❌ success=false');\n\n      }\n\n    } catch (error) {\n\n      console.error('\\n❌ 当前分享码处理失败');\n      console.error('shareCode:', shareCode);\n\n      console.error('\\n错误message:');\n      console.error(error.message);\n\n      console.error('\\n错误name:');\n      console.error(error.name);\n\n      console.error('\\n错误code:');\n      console.error(error.code);\n\n      console.error('\\n错误stack:');\n      console.error(error.stack);\n\n      if (error.response) {\n\n        console.error('\\nerror.response.status:');\n        console.error(error.response.status);\n\n        console.error('\\nerror.response.data:');\n        console.error(JSON.stringify(error.response.data, null, 2));\n      }\n\n      if (error.request) {\n\n        console.error('\\nerror.request存在');\n      }\n\n      console.error('\\n完整error对象:');\n      console.error(error);\n    }\n\n    console.log(`📊 当前results.tianyi数量: ${results.tianyi.length}`);\n\n    await sleep(500);\n  }\n\n  /*\n   * ==========================================\n   * 夸克网盘\n   * ==========================================\n   */\n\n  console.log('\\n📤 开始处理夸克网盘');\n  console.log('==========================================');\n\n  for (let i = 0; i < quarkShareCodeList.length; i++) {\n\n    const shareCode = quarkShareCodeList[i];\n\n    console.log('\\n------------------------------------------');\n    console.log(`📌 当前处理第 ${i + 1} 个`);\n    console.log(`shareCode = ${shareCode}`);\n\n    try {\n\n      const url = 'http://192.168.3.31:8008/api/quark/share-info';\n\n      console.log('请求URL:', url);\n\n      console.log('🚀 开始发送请求...');\n\n      const response = await axios.get(url, {\n        params: {\n          shareCode\n        },\n        headers: {\n          Authorization: `Bearer ${bearerToken}`,\n          'Content-Type': 'application/json'\n        },\n        timeout: 5000,\n        validateStatus: () => true\n      });\n\n      console.log('✅ 请求完成');\n\n      console.log('HTTP状态码:', response.status);\n\n      console.log('response.data:');\n      console.log(JSON.stringify(response.data, null, 2));\n\n      if (response.data?.success) {\n\n        results.quark.push({\n          ...response.data.data,\n          shareCode\n        });\n\n        console.log('✅ 已加入results');\n\n      } else {\n\n        console.log('❌ success=false');\n      }\n\n    } catch (error) {\n\n      console.error('\\n❌ 当前分享码处理失败');\n\n      console.error(error);\n      console.error(error.stack);\n    }\n\n    await sleep(500);\n  }\n\n} catch (globalError) {\n\n  console.error('\\n💥 全局异常');\n  console.error(globalError);\n  console.error(globalError.stack);\n}\n\nconsole.log('\\n==========================================');\nconsole.log('📦 脚本执行结束');\nconsole.log('==========================================');\n\nconsole.log('\\n最终结果:');\nconsole.log(JSON.stringify(results, null, 2));\n\nconsole.log('\\n总耗时(ms):', Date.now() - startTime);\n\nreturn [results];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4160,
+        -624
+      ],
+      "id": "c6b107d7-9414-47dd-b7fb-731e67443054",
+      "name": "提取分享码信息"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 必须手动定义 sleep\nconst sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));\n\nconst CONFIG = {\n    alist: {\n        baseUrl: 'http://192.168.3.31:5244',\n        token: $('获取openListKey').first().json.value\n    },\n    aria2: {\n        rpcUrl: 'http://192.168.3.31:6800/jsonrpc',\n        token: 'token:zhangxiaolei521',\n        dir: '/downloads'\n    }\n};\n\nconst formatFileName = (fileName) => {\n    const regex = /(S\\d+)E(\\d+).*\\.([^.]+)$/i;\n    const match = fileName.match(regex);\n    if (match) {\n        const fullSE = match[1] + \"E\" + match[2];\n        const episodeNum = parseInt(match[2], 10);\n        const extension = match[3];\n        return $('开始').first().json.media + ` - ${fullSE} - 第 ${episodeNum} 集.${extension}`;\n    } else {\n        return fileName; // 匹配失败返回原名，不建议返回“格式匹配失败”以免文件名报错\n    }\n}\n\nasync function execute() {\n    // 从转存节点获取输入数据\n    const transferResults = $('转存').all();\n    \n    if (transferResults.length === 0 || !transferResults[0].json.success) {\n        return [{ json: { status: \"error\", msg: \"没有获取到转存结果或转存失败\" } }];\n    }\n    \n    const transferData = transferResults[0].json;\n    const episodeDetails = transferData.details || [];\n    // 1. 强制刷新 AList 目录\n    try {\n      await sleep(5000)\n        await this.helpers.request({\n            method: 'POST',\n            uri: `http://192.168.3.31:5244/api/fs/list`,\n            body: { path: \"/tianyi\", refresh: true },\n            headers: { 'Authorization': CONFIG.alist.token },\n            json: true\n        });\n        await this.helpers.request({\n            method: 'POST',\n            uri: `http://192.168.3.31:5244/api/fs/list`,\n            body: { path: \"/quark\", refresh: true },\n            headers: { 'Authorization': CONFIG.alist.token },\n            json: true\n        });\n    } catch (e) {}\n\n    const ariaMethods = [];\n    const taskFileNames = [];\n    const results = [];\n\n    // 2. 收集任务\n    console.log(`📥 从转存节点获取到 ${episodeDetails.length} 个剧集详情`);\n    \n    for (const episode of episodeDetails) {\n        const type = episode.type; // tianyi 或 quark\n        const fileName = episode.fileName; // 单个文件名\n        const episodeCode = episode.episodeCode;\n        \n        if (!fileName) {\n            console.log(`⚠️ 剧集 ${episodeCode} (${type}) 无fileName字段，跳过`);\n            continue;\n        }\n        \n        // 根据type确定路径前缀\n        const pathPrefix = type === 'tianyi' ? '/tianyi' : '/quark';\n        \n        console.log(`📦 处理剧集: ${fileName} (${episodeCode}, ${type})`);\n\n        try {\n            // 构建完整路径：直接使用类型前缀 + 文件名\n            const fullPath = `${pathPrefix}/${fileName}`;\n            console.log(`  完整路径: ${fullPath}`);\n            \n            const getResponse = await this.helpers.request({\n                method: 'POST',\n                uri: `${CONFIG.alist.baseUrl}/api/fs/get`,\n                body: { path: fullPath },\n                headers: { 'Authorization': CONFIG.alist.token },\n                json: true\n            });\n\n            if (getResponse.code === 200 && getResponse.data?.raw_url) {\n                const finalName = formatFileName(fileName);\n                taskFileNames.push(finalName);\n                ariaMethods.push({\n                    methodName: \"aria2.addUri\",\n                    params: [\n                        CONFIG.aria2.token,\n                        [getResponse.data.raw_url],\n                        {\n                            \"dir\": CONFIG.aria2.dir,\n                            \"check-certificate\": \"false\",\n                            \"out\": finalName\n                        }\n                    ]\n                });\n            }\n        } catch (error) {\n            console.error(`准备任务失败: ${fileName} (${episodeCode}, ${type})`, error);\n        }\n    }\n\n    // 3. 批量推送\n    if (ariaMethods.length > 0) {\n        try {\n            const ariaResponse = await this.helpers.request({\n                method: 'POST',\n                uri: CONFIG.aria2.rpcUrl,\n                body: {\n                    \"jsonrpc\": \"2.0\",\n                    \"id\": Date.now().toString(),\n                    \"method\": \"system.multicall\",\n                    \"params\": [ariaMethods]\n                },\n                headers: { 'Content-Type': 'application/json' },\n                json: true\n            });\n\n            // 核心排查点：解析 multicall 的复杂返回结构\n            const finalTasks = [];\n            if (ariaResponse.result && Array.isArray(ariaResponse.result)) {\n                ariaResponse.result.forEach((res, index) => {\n                    // res 通常是一个数组，如 [\"gid\"] 或 [{code: 1, message: \"...\"}]\n                    const itemResult = res[0]; \n                    \n                    if (typeof itemResult === 'string') {\n                        // 成功，itemResult 是 GID\n                        finalTasks.push({\n                            fileName: taskFileNames[index],\n                            status: \"success\",\n                            gid: itemResult\n                        });\n                    } else {\n                        // 子任务失败\n                        finalTasks.push({\n                            fileName: taskFileNames[index],\n                            status: \"failed\",\n                            error: itemResult?.message || \"未知错误\"\n                        });\n                    }\n                });\n            }\n\n            results.push({\n                json: {\n                    status: \"complete\",\n                    summary: `处理完成: ${finalTasks.filter(t => t.status === 'success').length} 成功, ${finalTasks.filter(t => t.status === 'failed').length} 失败`,\n                    details: finalTasks\n                }\n            });\n\n        } catch (error) {\n            results.push({ json: { status: \"error\", msg: \"RPC请求发送失败\", error: error.message } });\n        }\n    } else {\n        results.push({ json: { status: \"warning\", msg: \"没有搜集到有效的下载任务\" } });\n    }\n\n    return results;\n}\n\nreturn execute.call(this);"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4832,
+        -624
+      ],
+      "id": "2efc6c09-af63-4e7f-a195-aa3e5137a4b3",
+      "name": "Aria下载"
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "schema": {
+          "__rl": true,
+          "mode": "list",
+          "value": "public"
+        },
+        "table": {
+          "__rl": true,
+          "value": "media",
+          "mode": "list",
+          "cachedResultName": "media"
+        },
+        "returnAll": true,
+        "where": {
+          "values": [
+            {
+              "column": "media",
+              "value": "={{ $('开始').item.json.media }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1920,
+        -464
+      ],
+      "id": "fecf8e62-f531-4e6f-a6fa-894650948bac",
+      "name": "从表中获取TMDBID",
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "8M4IiahXMXvHgI3X",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "f5675a3d-367b-4611-b538-ab5c61fc7f74",
+              "leftValue": "={{ $json.tmdb_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2144,
+        -528
+      ],
+      "id": "c07b4a5b-91eb-4da0-8ea1-68ef8c015e13",
+      "name": "If",
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "schema": {
+          "__rl": true,
+          "mode": "list",
+          "value": "public"
+        },
+        "table": {
+          "__rl": true,
+          "value": "media",
+          "mode": "list",
+          "cachedResultName": "media"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "media": "={{ $json.results[0].name }}",
+            "tmdb_id": "={{ $json.results[0].id }}"
+          },
+          "matchingColumns": [
+            "media"
+          ],
+          "schema": [
+            {
+              "id": "media",
+              "displayName": "media",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "cloud189users",
+              "displayName": "cloud189users",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "tmdb_id",
+              "displayName": "tmdb_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2592,
+        -368
+      ],
+      "id": "53174084-6536-4187-aece-0663a8e46f5f",
+      "name": "Update rows in a table",
+      "credentials": {
+        "postgres": {
+          "id": "8M4IiahXMXvHgI3X",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const axios = require('axios');\n\n// ===================== 配置项 =====================\nconst BASE_URL = 'http://192.168.3.31:8008';\nconst SLEEP_TIME = 1000;\nconst DEFAULT_TIANYI_FOLDER = '-13'; // 天翼云盘 - 我的视频\nconst DEFAULT_QUARK_FOLDER = 'b1b6bedabffe4ded8d5da9d976c02d15'; // 夸克网盘 - 我的视频\nconst ALLOWED_EXTENSIONS = new Set(['mp4', 'mkv']); // 允许的视频文件格式\n// ==================================================\n\n// 辅助函数：休眠\nconst sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));\n\n// 辅助函数：获取Bearer Token\nfunction getBearerToken() {\n    return $('获取cloudSaverToken').first().json.cloudSaverToken;\n}\n\n// 辅助函数：获取文件后缀（小写，无点）\nfunction getFileExtension(fileName) {\n    if (!fileName || !fileName.includes('.')) return '';\n    return fileName.split('.').pop().toLowerCase();\n}\n\n// 辅助函数：检查是否为允许的视频格式\nfunction isAllowedVideoFile(fileName) {\n    const ext = getFileExtension(fileName);\n    return ALLOWED_EXTENSIONS.has(ext);\n}\n\n// 核心：集数匹配函数（支持三重匹配规则：code2, code3, 中文格式）\nfunction getMatchedCode(fileName, targetKeywords, remainingCodes) {\n    if (!fileName) return null;\n    \n    const name = String(fileName);\n    \n    for (const kw of targetKeywords) {\n        const { code2, code3, num } = kw;\n        \n        // 跳过已匹配完成的集数\n        if (remainingCodes && !remainingCodes.has(code2)) continue;\n        \n        // 三重匹配规则\n        const match2 = name.includes(code2);    // S01E01\n        const match3 = name.includes(code3);    // S01E001\n        const matchCN = /第\\d+集/.test(name) && name.includes(`第${num}集`); // 第X集\n        \n        if (match3 || match2 || matchCN) {\n            return code2;\n        }\n    }\n    return null;\n}\n\n// 递归获取天翼云盘文件\nasync function tianyiRecursiveGetFiles(shareCode, pdirFid = '', shareId, receiveCode, targetKeywords, remainingCodes, results) {\n    if (remainingCodes.size === 0) return;\n    await sleep(SLEEP_TIME);\n    \n    const token = getBearerToken();\n    \n    try {\n        const payload = {\n            pwdId: \"\",\n            stoken: \"\",\n            pdirFid: pdirFid,\n            shareCode: shareCode,\n            receiveCode: receiveCode,\n            shareInfo: {\n                list: [],\n                isFolder: true,\n                shareId: shareId,\n                shareCode: shareCode,\n                receiveCode: receiveCode,\n                type: \"tianyi\"\n            }\n        };\n        \n        const response = await axios.post(`${BASE_URL}/api/tianyi/share-list`, payload, {\n            headers: {\n                'Authorization': `Bearer ${token}`,\n                'Content-Type': 'application/json'\n            },\n            timeout: 10000\n        });\n        \n        if (response.data && response.data.success) {\n            const data = response.data.data || {};\n            const fileList = data.list || [];\n            \n            for (const file of fileList) {\n                if (remainingCodes.size === 0) break;\n                \n                if (!file.fileName || !file.fileId) continue;\n                \n                // 检查是否为视频文件\n                if (!isAllowedVideoFile(file.fileName) && !file.isFolder) {\n                    console.log(`⏭️ 跳过非视频文件: ${file.fileName}`);\n                    continue;\n                }\n                \n                const matchedCode = getMatchedCode(file.fileName, targetKeywords, remainingCodes);\n                \n                if (matchedCode) {\n                    // 检查这个集数是否已经匹配过（避免同一集匹配多个文件）\n                    if (!remainingCodes.has(matchedCode)) {\n                        console.log(`⏭️ 跳过已匹配的集数: ${file.fileName} → ${matchedCode}`);\n                        continue;\n                    }\n                    \n                    console.log(`✅ 天翼云盘匹配成功: ${file.fileName} → ${matchedCode}`);\n                    \n                    results.tianyi[matchedCode] = {\n                        shareInfoList: [{\n                            fileId: file.fileId,\n                            fileName: file.fileName,\n                            fileSize: file.fileSize || 0,\n                            isFolder: file.isFolder || false,\n                            isChecked: true\n                        }],\n                        fileNames: [file.fileName],\n                        shareCode: shareCode,\n                        receiveCode: receiveCode,\n                        fileId: file.fileId,\n                        folderId: DEFAULT_TIANYI_FOLDER,\n                        isFolder: true,\n                        fids: [file.fileId],\n                        shareId: shareId\n                    };\n                    \n                    remainingCodes.delete(matchedCode);\n                    console.log(`📌 已匹配集数 ${matchedCode}，剩余待匹配: ${remainingCodes.size}个`);\n                }\n                \n                if (remainingCodes.size > 0 && file.isFolder) {\n                    await tianyiRecursiveGetFiles(\n                        shareCode,\n                        file.fileId,\n                        shareId,\n                        receiveCode,\n                        targetKeywords,\n                        remainingCodes,\n                        results\n                    );\n                }\n            }\n        }\n    } catch (error) {\n        console.info(`❌ 天翼云盘请求失败 [${shareCode}/${pdirFid}]:`, error.message);\n    }\n}\n\n// 递归获取夸克网盘文件\nasync function quarkRecursiveGetFiles(shareCode, pdirFid = '', pwdId, stoken, targetKeywords, remainingCodes, results) {\n    if (remainingCodes.size === 0) return;\n    await sleep(SLEEP_TIME);\n    \n    const token = getBearerToken();\n    \n    try {\n        const payload = {\n            pwdId: pwdId,\n            stoken: stoken,\n            pdirFid: pdirFid,\n            shareCode: shareCode,\n            receiveCode: \"\",\n            shareInfo: {\n                list: [],\n                pwdId: pwdId,\n                stoken: stoken,\n                fileSize: 0,\n                shareCode: shareCode,\n                type: \"quark\"\n            }\n        };\n        \n        const response = await axios.post(`${BASE_URL}/api/quark/share-list`, payload, {\n            headers: {\n                'Authorization': `Bearer ${token}`,\n                'Content-Type': 'application/json'\n            },\n            timeout: 10000\n        });\n        \n        if (response.data && response.data.success) {\n            const data = response.data.data || {};\n            const fileList = data.list || [];\n            \n            for (const file of fileList) {\n                if (remainingCodes.size === 0) break;\n                \n                if (!file.fileName || !file.fileId) continue;\n                \n                // 检查是否为视频文件\n                if (!isAllowedVideoFile(file.fileName) && !file.isFolder) {\n                    console.log(`⏭️ 跳过非视频文件: ${file.fileName}`);\n                    continue;\n                }\n                \n                const matchedCode = getMatchedCode(file.fileName, targetKeywords, remainingCodes);\n                \n                if (matchedCode) {\n                    console.log(`✅ 夸克网盘匹配成功: ${file.fileName} → ${matchedCode}`);\n                    \n                    results.quark[matchedCode] = {\n                        fids: [file.fileId],\n                        fidTokens: [file.fileIdToken || ''],\n                        fileNames: [file.fileName],\n                        folderId: DEFAULT_QUARK_FOLDER,\n                        shareCode: shareCode,\n                        receiveCode: stoken\n                    };\n                    \n                    remainingCodes.delete(matchedCode);\n                    console.log(`📌 已匹配集数 ${matchedCode}，剩余待匹配: ${remainingCodes.size}个`);\n                }\n                \n                if (remainingCodes.size > 0 && file.isFolder) {\n                    await quarkRecursiveGetFiles(\n                        shareCode,\n                        file.fileId,\n                        pwdId,\n                        stoken,\n                        targetKeywords,\n                        remainingCodes,\n                        results\n                    );\n                }\n            }\n        }\n    } catch (error) {\n        console.info(`❌ 夸克网盘请求失败 [${shareCode}/${pdirFid}]:`, error.message);\n    }\n}\n\n// 主执行函数\nasync function main() {\n    // 1. 获取缺失集数信息（从解析遗漏集节点获取）\n    const missingItemsNode = $('解析遗漏集').all();\n    console.log(`📋 解析遗漏集节点数量: ${missingItemsNode.length}`);\n    \n    // n8n节点返回的数据格式是 { json: { s: \"1\", e: \"161\" } }，需要从json属性中提取\n    const rawItems = missingItemsNode.map(item => item.json);\n    console.log(`📋 原始数据: ${JSON.stringify(rawItems)}`);\n    \n    // 生成目标关键词（适配解析遗漏集节点的格式 [{s: \"1\", e: \"161\"}]）\n    const targetKeywords = rawItems.map(item => {\n        const seasonNum = parseInt(item.s) || 1;\n        const episodeNum = parseInt(item.e) || 0;\n        const formattedSeason = 'S' + seasonNum.toString().padStart(2, '0');\n        \n        const code2 = formattedSeason + 'E' + episodeNum.toString().padStart(2, '0');\n        const code3 = formattedSeason + 'E' + episodeNum.toString().padStart(3, '0');\n        \n        return { code2, code3, num: episodeNum };\n    });\n    \n    console.log(`📋 待匹配集数: ${targetKeywords.map(kw => kw.code2).join(', ')}`);\n    console.log(`📋 详细列表: ${targetKeywords.map(kw => `${kw.code2}(code3=${kw.code3}, num=${kw.num})`).join(', ')}`);\n    \n    // 2. 获取分享码信息输入\n    const inputData = $input.all();\n    console.log(`📥 接收数据条数: ${inputData.length}`);\n    \n    // 初始化结果对象\n    const results = { tianyi: {}, quark: {} };\n    \n    // 初始化剩余待匹配集数\n    const tianyiRemainingCodes = new Set(targetKeywords.map(kw => kw.code2));\n    const quarkRemainingCodes = new Set(targetKeywords.map(kw => kw.code2));\n    \n    // 3. 处理输入数据\n    if (inputData.length === 0) {\n        console.info('⚠️ 无输入数据');\n        return [];\n    }\n    \n    // 根据用户提供的结构，输入应该是一个包含tianyi和quark数组的对象\n    const firstInput = inputData[0].json;\n    \n    // 3.1 处理天翼云盘分享码\n    console.log('🔍 开始处理天翼云盘分享码...');\n    if (false && firstInput.tianyi && Array.isArray(firstInput.tianyi)) {\n        for (const shareInfo of firstInput.tianyi) {\n            if (tianyiRemainingCodes.size === 0) break;\n            \n            const receiveCode = shareInfo.receiveCode || '';\n            const shareId = shareInfo.shareId;\n            const shareCode = shareInfo.shareCode;\n            \n            if (!shareCode || !shareId) {\n                console.info(`⚠️ 天翼云盘分享码数据不完整: ${JSON.stringify(shareInfo)}`);\n                continue;\n            }\n            \n            console.log(`  正在处理天翼云盘分享码: ${shareCode}`);\n            \n            if (shareInfo.list && shareInfo.list.length > 0) {\n                for (const item of shareInfo.list) {\n                    if (tianyiRemainingCodes.size === 0) break;\n                    \n                    if (item.isFolder) {\n                        await tianyiRecursiveGetFiles(\n                            shareCode,\n                            item.fileId,\n                            shareId,\n                            receiveCode,\n                            targetKeywords,\n                            tianyiRemainingCodes,\n                            results\n                        );\n                    }\n                }\n            }\n        }\n    } else {\n        console.log('ℹ️ 输入中没有天翼云盘分享码数据');\n    }\n    \n    // 3.2 处理夸克网盘分享码\n    console.log('🔍 开始处理夸克网盘分享码...');\n    if (firstInput.quark && Array.isArray(firstInput.quark)) {\n        for (const shareInfo of firstInput.quark) {\n            if (quarkRemainingCodes.size === 0) break;\n            \n            const pwdId = shareInfo.pwdId;\n            const stoken = shareInfo.stoken;\n            const shareCode = shareInfo.shareCode;\n            \n            if (!shareCode || !pwdId || !stoken) {\n                console.info(`⚠️ 夸克网盘分享码数据不完整: ${JSON.stringify(shareInfo)}`);\n                continue;\n            }\n            \n            console.log(`  正在处理夸克网盘分享码: ${shareCode}`);\n            \n            if (shareInfo.list && shareInfo.list.length > 0) {\n                for (const item of shareInfo.list) {\n                    if (quarkRemainingCodes.size === 0) break;\n                    \n                    if (item.isFolder) {\n                        await quarkRecursiveGetFiles(\n                            shareCode,\n                            item.fileId,\n                            pwdId,\n                            stoken,\n                            targetKeywords,\n                            quarkRemainingCodes,\n                            results\n                        );\n                    }\n                }\n            }\n        }\n    } else {\n        console.log('ℹ️ 输入中没有夸克网盘分享码数据');\n    }\n    \n    // 4. 统计结果\n    const tianyiMatchedCount = Object.keys(results.tianyi).length;\n    const quarkMatchedCount = Object.keys(results.quark).length;\n    \n    console.log('\\n📊 最终结果统计:');\n    console.log(`   天翼云盘匹配: ${tianyiMatchedCount}个集数`);\n    console.log(`   夸克网盘匹配: ${quarkMatchedCount}个集数`);\n    console.log(`   天翼云盘剩余未匹配: ${tianyiRemainingCodes.size}个集数`);\n    console.log(`   夸克网盘剩余未匹配: ${quarkRemainingCodes.size}个集数`);\n    \n    if (tianyiRemainingCodes.size > 0) {\n        console.log(`   天翼云盘未找到的集数: ${[...tianyiRemainingCodes].join(', ')}`);\n    }\n    if (quarkRemainingCodes.size > 0) {\n        console.log(`   夸克网盘未找到的集数: ${[...quarkRemainingCodes].join(', ')}`);\n    }\n    \n    // 5. 输出匹配到的集数详情\n    console.log('\\n🎯 匹配到的集数详情:');\n    \n    for (const [episodeCode, data] of Object.entries(results.tianyi)) {\n        console.log(`   天翼云盘[${episodeCode}]: ${data.shareInfoList.length}个文件，分享码: ${data.shareCode}`);\n    }\n    \n    for (const [episodeCode, data] of Object.entries(results.quark)) {\n        console.log(`   夸克网盘[${episodeCode}]: ${data.fids.length}个文件，分享码: ${data.shareCode}`);\n    }\n    \n    console.log('\\n✅ 脚本执行完成');\n    \n    // 如果两个网盘都没有匹配到任何集数，返回空数组\n    if (Object.keys(results.tianyi).length === 0 && Object.keys(results.quark).length === 0) {\n        console.log('📭 未找到任何网盘地址，返回空数组');\n        return [];\n    }\n    \n    return results;\n}\n\n// n8n环境中的执行入口\nreturn main();"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4384,
+        -624
+      ],
+      "id": "a5f27c93-e664-459f-b4e7-5d9da41c27ea",
+      "name": "提取缺失集"
+    },
+    {
+      "parameters": {
+        "jsCode": "const axios = require('axios');\n\n// ===================== 配置项 =====================\nconst BASE_URL = 'http://192.168.3.31:8008';\n// ==================================================\n\n// 辅助函数：休眠\nconst sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));\n\n// 辅助函数：获取Bearer Token\nfunction getBearerToken() {\n    return $('获取cloudSaverToken').first().json.cloudSaverToken;\n}\n\n// 主要转存执行函数\nasync function main() {\n    // 1. 获取输入数据（来自提取缺失集脚本的输出）\n    const inputData = $input.all();\n    \n    if (inputData.length === 0) {\n        console.error('❌ 无输入数据');\n        return { success: false, message: '无输入数据' };\n    }\n    \n    // 2. 读取提取缺失集的结果\n    const result = inputData[0].json;\n    console.log('📥 读取到提取缺失集结果');\n    \n    const allResults = [];\n    const token = getBearerToken();\n    \n    // 3. 处理天翼云盘转存\n    console.log('🚀 开始处理天翼云盘转存...');\n    if (result.tianyi && Object.keys(result.tianyi).length > 0) {\n        for (const [episodeCode, tianyiData] of Object.entries(result.tianyi)) {\n            console.log(`📦 处理天翼云盘剧集: ${episodeCode}`);\n            \n            if (tianyiData.shareInfoList && tianyiData.shareInfoList.length > 0) {\n                // 构造天翼云盘保存请求参数\n                const payload = {\n                    shareInfoList: tianyiData.shareInfoList,\n                    shareCode: tianyiData.shareCode,\n                    receiveCode: tianyiData.receiveCode || '',\n                    fileId: tianyiData.fileId,\n                    folderId: tianyiData.folderId,\n                    isFolder: tianyiData.isFolder,\n                    fids: tianyiData.fids,\n                    shareId: tianyiData.shareId\n                };\n                \n                try {\n                    console.log(`  正在转存 ${tianyiData.shareInfoList.length} 个文件...`);\n                    \n                    const response = await axios.post(`${BASE_URL}/api/tianyi/save`, payload, {\n                        headers: {\n                            'Authorization': `Bearer ${token}`,\n                            'Content-Type': 'application/json'\n                        },\n                        timeout: 30000\n                    });\n                    \n                    if (response.data && response.data.success) {\n                        console.log(`✅ 天翼云盘转存成功: ${episodeCode}`);\n                        \n                        allResults.push({\n                            type: 'tianyi',\n                            episodeCode: episodeCode,\n                            status: 'success',\n                            message: response.data.message || '转存成功',\n                            fileCount: tianyiData.shareInfoList.length,\n                            shareCode: tianyiData.shareCode,\n                            fileName: tianyiData.fileNames[0]\n                        });\n                    } else {\n                        console.error(`❌ 天翼云盘转存失败: ${episodeCode}`, response.data?.message);\n                        \n                        allResults.push({\n                            type: 'tianyi',\n                            episodeCode: episodeCode,\n                            status: 'error',\n                            message: response.data?.message || '转存失败',\n                            fileCount: tianyiData.shareInfoList.length,\n                            shareCode: tianyiData.shareCode,\n                            fileName: tianyiData.fileNames[0]\n                        });\n                    }\n                    \n                    // 每个请求之间休眠1秒，避免请求过快\n                    await sleep(1000);\n                    \n                } catch (error) {\n                    console.error(`❌ 天翼云盘转存请求异常: ${episodeCode}`, error.message);\n                    \n                    allResults.push({\n                        type: 'tianyi',\n                        episodeCode: episodeCode,\n                        status: 'error',\n                        message: error.message,\n                        fileCount: tianyiData.shareInfoList.length,\n                        shareCode: tianyiData.shareCode,\n                        fileName: tianyiData.fileNames[0]\n                    });\n                }\n            } else {\n                console.log(`⚠️ 天翼云盘剧集 ${episodeCode} 无有效文件`);\n            }\n        }\n    } else {\n        console.log('ℹ️ 天翼云盘无待转存数据');\n    }\n    \n    // 4. 处理夸克网盘转存\n    console.log('🚀 开始处理夸克网盘转存...');\n    if (result.quark && Object.keys(result.quark).length > 0) {\n        for (const [episodeCode, quarkData] of Object.entries(result.quark)) {\n            console.log(`📦 处理夸克网盘剧集: ${episodeCode}`);\n            \n            // 检查是否有文件可转存\n            if (quarkData.fids && quarkData.fids.length > 0) {\n                // 确保fidTokens长度与fids一致\n                const validFidTokens = quarkData.fidTokens || [];\n                while (validFidTokens.length < quarkData.fids.length) {\n                    validFidTokens.push('');\n                }\n                \n                // 构造夸克网盘保存请求参数\n                const payload = {\n                    fids: quarkData.fids,\n                    fidTokens: validFidTokens,\n                    folderId: quarkData.folderId,\n                    shareCode: quarkData.shareCode,\n                    receiveCode: quarkData.receiveCode\n                };\n                \n                try {\n                    console.log(`  正在转存 ${quarkData.fids.length} 个文件...`);\n                    \n                    const response = await axios.post(`${BASE_URL}/api/quark/save`, payload, {\n                        headers: {\n                            'Authorization': `Bearer ${token}`,\n                            'Content-Type': 'application/json'\n                        },\n                        timeout: 30000\n                    });\n                    \n                    if (response.data && response.data.success) {\n                        console.log(`✅ 夸克网盘转存成功: ${episodeCode}`);\n                        \n                        allResults.push({\n                            type: 'quark',\n                            episodeCode: episodeCode,\n                            status: 'success',\n                            message: response.data.message || '转存成功',\n                            fileCount: quarkData.fids.length,\n                            shareCode: quarkData.shareCode,\n                            task_id: response.data.data?.task_id,\n                            fileName: quarkData.fileNames[0]\n                        });\n                    } else {\n                        console.error(`❌ 夸克网盘转存失败: ${episodeCode}`, response.data?.message);\n                        \n                        allResults.push({\n                            type: 'quark',\n                            episodeCode: episodeCode,\n                            status: 'error',\n                            message: response.data?.message || '转存失败',\n                            fileCount: quarkData.fids.length,\n                            shareCode: quarkData.shareCode,\n                            fileName: quarkData.fileNames[0]\n                        });\n                    }\n                    \n                    // 每个请求之间休眠1秒，避免请求过快\n                    await sleep(1000);\n                    \n                } catch (error) {\n                    console.error(`❌ 夸克网盘转存请求异常: ${episodeCode}`, error.message);\n                    \n                    allResults.push({\n                        type: 'quark',\n                        episodeCode: episodeCode,\n                        status: 'error',\n                        message: error.message,\n                        fileCount: quarkData.fids.length,\n                        shareCode: quarkData.shareCode,\n                        fileName: quarkData.fileNames[0]\n                    });\n                }\n            } else {\n                console.log(`⚠️ 夸克网盘剧集 ${episodeCode} 无有效文件`);\n            }\n        }\n    } else {\n        console.log('ℹ️ 夸克网盘无待转存数据');\n    }\n    \n    // 5. 统计结果\n    const totalEpisodes = allResults.length;\n    const successEpisodes = allResults.filter(r => r.status === 'success').length;\n    const errorEpisodes = allResults.filter(r => r.status === 'error').length;\n    \n    console.log('\\n📊 转存结果统计:');\n    console.log(`   总处理剧集数: ${totalEpisodes}`);\n    console.log(`   成功转存剧集: ${successEpisodes}`);\n    console.log(`   失败转存剧集: ${errorEpisodes}`);\n    \n    // 输出详细结果\n    if (errorEpisodes > 0) {\n        console.log('\\n❌ 失败转存详情:');\n        allResults.filter(r => r.status === 'error').forEach(r => {\n            console.log(`   ${r.type}[${r.episodeCode}]: ${r.message}`);\n        });\n    }\n    \n    if (successEpisodes > 0) {\n        console.log('\\n✅ 成功转存详情:');\n        allResults.filter(r => r.status === 'success').forEach(r => {\n            console.log(`   ${r.type}[${r.episodeCode}]: ${r.fileCount}个文件`);\n        });\n    }\n    \n    console.log('\\n🏁 转存脚本执行完成');\n    \n    return {\n        success: true,\n        totalEpisodes: totalEpisodes,\n        successEpisodes: successEpisodes,\n        errorEpisodes: errorEpisodes,\n        details: allResults\n    };\n}\n\n// n8n环境中的执行入口\nreturn main();"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4608,
+        -624
+      ],
+      "id": "6d7deb7f-788e-43b0-9eee-ca31332b47d7",
+      "name": "转存"
+    },
+    {
+      "parameters": {
+        "amount": 10
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        5056,
+        -624
+      ],
+      "id": "64e7d088-25ee-4c38-99a7-2dc5400e2fa9",
+      "name": "Wait",
+      "webhookId": "18b4721a-56ff-42bc-afc0-2e1f3d5c9877"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://192.168.3.31:6800/jsonrpc",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n    \"jsonrpc\": \"2.0\",\n    \"method\": \"aria2.tellActive\",\n    \"id\": \"{{'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,()=>(16*Math.random()|0).toString(16))}}\",\n    \"params\": [\n        \"token:zhangxiaolei521\",\n        [\n            \"files\"\n        ]\n    ]\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        3040,
+        -624
+      ],
+      "id": "4445b13d-519f-4ad9-9e11-de1edf74db1e",
+      "name": "Aria2下载任务"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://192.168.3.31:6800/jsonrpc",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n    \"jsonrpc\": \"2.0\",\n    \"method\": \"aria2.tellWaiting\",\n    \"id\": \"{{'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,()=>(16*Math.random()|0).toString(16))}}\",\n    \"params\": [\n        \"token:zhangxiaolei521\",\n        -1,\n        1000,\n        [\n            \"files\"\n        ]\n    ]\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        3264,
+        -624
+      ],
+      "id": "70ceb3cd-a388-46b4-973b-8ff6b19819e9",
+      "name": "Aria2等待任务"
+    },
+    {
+      "parameters": {
+        "url": "=https://api.tmdb.org/3/tv/ {{ $('从表中获取TMDBID').item.json.tmdb_id }}",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "language",
+              "value": "zh-CN"
+            },
+            {
+              "name": "api_key",
+              "value": "={{ $('获取TMDB Key').item.json.value }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        800,
+        -848
+      ],
+      "id": "ec93c95f-fcbd-4a30-9e0f-0957b8054a98",
+      "name": "获取TMDB最新信息"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\n\nconst result = [];\nconst today = new Date().toISOString().split('T')[0]; // \"2026-06-16\"\n\nfor (const item of items) {\n\n  const show = item.json;\n\n  const ep = show.next_episode_to_air;\n\n  if (!ep) continue;\n\n  // 跳过未播出的集数（airDate 大于今天）\n  if (ep.air_date > today) continue;\n\n  result.push({\n    json: {\n      tmdbId: show.id,\n      title: show.name,\n      airDate: ep.air_date,\n      season: ep.season_number,\n      episode: ep.episode_number,\n      episodeCode:\n        `S${String(ep.season_number).padStart(2, '0')}` +\n        `E${String(ep.episode_number).padStart(3, '0')}`\n    }\n  });\n}\n\nreturn result;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1024,
+        -848
+      ],
+      "id": "0e230049-fa6c-46c0-a8ed-1a79f717a518",
+      "name": "解析TMDB最新信息",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const EMby_HOST = \"http://192.168.3.31:8096\";\nconst API_KEY = \"c98decfb1c9d4d12acf49de6eafe90c0\";\nconst USER_ID = \"456c8a7d37bd42caad5cb962de230c6a\";\n\nconst show = $json;\n\nconst tmdbId = show.tmdbId;\nconst season = show.season;\nconst episode = show.episode;\n\n\nconst seriesId = $('获取EMBYID').first().json.Items[0].Id;\n\n// =========================\n// 2. 查 Episodes\n// =========================\nconst epRes = await this.helpers.httpRequest({\n  method: \"GET\",\n  url:\n`${EMby_HOST}/emby/Users/${USER_ID}/Items?` +\n`ParentId=${seriesId}&` +\n`IncludeItemTypes=Episode&` +\n`Recursive=true&` +\n`api_key=${API_KEY}`,\n  json: true\n});\n\nconst items = epRes.Items || [];\n\n// =========================\n// 3. 判断\n// =========================\nconst exists = items.some(it =>\n  it.ParentIndexNumber == season &&\n  it.IndexNumber == episode\n);\n\n// =========================\nreturn [{\n  json: {\n    tmdbId,\n    seriesId,\n    season,\n    episode,\n    exists,\n    status: exists ? \"FOUND\" : \"MISSING\",\n    debugCount: items.length\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1248,
+        -848
+      ],
+      "id": "3b72accb-d74e-4b04-8a81-6ba76b3c87cc",
+      "name": "检查Emby遗漏集",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// 过滤未来未播集：只保留 PremiereDate <= 今天的条目\nconst inputData = $input.all();\nconst today = new Date().toISOString().split('T')[0];\n\nconst filteredItems = [];\n\nfor (const dataItem of inputData) {\n  const items = dataItem.json.Items || [];\n  const kept = [];\n\n  for (const item of items) {\n    const premiereDate = item.PremiereDate\n      ? item.PremiereDate.split('T')[0]\n      : null;\n\n    if (premiereDate && premiereDate > today) {\n      const season = item.ParentIndexNumber || '?';\n      const episode = item.IndexNumber || '?';\n      console.log(`⏭️ 跳过未播集: S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')} 首播日期 ${premiereDate}`);\n      continue;\n    }\n\n    kept.push(item);\n  }\n\n  if (kept.length > 0) {\n    filteredItems.push({\n      json: {\n        Items: kept,\n        TotalRecordCount: kept.length\n      }\n    });\n  }\n}\n\nif (filteredItems.length === 0) {\n  console.log('📭 全部为未来未播集，无数据返回');\n  return [];\n}\n\nconst total = filteredItems.reduce((s, d) => s + (d.json.Items?.length || 0), 0);\nconsole.log(`✅ 过滤完成: 保留 ${total} 个已播集，过滤了未来集`);\n\nreturn filteredItems;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2816,
+        -624
+      ],
+      "id": "6509e6f1-fe22-4918-beb2-5ce31d745020",
+      "name": "过滤遗漏集"
+    }
+  ],
+  "pinData": {
+    "开始": [
+      {
+        "json": {
+          "media": "凡人修仙传",
+          "tmdb_id": ""
+        }
+      }
+    ]
+  },
+  "connections": {
+    "获取cloudSaverToken": {
+      "main": [
+        [
+          {
+            "node": "获取openListKey",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "开始": {
+      "main": [
+        [
+          {
+            "node": "获取cloudSaverToken",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "整理pushplus": {
+      "main": [
+        [
+          {
+            "node": "发送pushplus",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "发送pushplus": {
+      "main": [
+        []
+      ]
+    },
+    "获取TMDBID": {
+      "main": [
+        [
+          {
+            "node": "Update rows in a table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "获取EMBYID": {
+      "main": [
+        [
+          {
+            "node": "查看遗漏集",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "查看遗漏集": {
+      "main": [
+        [
+          {
+            "node": "过滤遗漏集",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "获取openListKey": {
+      "main": [
+        [
+          {
+            "node": "获取EmbyKey",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "获取EmbyKey": {
+      "main": [
+        [
+          {
+            "node": "获取TMDB Key",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "获取TMDB Key": {
+      "main": [
+        [
+          {
+            "node": "从表中获取TMDBID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "获取网盘资源": {
+      "main": [
+        [
+          {
+            "node": "提取分享码",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "解析遗漏集": {
+      "main": [
+        [
+          {
+            "node": "获取网盘资源",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "提取分享码": {
+      "main": [
+        [
+          {
+            "node": "提取分享码信息",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "提取分享码信息": {
+      "main": [
+        [
+          {
+            "node": "提取缺失集",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aria下载": {
+      "main": [
+        [
+          {
+            "node": "Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "从表中获取TMDBID": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "获取EMBYID",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "获取TMDBID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update rows in a table": {
+      "main": [
+        [
+          {
+            "node": "从表中获取TMDBID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "提取缺失集": {
+      "main": [
+        [
+          {
+            "node": "转存",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "转存": {
+      "main": [
+        [
+          {
+            "node": "Aria下载",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait": {
+      "main": [
+        [
+          {
+            "node": "整理pushplus",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aria2下载任务": {
+      "main": [
+        [
+          {
+            "node": "Aria2等待任务",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aria2等待任务": {
+      "main": [
+        [
+          {
+            "node": "解析遗漏集",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "获取TMDB最新信息": {
+      "main": [
+        [
+          {
+            "node": "解析TMDB最新信息",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "解析TMDB最新信息": {
+      "main": [
+        [
+          {
+            "node": "检查Emby遗漏集",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "检查Emby遗漏集": {
+      "main": [
+        []
+      ]
+    },
+    "过滤遗漏集": {
+      "main": [
+        [
+          {
+            "node": "Aria2下载任务",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false,
+    "timeSavedMode": "fixed",
+    "callerPolicy": "any"
+  },
+  "versionId": "a0152777-5abb-41cf-9d10-d63213c32631",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "fb657763e011083e612436a662f68acdc885b47ed1f558c08d645fadcc94bff7"
+  },
+  "id": "yPuFNVDh55e3NcjG",
+  "tags": []
+}
