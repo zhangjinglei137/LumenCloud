@@ -8,6 +8,7 @@ const router = createRouter({
     { path: '/login', name: 'login', component: () => import('../views/LoginView.vue') },
     { path: '/', name: 'square', component: () => import('../views/MediaSquareView.vue'), meta: { requiresAuth: true } },
     { path: '/media/:id', name: 'detail', component: () => import('../views/MediaDetailView.vue'), meta: { requiresAuth: true } },
+    { path: '/media/emby/:id', name: 'media-emby-detail', component: () => import('../views/MediaDetailView.vue'), meta: { requiresAuth: true } },
     { path: '/my-list', name: 'mylist', component: () => import('../views/MyList.vue'), meta: { requiresAuth: true } },
     { path: '/notifications', name: 'notifications', component: () => import('../views/NotificationCenter.vue'), meta: { requiresAuth: true } },
     { path: '/admin', name: 'admin', component: () => import('../views/AdminDashboard.vue'), meta: { requiresAuth: true, requiresAdmin: true } },

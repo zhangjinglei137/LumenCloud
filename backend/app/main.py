@@ -51,6 +51,10 @@ app.include_router(webhook_router)
 async def health():
     return {"status": "ok"}
 
+# 静默处理 CodeGraph CPG 分析请求（非 LumenCloud 业务）
+@app.api_route("/api/v1/{rest:path}", methods=["GET", "POST", "PUT", "DELETE"])
+async def codegraph_noop(rest: str):
+    return {}
 
 # 前端静态文件 — 必须在最后注册（SPA fallback）
 if STATIC_DIR.exists():

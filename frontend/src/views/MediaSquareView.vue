@@ -33,8 +33,9 @@
           @change="onFilterChange"
         >
           <el-radio-button value="all">全部</el-radio-button>
-          <el-radio-button value="movie">电影</el-radio-button>
-          <el-radio-button value="tv">剧集</el-radio-button>
+          <el-radio-button v-for="v in views" :key="v.id" :value="v.id">
+            {{ v.name }}
+          </el-radio-button>
         </el-radio-group>
       </section>
 
@@ -45,8 +46,7 @@
           <el-button text type="primary" size="small" @click.stop="clearSearch">返回库</el-button>
         </span>
         <span v-else class="library-hint">
-          {{ filterType === 'all' ? '全部影视' : filterType === 'movie' ? '电影库' : '剧集库' }}
-          <em v-if="total > 0"> · {{ total }} 部</em>
+          {{ filterLabel }}<em v-if="total > 0"> · {{ total }} 部</em>
         </span>
       </div>
 
@@ -135,7 +135,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Search, VideoCamera, VideoPlay, View, User, StarFilled } from '@element-plus/icons-vue'
@@ -144,29 +144,53 @@ import NavBar from '../components/NavBar.vue'
 
 const router = useRouter()
 
+const filterLabel = computed(() => {
+  if (filterType.value === 'all') return '全部影视'
+  const view = views.value.find((v: any) => v.id === filterType.value)
+  if (view) return view.name
+  return filterType.value === 'movie' ? '电影库' : '剧集库'
+})
+
 const keyword = ref('')
 const lastKeyword = ref('')
 const items = ref<any[]>([])
 const loading = ref(false)
 const page = ref(1)
 const total = ref(0)
-const filterType = ref<'all' | 'movie' | 'tv'>('all')
+const filterType = ref<string>('all')
 const viewMode = ref<'library' | 'search'>('library')
+const views = ref<any[]>([])
 
 // ponytail: hardcode Emby base for now; replace with config endpoint when available
 const EMBY_BASE_URL = 'http://thntime.fun:8096'
 
-onMounted(() => {
+onMounted(async () => {
+  await loadViews()
   loadLibrary()
 })
+
+async function loadViews() {
+  try {
+    const { data } = await api.get('/media/views')
+    views.value = data.views || []
+  } catch { /* ignore */ }
+}
 
 async function loadLibrary() {
   loading.value = true
   viewMode.value = 'library'
   try {
-    const { data } = await api.get('/media/library', {
-      params: { page: page.value, item_type: filterType.value },
-    })
+    const params: any = { page: page.value }
+    // 用 Emby 视图 ID 筛选
+    if (filterType.value !== 'all') {
+      const view = views.value.find((v: any) => v.id === filterType.value)
+      if (view) {
+        params.parent_id = filterType.value
+      } else {
+        params.item_type = filterType.value
+      }
+    }
+    const { data } = await api.get('/media/library', { params })
     items.value = data.items || []
     total.value = data.total || 0
   } catch (err: any) {
@@ -233,9 +257,12 @@ function getPosterUrl(item: any): string {
 }
 
 function goDetail(item: any) {
-  const id = item.local_media_id || item.tmdb_id || item.emby_id
-  if (id) {
-    router.push(`/media/${id}`)
+  if (item.local_media_id) {
+    router.push(`/media/${item.local_media_id}`)
+  } else if (item.emby_id) {
+    router.push(`/media/emby/${item.emby_id}`)
+  } else if (item.tmdb_id) {
+    router.push(`/media/${item.tmdb_id}`)
   }
 }
 </script>

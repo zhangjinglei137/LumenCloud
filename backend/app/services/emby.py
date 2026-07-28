@@ -48,19 +48,46 @@ class EmbyService:
             resp.raise_for_status()
             return sum(item.get("UserData", {}).get("PlayCount", 0) for item in resp.json().get("Items", []))
 
-    async def get_items_by_type(self, item_type: str) -> dict:
+    async def get_items_by_type(self, item_type: str, parent_id: str | None = None) -> dict:
         """获取特定类型的 Emby 库内容。item_type: Movie / Series"""
+        params = {
+            "api_key": await self._get_api_key(),
+            "Recursive": "true",
+            "IncludeItemTypes": item_type,
+            "Fields": "ProviderIds,UserData,ImageTags,ProductionYear,CommunityRating",
+            "SortBy": "SortName",
+            "Limit": "200",
+        }
+        if parent_id:
+            params["ParentId"] = parent_id
         async with httpx.AsyncClient() as client:
-            resp = await client.get(f"{await self._get_base_url()}/Items", params={
-                "api_key": await self._get_api_key(),
-                "Recursive": "true",
-                "IncludeItemTypes": item_type,
-                "Fields": "ProviderIds,UserData,ImageTags,ProductionYear,CommunityRating",
-                "SortBy": "SortName",
-                "Limit": "200",
-            })
+            resp = await client.get(f"{await self._get_base_url()}/Items", params=params)
             resp.raise_for_status()
             return resp.json()
+
+    async def get_item_by_id(self, emby_id: str) -> dict | None:
+        """根据 Emby Item ID 获取影视详情"""
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{await self._get_base_url()}/Users/{await self._get_first_user_id()}/Items/{emby_id}",
+                params={
+                    "api_key": await self._get_api_key(),
+                    "Fields": "ProviderIds,UserData,Overview,Genres,ProductionYear,CommunityRating,ImageTags,People,PremiereDate",
+                }
+            )
+            if resp.status_code == 200:
+                return resp.json()
+            return None
+
+    async def _get_first_user_id(self) -> str:
+        """获取第一个 Emby 用户 ID"""
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{await self._get_base_url()}/Users", params={
+                "api_key": await self._get_api_key(),
+            })
+            resp.raise_for_status()
+            users = resp.json()
+            return users[0]["Id"] if users else ""
 
     async def get_user_views(self) -> dict:
         """获取 Emby 用户视图（媒体库分类目录）"""

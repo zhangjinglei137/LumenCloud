@@ -53,6 +53,7 @@ async def search_media(keyword: str, page: int = Query(1, ge=1)):
 async def list_emby_library(
     page: int = Query(1, ge=1),
     item_type: str = Query("all", description="movie/tv/all"),
+    parent_id: str = Query(None, description="Emby 媒体库视图 ID"),
     db: AsyncSession = Depends(get_db),
 ):
     """从 Emby 获取全部影视库内容，叠加本地状态"""
@@ -65,7 +66,7 @@ async def list_emby_library(
 
     for etype in types_to_fetch:
         try:
-            resp = await emby_service.get_items_by_type(etype)
+            resp = await emby_service.get_items_by_type(etype, parent_id=parent_id)
             all_items.extend(resp.get("Items", []))
         except Exception:
             pass
@@ -114,6 +115,64 @@ async def list_emby_library(
         "page": page,
         "has_more": len(page_items) == page_size,
     }
+
+
+@router.get("/emby/{emby_id}")
+async def get_emby_detail(emby_id: str, db: AsyncSession = Depends(get_db)):
+    """直接从 Emby 获取影视详情（不依赖本地数据库）"""
+    emby_item = await emby_service.get_item_by_id(emby_id)
+    if not emby_item:
+        raise HTTPException(status_code=404, detail="Emby item not found")
+
+    tmdb_id = _extract_tmdb_id(emby_item.get("ProviderIds", {}))
+    user_data = emby_item.get("UserData", {})
+
+    # 检查本地数据库
+    local_media_id = None
+    library_status = None
+    subscription_count = 0
+    if tmdb_id:
+        from app.models import Media as MediaModel, Subscription as SubscriptionModel
+        result = await db.execute(select(MediaModel).where(MediaModel.tmdb_id == tmdb_id))
+        local = result.scalar_one_or_none()
+        if local:
+            local_media_id = local.id
+            library_status = local.status.value
+            sub_count = (await db.execute(
+                select(func.count(SubscriptionModel.id)).where(SubscriptionModel.media_id == local.id)
+            )).scalar() or 0
+            subscription_count = sub_count
+
+    return {
+        "emby_id": emby_item.get("Id"),
+        "title": emby_item.get("Name", ""),
+        "type": "movie" if emby_item.get("Type") == "Movie" else "tv",
+        "year": emby_item.get("ProductionYear"),
+        "image_tag": emby_item.get("ImageTags", {}).get("Primary"),
+        "overview": emby_item.get("Overview", ""),
+        "genres": emby_item.get("Genres", []),
+        "community_rating": emby_item.get("CommunityRating"),
+        "play_count": user_data.get("PlayCount", 0),
+        "is_favorite": user_data.get("IsFavorite", False),
+        "is_played": user_data.get("Played", False),
+        "premiere_date": emby_item.get("PremiereDate"),
+        "tmdb_id": tmdb_id,
+        "local_media_id": local_media_id,
+        "library_status": library_status,
+        "subscription_count": subscription_count,
+        "seasons": _get_seasons_from_emby(emby_item),
+    }
+
+
+def _get_seasons_from_emby(emby_item: dict) -> list:
+    """从 Emby TV Series 中提取季/集结构"""
+    if emby_item.get("Type") != "Series":
+        return []
+    children = emby_item.get("ChildCount", 0)
+    if children == 0:
+        return []
+    # 简单标记有子内容，前端可展开
+    return [{"season_number": -1, "name": "剧集列表", "episodes": []}]
 
 
 @router.get("/{media_id}", response_model=MediaDetail)

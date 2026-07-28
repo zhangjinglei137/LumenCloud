@@ -98,7 +98,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { StarFilled, View, User, Pointer } from '@element-plus/icons-vue'
-import { mediaAPI, subscriptionAPI, interactionAPI } from '../api'
+import api, { mediaAPI, subscriptionAPI, interactionAPI } from '../api'
 import { useNotificationStore } from '../stores/notification'
 import NavBar from '../components/NavBar.vue'
 
@@ -127,14 +127,32 @@ const backdropStyle = computed(() => {
 onMounted(async () => {
   notificationStore.fetchUnreadCount()
   await loadDetail()
-  await checkStatus()
+  if (media.value?.local_media_id) {
+    await checkStatus()
+  }
 })
 
 async function loadDetail() {
   loading.value = true
   try {
-    const { data } = await mediaAPI.detail(mediaId.value)
-    media.value = data
+    if (route.path.startsWith('/media/emby/')) {
+      const { data } = await api.get(`/media/emby/${mediaId.value}`)
+      // 归一化 Emby 返回字段以适配模板
+      media.value = {
+        ...data,
+        media_type: data.type,
+        // ponytail: emby 图片走前端 EMBY_BASE_URL 直连，不走代理
+        poster_path: null,
+        backdrop_path: null,
+        vote_average: data.community_rating,
+        release_date: data.premiere_date?.slice(0, 10),
+        watch_count: data.play_count || 0,
+        subscribe_count: data.subscription_count || 0,
+      }
+    } else {
+      const { data } = await mediaAPI.detail(mediaId.value)
+      media.value = data
+    }
   } catch (err: any) {
     ElMessage.error(err.response?.data?.detail || '加载详情失败')
   } finally {
