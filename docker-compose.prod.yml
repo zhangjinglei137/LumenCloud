@@ -1,0 +1,14 @@
+# LumenCloud 生产部署（Docker Hub 镜像，单容器）
+# 用法：
+#   IMAGE_TAG=1.0.0 docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
+services:
+  lumencloud:
+    image: thntime/lumencloud:${IMAGE_TAG:-latest}
+    container_name: lumencloud
+    ports:
+      - "${PORT:-8000}:8000"
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - .env.prod
+    restart: unless-stopped

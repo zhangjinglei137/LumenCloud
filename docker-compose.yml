@@ -1,0 +1,14 @@
+# LumenCloud 开发/本地环境
+# 生产环境请使用 docker-compose.prod.yml
+services:
+  lumencloud:
+    build: .
+    image: thntime/lumencloud:dev
+    container_name: lumencloud
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - .env
+    restart: unless-stopped

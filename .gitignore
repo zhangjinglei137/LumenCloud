@@ -1,0 +1,30 @@
+# ---- 依赖与构建 ----
+node_modules/
+dist/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ---- 运行时数据 ----
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# ---- 环境与凭据 ----
+.env
+.env.prod
+.env.local
+
+# ---- 日志与临时 ----
+*.log
+*.log.*
+tmp/
+logs/
+
+# ---- 编辑器/系统 ----
+.DS_Store
+.idea/
+.vscode/
+*.swp
