@@ -13,6 +13,20 @@ jobs:
   backend-check:
     name: Backend 导入检查
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: testdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test -d testdb"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
@@ -29,6 +43,20 @@ jobs:
         run: |
           python -m compileall -q app
           python -c "import app.main" || true  # 首次骨架阶段允许部分模块缺失，仅作 smoke
+
+      - name: Alembic 迁移测试（SQLite）
+        working-directory: backend
+        env:
+          DATABASE_URL: ""                     # 空 = 内置 SQLite（database.py 回退）
+          LUMENCLOUD_DATA_DIR: /tmp/data
+        run: alembic -c alembic/alembic.ini upgrade head
+
+      - name: Alembic 迁移测试（Postgres）
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+asyncpg://test:test@localhost:5432/testdb
+          LUMENCLOUD_DATA_DIR: /tmp/data
+        run: alembic -c alembic/alembic.ini upgrade head
 
   frontend-build:
     name: 前端类型检查与构建

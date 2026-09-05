@@ -33,6 +33,12 @@ RUN pip install -r /app/backend/requirements.txt
 # 后端代码
 COPY backend/app /app/backend/app
 
+# Alembic 迁移脚本（app/database.py init_db 启动时执行 alembic upgrade head 必需）
+COPY backend/alembic /app/backend/alembic
+
+# 运维脚本（迁移/探测；阶段 4 用 docker exec 执行 migrate_from_n8n.py）
+COPY scripts /app/scripts
+
 # 前端构建产物 → FastAPI 静态直出
 COPY --from=frontend-builder /build/frontend/dist /app/backend/static
 
