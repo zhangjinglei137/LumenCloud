@@ -48,6 +48,10 @@ class Settings(BaseSettings):
 
     # ---- 容量与调度默认值 ----
     QUARK_QUOTA_GB: float = 10.0
+    # 夸克中转目录 folderId（cloudSaver save 的 folderId 参数，转存落盘到 alist /quark 挂载目录）。
+    # 阶段 1 实证：folderId 缺失时转存不落盘到 /quark（对象 not found）。
+    # 取值 = alist Quark 驱动的 root_folder_id（alist 管理 API /api/admin/storage/list 可探测）。
+    QUARK_DEFAULT_FOLDER: str = ""
     DEFAULT_MAX_EPISODE_SIZE_GB: float = 1.5
     DEFAULT_MAX_MOVIE_SIZE_GB: float = 5.0
     SCAN_INTERVAL_MINUTES: int = 60
