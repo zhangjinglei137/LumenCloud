@@ -16,6 +16,16 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: 'dist',
+    // 构建产物直接输出到 backend/static，由 FastAPI 直出（含 SPA fallback）
+    outDir: '../backend/static',
+    emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'element-plus': ['element-plus', '@element-plus/icons-vue'],
+          vendor: ['vue', 'vue-router', 'pinia', 'axios'],
+        },
+      },
+    },
   },
 })

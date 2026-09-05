@@ -1,0 +1,338 @@
+/* LumenCloud 设计系统 —— 深色影院质感
+ * 深炭底色 + 暖金强调色，强调层级与状态可读性。
+ */
+
+:root {
+  --lc-bg: #0e1116;
+  --lc-bg-elevated: #151a21;
+  --lc-bg-panel: rgba(255, 255, 255, 0.03);
+  --lc-border: rgba(255, 255, 255, 0.08);
+  --lc-accent: #e9b44c;
+  --lc-accent-soft: rgba(233, 180, 76, 0.14);
+  --lc-text-primary: #e8e6e1;
+  --lc-text-secondary: #9aa3ad;
+  --lc-radius: 14px;
+  --lc-font-display: 'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', serif;
+  --lc-font-body:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei',
+    sans-serif;
+}
+
+html.dark {
+  /* 覆盖 Element Plus 暗色变量，融入设计系统 */
+  --el-color-primary: #e9b44c;
+  --el-color-primary-light-3: #efc06b;
+  --el-color-primary-light-5: #f3cf8f;
+  --el-color-primary-light-7: #f7dfb4;
+  --el-color-primary-light-8: #fae7c8;
+  --el-color-primary-light-9: #2a2417;
+  --el-color-primary-dark-2: #d9a338;
+  --el-bg-color: #151a21;
+  --el-bg-color-page: #0e1116;
+  --el-bg-color-overlay: #1c222b;
+  --el-border-color: rgba(255, 255, 255, 0.1);
+  --el-border-color-light: rgba(255, 255, 255, 0.08);
+  --el-border-color-lighter: rgba(255, 255, 255, 0.06);
+  --el-border-color-extra-light: rgba(255, 255, 255, 0.04);
+  --el-text-color-primary: #e8e6e1;
+  --el-text-color-regular: #c3c9cf;
+  --el-text-color-secondary: #9aa3ad;
+  --el-fill-color-light: rgba(255, 255, 255, 0.05);
+  --el-fill-color-lighter: rgba(255, 255, 255, 0.03);
+  --el-mask-color: rgba(8, 10, 13, 0.7);
+  --el-border-radius-base: 8px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--lc-font-body);
+  background:
+    radial-gradient(1200px 600px at 85% -10%, rgba(233, 180, 76, 0.07), transparent 60%),
+    radial-gradient(900px 500px at -10% 110%, rgba(76, 130, 233, 0.05), transparent 55%),
+    var(--lc-bg);
+  color: var(--lc-text-primary);
+  min-height: 100vh;
+}
+
+#app {
+  min-height: 100vh;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--lc-font-display);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* ---------- 通用面板 ---------- */
+.lc-panel {
+  background: var(--lc-bg-elevated);
+  border: 1px solid var(--lc-border);
+  border-radius: var(--lc-radius);
+  padding: 20px;
+}
+
+.lc-panel + .lc-panel {
+  margin-top: 16px;
+}
+
+.lc-panel-title {
+  margin: 0 0 16px;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.lc-panel-title::before {
+  content: '';
+  width: 4px;
+  height: 16px;
+  border-radius: 2px;
+  background: var(--lc-accent);
+}
+
+.lc-muted {
+  color: var(--lc-text-secondary);
+}
+
+.lc-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* ---------- 影视卡片 ---------- */
+.lc-media-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 18px;
+}
+
+.lc-media-card {
+  background: var(--lc-bg-elevated);
+  border: 1px solid var(--lc-border);
+  border-radius: var(--lc-radius);
+  overflow: hidden;
+  cursor: pointer;
+  transition:
+    transform 0.25s ease,
+    box-shadow 0.25s ease,
+    border-color 0.25s ease;
+}
+
+.lc-media-card:hover {
+  transform: translateY(-4px);
+  border-color: rgba(233, 180, 76, 0.4);
+  box-shadow: 0 16px 40px -18px rgba(0, 0, 0, 0.8);
+}
+
+.lc-poster {
+  position: relative;
+  aspect-ratio: 2 / 3;
+  background: linear-gradient(160deg, #1d232d 0%, #12161d 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.lc-poster img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.lc-poster-fallback {
+  padding: 16px;
+  text-align: center;
+  color: var(--lc-text-secondary);
+  font-family: var(--lc-font-display);
+  font-size: 18px;
+  line-height: 1.5;
+}
+
+.lc-poster-type {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+}
+
+.lc-media-card-body {
+  padding: 12px 14px 14px;
+}
+
+.lc-media-card-title {
+  margin: 0 0 10px;
+  font-size: 15px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lc-media-card-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--lc-text-secondary);
+}
+
+.lc-media-card-meta .row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ---------- 数据行 / 状态 ---------- */
+.lc-stat-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 28px;
+}
+
+.lc-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.lc-stat .label {
+  font-size: 12px;
+  color: var(--lc-text-secondary);
+}
+
+.lc-stat .value {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+/* ---------- 顶部容量条 ---------- */
+.lc-capacity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 200px;
+}
+
+.lc-capacity .text {
+  font-size: 12px;
+  color: var(--lc-text-secondary);
+  white-space: nowrap;
+}
+
+/* ---------- 工具条 ---------- */
+.lc-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.lc-toolbar .left,
+.lc-toolbar .right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* ---------- TMDB 搜索结果 ---------- */
+.lc-tmdb-results {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.lc-tmdb-item {
+  border: 1px solid var(--lc-border);
+  border-radius: 10px;
+  overflow: hidden;
+  cursor: pointer;
+  background: var(--lc-bg-panel);
+  transition: border-color 0.2s ease;
+  text-align: center;
+}
+
+.lc-tmdb-item:hover,
+.lc-tmdb-item.selected {
+  border-color: var(--lc-accent);
+}
+
+.lc-tmdb-item.selected {
+  box-shadow: 0 0 0 2px var(--lc-accent-soft);
+}
+
+.lc-tmdb-item .poster {
+  aspect-ratio: 2 / 3;
+  background: #161b23;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--lc-text-secondary);
+  font-size: 12px;
+  overflow: hidden;
+}
+
+.lc-tmdb-item .poster img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.lc-tmdb-item .name {
+  padding: 8px 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ---------- 描述列表微调 ---------- */
+.el-descriptions__label {
+  color: var(--lc-text-secondary) !important;
+}
+
+/* ---------- 滚动条 ---------- */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ---------- 路由过渡 ---------- */
+.fade-slide-enter-active,
+.fade-slide-leave-active {
+  transition:
+    opacity 0.2s ease,
+    transform 0.2s ease;
+}
+
+.fade-slide-enter-from {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+.fade-slide-leave-to {
+  opacity: 0;
+}
