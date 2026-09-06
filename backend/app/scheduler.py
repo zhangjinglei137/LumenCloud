@@ -4,7 +4,7 @@ APScheduler（AsyncIOScheduler）—— 单进程内嵌调度器（设计文档 
 - 单 uvicorn 进程（--workers 1）内嵌，MemoryJobStore；任务状态持久化在业务表
   （task_run / episode_state / transfer_queue），重启后按表内状态恢复（recover_on_boot），
   不依赖 jobstore 持久化。
-- 注册 7 个 job（id 固定）：
+- 注册 8 个 job（id 固定）：
   | job_id                   | 触发器                                | 阶段 4 行为 |
   |--------------------------|---------------------------------------|-------------|
   | scan_all_media           | IntervalTrigger(minutes=1)            | B 定时：每分钟 tick，scan_all_media 按各 media last_scan_at 到期过滤；注册默认 paused，阶段 4 经 system_config 启用 |
@@ -14,8 +14,10 @@ APScheduler（AsyncIOScheduler）—— 单进程内嵌调度器（设计文档 
   | notification_scan        | IntervalTrigger(minutes=5)            | 阶段 3 已实现；定时默认关闭 |
   | recover_stale            | IntervalTrigger(hours=1)              | P2-2 新增：运行期超时回退（recover 不只 boot）；定时默认关闭 |
   | capacity_alert           | IntervalTrigger(hours=1)              | 阶段 4（交付 E）：每小时主动统计写容量快照（Q6 趋势连续）+ 使用率阈值告警；定时默认关闭 |
-- system_config 双层开关：scheduler_enabled（全局，默认开）+ scheduler.<job_id>（job 级，
-  未配置时按阶段 3 默认：定时全部关闭，阶段 4 经 system_config 启用，§12.2 冷切换）。
+  | prune_history            | IntervalTrigger(days=1)               | D-1：task_run/容量快照历史清理（保留 30 天，可经 task_run_retention_days 覆盖） |
+- system_config 双层开关（A-2 方案②）：scheduler_enabled（全局，未配置默认开，false 短路
+  全部停用）+ scheduler.<job_id>（job 级，未配置默认跟随总开关——总开关开启即默认启用；
+  显式配置 true/false 可单独强制开启 / 单独关闭）。
 - 冷切换铁律（P3-4）：注册即暂停（paused=True）——所有 job 默认不空转；仅由
   _apply_job_switches 依据 system_config 恢复。开关读取失败时降级为暂停（fail-closed：
   读不到配置 = 不启用定时，绝不让定时意外开启）。
@@ -40,6 +42,7 @@ JOB_RELEASE_SPACE_CLEANUP = "release_space_cleanup"
 JOB_NOTIFICATION_SCAN = "notification_scan"
 JOB_RECOVER_STALE = "recover_stale"
 JOB_CAPACITY_ALERT = "capacity_alert"
+JOB_PRUNE_HISTORY = "prune_history"
 
 JOB_IDS = [
     JOB_SCAN_ALL_MEDIA,
@@ -49,20 +52,8 @@ JOB_IDS = [
     JOB_NOTIFICATION_SCAN,
     JOB_RECOVER_STALE,
     JOB_CAPACITY_ALERT,
+    JOB_PRUNE_HISTORY,
 ]
-
-# job 级开关默认值（阶段 3：定时默认全部关闭——只用手动触发与事件触发；
-# 阶段 4 上线时才经 system_config 启用，见设计文档 §12.2 冷切换铁律）
-_JOB_DEFAULT_ENABLED = {
-    JOB_SCAN_ALL_MEDIA: False,
-    JOB_PROCESS_TRANSFER_QUEUE: False,
-    JOB_NASTOOLS_SYNC: False,
-    JOB_RELEASE_SPACE_CLEANUP: False,
-    JOB_NOTIFICATION_SCAN: False,
-    JOB_RECOVER_STALE: False,
-    # 阶段 4 生产化 / E：容量巡检默认关闭（经 system_config scheduler.capacity_alert=true 启用）
-    JOB_CAPACITY_ALERT: False,
-}
 
 # MemoryJobStore：任务状态持久化走业务表，jobstore 仅承载调度
 scheduler = AsyncIOScheduler(jobstores={"default": MemoryJobStore()})
@@ -86,17 +77,19 @@ def _as_bool(raw) -> bool:
 
 
 async def get_job_enabled(job_id: str) -> bool:
-    """双层开关（实施计划 §3.3）：
+    """双层开关（实施计划 §3.3、A-2 方案②统一）：
 
-    - 全局总开关：scheduler_enabled，未配置默认开启；
-    - job 级开关：scheduler.<job_id>，未配置按阶段 2 默认（scan 手动、其余 guard）。
+    - 全局总开关：scheduler_enabled，未配置默认开启；总开关 false 时全部 job 停用
+      （job 级无法越权）；
+    - job 级开关：scheduler.<job_id>，未配置默认跟随总开关（总开关开启即默认启用）；
+      显式配置 scheduler.<job_id>=true/false 可单独强制开启 / 单独关闭（覆盖跟随默认）。
     """
     global_raw = await _get_config_value("scheduler_enabled", "true")
     if not _as_bool(global_raw):
         return False
     job_raw = await _get_config_value(f"scheduler.{job_id}", None)
     if job_raw is None:
-        return _JOB_DEFAULT_ENABLED.get(job_id, True)
+        return True
     return _as_bool(job_raw)
 
 
@@ -111,9 +104,9 @@ def register_jobs() -> None:
     job 内部按各 media last_scan_at 到期过滤（scan.scan_all_media），到期才巡检；
     API 手动触发（scan.scan_media）不经过期检查，语义不变。
 
-    P3-4 冷切换铁律：全部 job 注册时显式 paused=True（阶段 3 默认关闭，与
-    _JOB_DEFAULT_ENABLED 全 False 一致）——注册即暂停，由 _apply_job_switches
-    依据 system_config 恢复；未启用前不会空转。
+    P3-4 冷切换铁律：全部 job 注册时显式 paused=True（注册即暂停，不因未启用而空转），
+    由 _apply_job_switches 依据 system_config 恢复——job 级未配置则跟随总开关
+    （scheduler_enabled 未配置默认开 → 恢复后默认全部启用，A-2 方案②）。
     """
     scheduler.add_job(
         scan.scan_all_media_job,
@@ -177,6 +170,16 @@ def register_jobs() -> None:
         IntervalTrigger(hours=1),
         id=JOB_CAPACITY_ALERT,
         paused=True,  # P3-4：注册即暂停（阶段 4 默认关闭，冷切换铁律）
+        max_instances=1,
+        coalesce=True,
+        replace_existing=True,
+    )
+    # D-1（P2）：task_run / 容量快照历史清理（保留 30 天，每日兜底）
+    scheduler.add_job(
+        cleanup.prune_history_job,
+        IntervalTrigger(days=1),
+        id=JOB_PRUNE_HISTORY,
+        paused=True,  # P3-4：注册即暂停（冷切换铁律），由 _apply_job_switches 恢复
         max_instances=1,
         coalesce=True,
         replace_existing=True,

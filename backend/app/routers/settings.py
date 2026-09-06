@@ -9,6 +9,7 @@
 """
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -89,7 +90,10 @@ def _services_configured() -> dict[str, bool]:
         "aria2": bool(_get("aria2_rpc_url", s.ARIA2_RPC_URL) and _get("aria2_token", s.ARIA2_TOKEN)),
         "nastools": bool(_get("nastools_base_url", s.NASTOOLS_BASE_URL)),
         "pushplus": bool(_get("pushplus_token", s.PUSHPLUS_TOKEN)),
-        "jwt_secret": (config_store.get("jwt_secret", s.JWT_SECRET) or "") not in ("", "change_me"),
+        # Q5：jwt_secret 不存 DB——config.py 首启自动生成 <data_dir>/.jwt_secret（chmod 600）。
+        # 按密钥文件是否已落盘判定（load_or_create 保证文件存在即有效随机密钥），
+        # 避免 DB 无键 fallback "change_me" 导致永远误报未配置。
+        "jwt_secret": (Path(s.LUMENCLOUD_DATA_DIR) / ".jwt_secret").exists(),
     }
 
 
@@ -182,3 +186,12 @@ async def patch_settings(
                 "[settings] 调度开关已保存但应用失败，请重启生效（%s）", exc
             )
     return {"ok": True}
+
+
+@router.post("/verify-quark")
+async def verify_quark(admin: User = Depends(get_current_admin)) -> dict:
+    """设置页「验证 folderId」：探测 alist /quark 挂载与 Quark 驱动 root_folder_id，
+    与 quark_default_folder 比对，返回结构化诊断（内部捕获全部失败，不抛异常）。"""
+    from app.services import alist  # noqa: PLC0415 延迟导入（与现有延迟导入风格一致）
+
+    return await alist.diagnose_quark_mount()

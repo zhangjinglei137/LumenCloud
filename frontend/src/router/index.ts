@@ -64,6 +64,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '想看审批' },
       },
       {
+        path: 'users',
+        name: 'users',
+        component: () => import('../views/UsersView.vue'),
+        meta: { title: '用户管理', requiresAdmin: true },
+      },
+      {
         path: 'settings',
         name: 'settings',
         component: () => import('../views/SettingsView.vue'),

@@ -4,12 +4,14 @@
 """
 import asyncio
 from contextlib import ExitStack
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.config import settings
 from app.models import QuarkCapacityLog
+from app.routers.capacity import _get_usage
 from app.services.alist import AlistUnavailable
 from app.services import capacity as cap_mod
 from app.services.capacity import CapacityInfo, CapacityProvider, CapacityUnavailable
@@ -337,5 +339,42 @@ def test_load_margin_uses_config_value():
             margin = await provider._load_margin_gb()
 
         assert margin == pytest.approx(2.5)
+
+    run(scenario())
+
+
+# ---- C-3：/api/capacity 流程复用模块级单例 provider（吃到缓存与快照节流）----
+
+def test_router_get_usage_reuses_module_singleton():
+    """C-3：_get_usage 走模块级单例 provider.get_usage，返回其 source/total_gb/used_gb。"""
+    async def scenario():
+        checked = datetime.now(timezone.utc)
+        answer = CapacityInfo(total_gb=100.0, used_gb=12.5, source="alist", checked_at=checked)
+        # patch 单例方法 → _get_usage 内引用的 provider 是同一对象，必然命中
+        with patch.object(cap_mod.provider, "get_usage", new=AsyncMock(return_value=answer)):
+            result = await _get_usage()
+
+        assert result["source"] == "alist"
+        assert result["total_gb"] == pytest.approx(100.0)
+        assert result["used_gb"] == pytest.approx(12.5)
+        assert result["checked_at"] is checked
+
+    run(scenario())
+
+
+def test_router_get_usage_unavailable_returns_explicit_null():
+    """Q3：容量不可用（CapacityUnavailable）→ unavailable dict 显式含
+    total_gb=None / used_gb=None（前端 JSON 契约稳定，非缺失或字符串）。"""
+    async def scenario():
+        with patch.object(
+            cap_mod.provider, "get_usage",
+            new=AsyncMock(side_effect=CapacityUnavailable("alist down")),
+        ):
+            result = await _get_usage()
+
+        assert result["source"] == "unavailable"
+        assert result["error"] == "容量数据不可用"
+        assert result["total_gb"] is None
+        assert result["used_gb"] is None
 
     run(scenario())

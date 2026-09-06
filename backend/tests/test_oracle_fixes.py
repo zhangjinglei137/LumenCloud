@@ -452,14 +452,21 @@ def test_transfer_failure_backoff_triggers_resume(db, monkeypatch):
 
     async def scenario():
         await transfer_mod.process_transfer_queue()
-        if spawned:  # 等待后台续跑完成（同一 loop，避免跨 run 绑定问题）
-            await asyncio.gather(*spawned)
+        # 等待全部后台续跑完成（同一 loop，避免跨 run 绑定问题）；
+        # A-1 后成功路径（步骤 6）还会再 spawn 下一轮续跑，直到队列清空不再触发
+        seen = set()
+        while True:
+            new = [t for t in spawned if id(t) not in seen]
+            if not new:
+                break
+            seen.update(id(t) for t in new)
+            await asyncio.gather(*new)
 
     run(scenario())
 
     es = run(read_row(db, EpisodeState, es_id))
     tq = run(read_row(db, TransferQueue, tq_id))
-    assert len(spawned) == 1  # 非终态回退触发了一次续跑
+    assert len(spawned) == 2  # #1 非终态回退续跑（P2-6）+ #2 成功路径续跑（A-1）
     assert es.retry_count == 1  # 仅首次失败消耗 retry
     assert es.state == "downloading"  # 续跑成功
     assert tq.status == "downloading"

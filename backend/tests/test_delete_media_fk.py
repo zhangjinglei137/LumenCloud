@@ -171,3 +171,94 @@ def test_delete_media_fk_order_and_in_progress_guard():
 
         # 未登录 → 401
         assert client.delete(f"/api/media/{seed['tq_pending_media_id']}").status_code == 401
+
+
+async def _seed_pause_guard():
+    """B-1：进行中（download_task downloading）与良性终态（无任何子表）media 各一。"""
+    from app.database import async_session
+    from app.models import DownloadTask, Media
+
+    async with async_session() as session:
+        busy = Media(title="B1暂停拦截", status="tracking", in_emby=False)
+        session.add(busy)
+        await session.flush()
+        session.add(
+            DownloadTask(
+                media_id=busy.id, transfer_id=None, episode="S01E01",
+                file_name="f01.mkv", aria2_gid="gid-b1", status="downloading",
+            )
+        )
+        idle = Media(title="B1良性终态", status="tracking", in_emby=False)
+        session.add(idle)
+        await session.commit()
+        return {"busy_media_id": busy.id, "idle_media_id": idle.id}
+
+
+def test_patch_paused_rejects_in_progress_and_allows_idle():
+    """B-1：进行中任务存在时设 paused → 409（状态不落库）；无进行中任务 → 200 且生效；tracking 不受限。"""
+    with TestClient(app) as client:
+        admin_password = client.portal.call(_recreate_admin)
+        r = client.post("/api/auth/login", json={"username": "admin", "password": admin_password})
+        assert r.status_code == 200, r.text
+        h = _auth(r.json()["access_token"])
+
+        ids = client.portal.call(_seed_pause_guard)
+
+        # 进行中任务（download_task downloading）→ 设 paused 被 409 拦截
+        r = client.patch(
+            f"/api/media/{ids['busy_media_id']}", json={"status": "paused"}, headers=h
+        )
+        assert r.status_code == 409, r.text
+        assert "进行中" in r.json()["detail"]
+        # 拦截后 status 未被改动（仍 tracking）
+        r = client.get(f"/api/media/{ids['busy_media_id']}", headers=h)
+        assert r.json()["status"] == "tracking"
+
+        # 设置 tracking 不受进行中任务限制
+        r = client.patch(
+            f"/api/media/{ids['busy_media_id']}", json={"status": "tracking"}, headers=h
+        )
+        assert r.status_code == 200 and r.json()["status"] == "tracking"
+
+        # 良性终态（无任何子表）→ paused 允许设置且落库
+        r = client.patch(
+            f"/api/media/{ids['idle_media_id']}", json={"status": "paused"}, headers=h
+        )
+        assert r.status_code == 200 and r.json()["status"] == "paused"
+        # 恢复 tracking 同样不受限
+        r = client.patch(
+            f"/api/media/{ids['idle_media_id']}", json={"status": "tracking"}, headers=h
+        )
+        assert r.status_code == 200 and r.json()["status"] == "tracking"
+
+
+def test_delete_media_acquires_scan_per_media_lock(monkeypatch):
+    """B-2：delete_media 的「检查+删除+commit」在 scan 的 per-media 锁内执行。
+
+    以「计数 + 转发原函数」包装 _media_lock（delete_media 在请求内延迟 import，
+    from ... import 为运行时属性查找，monkeypatch 即时生效），走 TestClient
+    正常删除干净 media，断言删除成功且锁被获取。
+    """
+    from app.tasks import scan as scan_mod
+
+    original = scan_mod._media_lock
+    calls: list[int] = []
+
+    def counting_lock(media_id: int):
+        calls.append(media_id)
+        return original(media_id)
+
+    monkeypatch.setattr(scan_mod, "_media_lock", counting_lock)
+
+    with TestClient(app) as client:
+        admin_password = client.portal.call(_recreate_admin)
+        r = client.post("/api/auth/login", json={"username": "admin", "password": admin_password})
+        assert r.status_code == 200, r.text
+        h = _auth(r.json()["access_token"])
+
+        # 复用 _seed_media 中「无任何子表」的干净 media（E）
+        mid = client.portal.call(_seed_media)["clean_media_id"]
+        r = client.delete(f"/api/media/{mid}", headers=h)
+        assert r.status_code == 200, r.text
+        assert client.get(f"/api/media/{mid}", headers=h).status_code == 404
+        assert mid in calls  # 删除流程确实持 scan 的 per-media 锁执行

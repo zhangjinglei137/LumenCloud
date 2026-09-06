@@ -5,6 +5,7 @@ import { ElMessageBox } from 'element-plus'
 import { useAuthStore } from '../stores/auth'
 import { useNotificationsStore } from '../stores/notifications'
 import { useQueueStore } from '../stores/queue'
+import { useThemeStore } from '../stores/theme'
 import { formatGb, timeAgo } from '../utils/format'
 
 const route = useRoute()
@@ -12,6 +13,7 @@ const router = useRouter()
 const auth = useAuthStore()
 const notifications = useNotificationsStore()
 const queueStore = useQueueStore()
+const theme = useThemeStore()
 
 const activeMenu = computed(() => {
   if (route.path.startsWith('/media')) return '/'
@@ -89,6 +91,10 @@ async function onReadAll() {
             <el-icon><CirclePlus /></el-icon>
             <span>添加影视</span>
           </el-menu-item> -->
+          <el-menu-item index="/users">
+            <el-icon><User /></el-icon>
+            <span>用户管理</span>
+          </el-menu-item>
           <el-menu-item index="/settings">
             <el-icon><Setting /></el-icon>
             <span>设置</span>
@@ -105,17 +111,26 @@ async function onReadAll() {
       <el-header class="lc-header" height="60px">
         <h2 class="lc-page-title">{{ pageTitle }}</h2>
         <div class="lc-header-right">
+          <!-- Q9：主题切换（暗/亮），持久化到 localStorage -->
+          <el-switch
+            :model-value="theme.isDark"
+            inline-prompt
+            active-text="暗"
+            inactive-text="亮"
+            aria-label="切换主题"
+            @change="theme.toggle()"
+          />
           <div v-if="queueStore.capacity" class="lc-capacity">
             <el-progress
               type="circle"
-              :width="30"
-              :stroke-width="4"
+              :width="40"
+              :stroke-width="5"
               :percentage="queueStore.usagePercent"
               :status="queueStore.usagePercent >= 90 ? 'exception' : undefined"
             />
             <div class="text">
               夸克容量 {{ formatGb(queueStore.capacity.used_gb) }} /
-              {{ formatGb(queueStore.capacity.total_gb) }}
+              {{ formatGb(queueStore.capacity.total_gb) }} · {{ queueStore.usagePercent }}%
             </div>
           </div>
 
@@ -197,7 +212,7 @@ async function onReadAll() {
 
 <style scoped>
 .lc-aside {
-  background: rgba(10, 13, 17, 0.6);
+  background: var(--lc-aside-bg);
   border-right: 1px solid var(--lc-border);
   display: flex;
   flex-direction: column;
@@ -218,7 +233,7 @@ async function onReadAll() {
   height: 38px;
   border-radius: 10px;
   background: linear-gradient(135deg, var(--lc-accent), #b97f1e);
-  color: #1a1408;
+  color: var(--lc-accent-ink);
   font-family: var(--lc-font-display);
   font-size: 20px;
   display: flex;
@@ -243,7 +258,7 @@ async function onReadAll() {
   border-right: none;
   background: transparent;
   --el-menu-text-color: var(--lc-text-secondary);
-  --el-menu-hover-bg-color: rgba(255, 255, 255, 0.05);
+  --el-menu-hover-bg-color: var(--lc-hover-bg);
   --el-menu-active-color: var(--lc-accent);
   flex: 1;
 }
@@ -265,7 +280,7 @@ async function onReadAll() {
   align-items: center;
   justify-content: space-between;
   border-bottom: 1px solid var(--lc-border);
-  background: rgba(14, 17, 22, 0.7);
+  background: var(--lc-header-bg);
   backdrop-filter: blur(8px);
   padding: 0 20px;
 }
@@ -324,7 +339,7 @@ async function onReadAll() {
 }
 
 .lc-notify-item:hover {
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--lc-hover-bg);
 }
 
 .lc-notify-item .title {

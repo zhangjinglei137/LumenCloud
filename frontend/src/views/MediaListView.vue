@@ -57,7 +57,8 @@ async function onScan(m: MediaItem, e: Event) {
   scanningIds.value.add(m.id)
   try {
     const taskRunId = await store.scan(m.id)
-    ElMessage.success(`已触发巡检（任务 #${taskRunId}）`)
+    // E-1：巡检 fire-and-forget，task_run_id 不再同步返回；结果轮询运行日志页
+    ElMessage.success(taskRunId != null ? `已触发巡检（任务 #${taskRunId}）` : '已触发巡检，结果见运行日志')
     await store.fetchList()
   } catch {
     // 拦截器已提示

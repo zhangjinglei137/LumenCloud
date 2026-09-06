@@ -1,7 +1,7 @@
 /** 通用格式化工具 */
 
 export function formatGb(gb: number | null | undefined): string {
-  if (gb === null || gb === undefined || Number.isNaN(gb)) return '—'
+  if (typeof gb !== 'number' || Number.isNaN(gb)) return '—'
   if (gb >= 1) return `${gb.toFixed(1)} GB`
   return `${(gb * 1024).toFixed(0)} MB`
 }
@@ -14,7 +14,7 @@ export function formatSize(fileSize: number | null | undefined): string {
 
 /** 字节 → 可读大小（GB/MB），供 transfer_queue.file_size / episode_state.file_size 展示 */
 export function formatBytes(bytes: number | null | undefined): string {
-  if (bytes === null || bytes === undefined || Number.isNaN(bytes) || bytes < 0) return '—'
+  if (typeof bytes !== 'number' || Number.isNaN(bytes) || bytes < 0) return '—'
   const gb = bytes / 1024 ** 3
   if (gb >= 1) return `${gb.toFixed(2)} GB`
   const mb = bytes / 1024 ** 2

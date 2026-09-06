@@ -3,19 +3,42 @@
  */
 
 :root {
+  /* 默认主题 = 深色影院质感（Q9：亮色主题见 [data-theme='light']） */
   --lc-bg: #0e1116;
   --lc-bg-elevated: #151a21;
   --lc-bg-panel: rgba(255, 255, 255, 0.03);
   --lc-border: rgba(255, 255, 255, 0.08);
   --lc-accent: #e9b44c;
   --lc-accent-soft: rgba(233, 180, 76, 0.14);
+  --lc-accent-ink: #1a1408;
+  --lc-warning: #e6a23c;
   --lc-text-primary: #e8e6e1;
   --lc-text-secondary: #9aa3ad;
+  --lc-hover-bg: rgba(255, 255, 255, 0.05);
+  --lc-aside-bg: rgba(10, 13, 17, 0.6);
+  --lc-header-bg: rgba(14, 17, 22, 0.7);
   --lc-radius: 14px;
   --lc-font-display: 'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', serif;
   --lc-font-body:
     -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei',
     sans-serif;
+}
+
+/* Q9：亮色主题（暖纸白底 + 暖金强调，ink/text 转深） */
+[data-theme='light'] {
+  --lc-bg: #f4f1ea;
+  --lc-bg-elevated: #ffffff;
+  --lc-bg-panel: rgba(0, 0, 0, 0.03);
+  --lc-border: rgba(35, 28, 15, 0.14);
+  --lc-accent: #b8862a;
+  --lc-accent-soft: rgba(184, 134, 42, 0.16);
+  --lc-accent-ink: #2a1f08;
+  --lc-warning: #d4880f;
+  --lc-text-primary: #2b2620;
+  --lc-text-secondary: #6f6a5e;
+  --lc-hover-bg: rgba(0, 0, 0, 0.05);
+  --lc-aside-bg: rgba(255, 255, 255, 0.65);
+  --lc-header-bg: rgba(255, 255, 255, 0.72);
 }
 
 html.dark {
@@ -275,7 +298,7 @@ h3 {
 
 .lc-tmdb-item .poster {
   aspect-ratio: 2 / 3;
-  background: #161b23;
+  background: var(--lc-bg-elevated);
   display: flex;
   align-items: center;
   justify-content: center;

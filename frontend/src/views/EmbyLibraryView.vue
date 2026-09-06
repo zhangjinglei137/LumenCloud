@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import { useEmbyStore } from '../stores/emby'
 import { useAuthStore } from '../stores/auth'
+import { createMediaApi, scanMediaApi } from '../api'
 import type { EmbyItemType, EmbyLibraryItem } from '../types'
 
 const router = useRouter()
@@ -51,7 +53,38 @@ function typeLabel(type: EmbyItemType): string {
 }
 
 function openInEmby(item: EmbyLibraryItem) {
+  // D-1：serverId 获取失败时后端返回 null，无详情页地址则不跳转
+  if (!item.emby_web_url) return
   window.open(item.emby_web_url, '_blank', 'noopener')
+}
+
+/** Q12：正在「加入订阅」的 Emby 条目 id 集合，用于按钮 loading 与防重复提交 */
+const subscribing = ref<Set<string>>(new Set())
+
+/**
+ * Q12：Emby 库一键订阅——复用 POST /api/media。
+ * 注意：后端 media_type 仅接受 movie/tv，Emby 的 series 须映射为 tv；
+ * Emby 海报是完整 URL，与 poster_path（TMDB 相对路径）语义不同，订阅时不传。
+ */
+async function subscribe(m: EmbyLibraryItem): Promise<void> {
+  if (subscribing.value.has(m.emby_id)) return
+  subscribing.value.add(m.emby_id)
+  try {
+    const created = await createMediaApi({
+      title: m.title,
+      tmdb_id: m.tmdb_id,
+      media_type: m.type === 'movie' ? 'movie' : 'tv', // series → tv（后端契约）
+    })
+    ElMessage.success(`已加入订阅：${m.title}`)
+    // 触发一次巡检，立即补齐集数状态（fire-and-forget，不阻塞；结果见运行日志）
+    scanMediaApi(created.id).catch(() => {})
+    await store.fetchLibrary() // 刷新 in_media 角标
+  } catch {
+    // 拦截器已提示（如 tmdb_id 已存在时 409「该影视已在影视库」）；刷新使角标与本地一致
+    await store.fetchLibrary()
+  } finally {
+    subscribing.value.delete(m.emby_id)
+  }
 }
 </script>
 
@@ -163,7 +196,18 @@ function openInEmby(item: EmbyLibraryItem) {
                 </span>
               </div>
               <div class="row">
-                <span class="lc-muted open-hint">
+                <!-- 未收录条目一键订阅；@click.stop 阻止冒泡触发 openInEmby -->
+                <el-button
+                  v-if="!m.in_media"
+                  size="small"
+                  type="primary"
+                  :loading="subscribing.has(m.emby_id)"
+                  @click.stop="subscribe(m)"
+                >
+                  加入订阅
+                </el-button>
+                <!-- D-1：serverId 获取失败（emby_web_url 为 null）时隐藏入口 -->
+                <span v-if="m.emby_web_url" class="lc-muted open-hint">
                   <el-icon style="vertical-align: -2px"><Monitor /></el-icon>
                   在 Emby 中打开
                 </span>

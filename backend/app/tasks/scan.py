@@ -20,6 +20,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import delete, or_, select, update
@@ -630,6 +631,21 @@ async def _trigger_transfer() -> None:
         logger.exception("[scan] 触发 transfer 失败")
 
 
+def trigger_scan_background(media_id: int) -> None:
+    """E-1（P1）：单部巡检 fire-and-forget 触发（HTTP 层不再同步等待完整巡检，
+    防止 504 与 FastAPI 取消协程中断巡检）。复用 _background 强引用集合防 GC
+    （与 _trigger_transfer 同模式）；内部持 per-media 锁（scan_media 自带）。"""
+    async def _run() -> None:
+        try:
+            await scan_media(media_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("[scan] 后台巡检异常 media=%s", media_id)
+
+    task = asyncio.create_task(_run())
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+
+
 # ---------------------------------------------------------------------------
 # 主流程
 # ---------------------------------------------------------------------------
@@ -685,14 +701,16 @@ async def scan_all_media_job() -> None:
     （作业级，对齐 transfer/cleanup/notify 的作业级短名惯例；区别于单部巡检的
     "scan_media"）。
     """
+    t0 = time.monotonic()  # Q8①：真实耗时
     try:
         await scan_all_media()
     except Exception:  # noqa: BLE001
         logger.exception("[scan] scan_all_media 定时巡检异常")
         try:
             async with async_session() as s:
-                await record_task_run(
-                    s, "scan_all_media", "error", "定时巡检异常，见服务日志"
+                await record_task_run(  # Q8①：真实耗时
+                    s, "scan_all_media", "error", "定时巡检异常，见服务日志",
+                    duration_seconds=time.monotonic() - t0,
                 )
                 await s.commit()
         except Exception:  # noqa: BLE001  兜底记录失败只告警，不再外泄

@@ -276,13 +276,13 @@ def test_poll_complete_marks_done_and_triggers_sync(db, env, monkeypatch):
     assert done_events[0].title == "下载完成: ep.mkv"
     assert done_events[0].extra["media_id"] == mid
     assert done_events[0].extra["episode"] == "S01E01"
-    # nastools_sync 事件触发（_spawn 后台任务；单测只验证触发行为）
-    assert len(env["spawn"]) == 1
-    assert env["spawn"][0] is transfer_mod.nastools_sync.nastools_sync
-
+    # nastools_sync 事件触发 + A-1 转存续跑（_spawn 后台任务；单测只验证触发行为）
+    assert len(env["spawn"]) == 2
+    assert env["spawn"][0] is transfer_mod.nastools_sync.nastools_sync  # 先触发 nastools_sync
+    assert env["spawn"][1] is transfer_mod.process_transfer_queue       # A-1：下载完成释放容量后续跑
     # 幂等：二次运行不重复处理（download_task 已 complete，不再命中轮询）
     run(transfer_mod.process_transfer_queue())
-    assert len(env["spawn"]) == 1  # 不再触发
+    assert len(env["spawn"]) == 2  # 不再触发
     assert len([e for e in env["notifier"].events if e.event_type == "download_complete"]) == 1
 
 
@@ -437,6 +437,26 @@ def test_save_success_commits_download(db, env, monkeypatch):
     assert dl.status == "downloading"
     assert dl.aria2_gid == "gid-1"
     assert dl.quark_path == "/quark/ep.mkv"
+
+
+def test_success_path_spawns_next_pending_resume(db, env, monkeypatch):
+    """A-1（P1）：成功路径步骤 6 提交后 spawn process_transfer_queue 续跑下一 pending。
+
+    与失败非终态回退续跑（P2-6）对称——解决「一次 scan 入队 N 集只处理 1 集」
+    的静默积压；_process_lock 保证续跑仅排队等待串行执行（无并发风险）。
+    env 的 _spawn 为记录器（不真正执行），此处只验证触发行为。
+    """
+    patch_db(monkeypatch, db)
+    mid, es_id, tq_id = run(seed_pending(db))
+
+    run(transfer_mod.process_transfer_queue())
+
+    # 成功提交后 spawn 续跑下一 pending：记录的工厂必须指向 process_transfer_queue
+    assert [f.__name__ for f in env["spawn"]] == ["process_transfer_queue"]
+    tq = run(read_row(db, TransferQueue, tq_id))
+    es = run(get_es_by_media(db, mid))
+    assert tq.status == "downloading"
+    assert es.state == "downloading"
 
 
 # ---------------------------------------------------------------------------

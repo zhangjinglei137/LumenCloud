@@ -111,16 +111,35 @@ async def _recent_snapshots(session: AsyncSession) -> list[dict]:
 
 
 async def _get_usage() -> dict:
-    """调用 CapacityProvider.get_usage；容量不可用 → fail-closed 归一化响应（不 500）。"""
+    """调用 CapacityProvider.get_usage；容量不可用 → fail-closed 归一化响应（不 500）。
+
+    复用模块级单例 provider（C-3）：进程内 30s 用量缓存（USAGE_CACHE_TTL_SECONDS）
+    与 60s 快照节流（SNAPSHOT_THROTTLE_SECONDS）均为实例级状态，只有复用单例才
+    生效；每请求新建 Provider 会绕过缓存，前端高频轮询时每次重复全量递归
+    alist /quark 目录树。
+    """
     try:
-        from app.services.capacity import CapacityInfo, CapacityProvider
+        # C-3：复用模块级单例（而非每请求实例化 CapacityProvider）——吃到
+        # USAGE_CACHE_TTL_SECONDS 用量缓存与 SNAPSHOT_THROTTLE_SECONDS 快照节流，
+        # 避免前端高频轮询导致每次全量递归 alist /quark 目录树。
+        from app.services.capacity import CapacityInfo, provider
     except ImportError:
-        return {"source": "unavailable", "error": "容量提供者未就绪"}
+        return {
+            "source": "unavailable",
+            "error": "容量提供者未就绪",
+            "total_gb": None,  # Q3：数值字段不可用时为 null（前端 JSON 契约稳定）
+            "used_gb": None,
+        }
     try:
-        usage = await CapacityProvider().get_usage()
+        usage = await provider.get_usage()
     except Exception as exc:  # CapacityUnavailable 及其它 → fail-closed 归一化
         logger.warning("容量读取失败，/api/capacity 返回 unavailable: %s", exc)
-        return {"source": "unavailable", "error": "容量数据不可用"}
+        return {
+            "source": "unavailable",
+            "error": "容量数据不可用",
+            "total_gb": None,  # Q3：数值字段不可用时为 null（前端 JSON 契约稳定）
+            "used_gb": None,
+        }
     if isinstance(usage, CapacityInfo):
         return {
             "source": usage.source,

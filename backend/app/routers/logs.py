@@ -62,6 +62,7 @@ async def list_logs(
             "message": r[0].message,
             "started_at": r[0].started_at,
             "finished_at": r[0].finished_at,
+            "duration_seconds": r[0].duration_seconds,  # Q8①：真实耗时（job 入口计时；历史为 None）
             "media_title": r[1],  # Q8：影视名称（join media；无关联为 None）
             "tmdb_id": r[2],      # Q8：TMDB id（join media；无关联为 None）
         }

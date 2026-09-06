@@ -1,16 +1,23 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import { useAuthStore } from '../stores/auth'
 
 const router = useRouter()
+const route = useRoute()
 const auth = useAuthStore()
 
 const formRef = ref<FormInstance>()
 const form = ref({ username: '', password: '', confirm: '', inviteCode: '' })
 const loading = ref(false)
+
+// Q6：分享的注册链接带 ?code=，打开页面时预填邀请码
+const presetCode = typeof route.query.code === 'string' ? route.query.code : ''
+if (presetCode) {
+  form.value.inviteCode = presetCode
+}
 
 const rules: FormRules = {
   username: [
@@ -121,7 +128,7 @@ async function submit() {
   height: 56px;
   border-radius: 16px;
   background: linear-gradient(135deg, var(--lc-accent), #b97f1e);
-  color: #1a1408;
+  color: var(--lc-accent-ink);
   font-family: var(--lc-font-display);
   font-size: 30px;
   align-items: center;

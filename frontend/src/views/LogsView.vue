@@ -27,6 +27,15 @@ async function search() {
 async function loadMore() {
   await store.fetchPage(filter, true)
 }
+
+// Q8①：格式化真实耗时——<1s 显示毫秒，<60s 显示 x.xs，以上显示 xm xxs
+function formatDuration(seconds: number): string {
+  if (seconds < 1) return `${Math.round(seconds * 1000)}ms`
+  if (seconds < 60) return `${seconds.toFixed(1)}s`
+  const m = Math.floor(seconds / 60)
+  const s = Math.round(seconds % 60)
+  return `${m}m ${s}s`
+}
 </script>
 
 <template>
@@ -143,7 +152,11 @@ async function loadMore() {
           </el-table-column>
           <el-table-column label="耗时" width="100" align="right">
             <template #default="{ row }">
-              <span v-if="row.started_at && row.finished_at" class="lc-muted">
+              <!-- Q8①：优先展示真实耗时（duration_seconds），历史记录（null）回退 started/finished 差值 -->
+              <span v-if="row.duration_seconds != null" class="lc-muted">
+                {{ formatDuration(row.duration_seconds) }}
+              </span>
+              <span v-else-if="row.started_at && row.finished_at" class="lc-muted">
                 {{
                   Math.max(
                     0,

@@ -13,6 +13,7 @@
 （APScheduler job 内捕获，遵循 notification_scan / transfer job 包装模式）。
 """
 import logging
+import time
 
 from app.database import async_session
 from app.services import capacity
@@ -25,13 +26,17 @@ _IMPLEMENTED = True
 
 async def capacity_alert_job() -> None:
     """容量巡检（APScheduler job）：快照落库 + 告警评估，异常不外泄。"""
+    t0 = time.monotonic()  # Q8①：真实耗时
     # 1) 主动统计并写快照（fail-closed：统计失败本轮不评估，记 error）
     try:
         await capacity.provider.get_usage()
     except Exception as exc:  # noqa: BLE001  CapacityUnavailable → 本轮跳过评估
         logger.warning("[capacity_alert] 容量统计失败（快照本轮不更新，告警评估跳过）: %s", exc)
         async with async_session() as s:
-            await record_task_run(s, "capacity_alert", "error", f"容量统计失败: {exc}")
+            await record_task_run(  # Q8①：真实耗时
+                s, "capacity_alert", "error", f"容量统计失败: {exc}",
+                duration_seconds=time.monotonic() - t0,
+            )
             await s.commit()
         return
 
@@ -41,7 +46,10 @@ async def capacity_alert_job() -> None:
     except Exception as exc:  # noqa: BLE001
         logger.exception("[capacity_alert] 告警评估异常")
         async with async_session() as s:
-            await record_task_run(s, "capacity_alert", "error", f"告警评估异常: {exc}")
+            await record_task_run(  # Q8①：真实耗时
+                s, "capacity_alert", "error", f"告警评估异常: {exc}",
+                duration_seconds=time.monotonic() - t0,
+            )
             await s.commit()
         return
 
@@ -49,6 +57,9 @@ async def capacity_alert_job() -> None:
     message = "容量使用率过高告警已发送" if alerted else "容量巡检完成，未触发告警"
     status = "success" if alerted else "skipped"
     async with async_session() as s:
-        await record_task_run(s, "capacity_alert", status, message)
+        await record_task_run(  # Q8①：真实耗时
+            s, "capacity_alert", status, message,
+            duration_seconds=time.monotonic() - t0,
+        )
         await s.commit()
     logger.info("[capacity_alert] %s", message)

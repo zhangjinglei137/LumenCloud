@@ -57,6 +57,8 @@ async function onApprove(item: ApprovalItem) {
   }
   try {
     await store.approve(item.id)
+    // Q2② 双保险：store 内部已 fetchList，视图层成功后显式再刷，防时序/读一致性
+    await store.fetchList()
     ElMessage.success('已批准并加入影视库')
     // 联动刷新影视库，使新加入的条目立即可见
     await mediaStore.fetchList()
@@ -86,6 +88,8 @@ async function onReject(item: ApprovalItem) {
   }
   try {
     await store.reject(item.id, reason)
+    // Q2② 双保险：store 内部已 fetchList，视图层成功后显式再刷，防时序/读一致性
+    await store.fetchList()
     ElMessage.success('已拒绝')
   } catch {
     // 接口异常（拦截器已提示），兜底刷新审批列表
@@ -162,7 +166,7 @@ async function submitRequest() {
             </div>
             <div class="lc-muted meta">
               <span>TMDB：{{ item.tmdb_id }}</span>
-              <span v-if="item.requested_by">申请人：{{ item.requested_by }}</span>
+              <span>申请人：{{ item.requested_by_username || item.requested_by || '—' }}</span>
               <span>提交于 {{ formatTime(item.created_at) }}</span>
             </div>
             <div v-if="item.reject_reason" class="reject-reason">拒绝原因：{{ item.reject_reason }}</div>
@@ -235,7 +239,7 @@ async function submitRequest() {
   height: 80px;
   border-radius: 8px;
   overflow: hidden;
-  background: #161b23;
+  background: var(--lc-bg-elevated);
   flex-shrink: 0;
   display: flex;
   align-items: center;

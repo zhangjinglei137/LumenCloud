@@ -13,6 +13,7 @@ transferring/downloading 记录 → 回退 queued + retry_count++，并清理夸
 幂等：回退后记录变为 queued，不再命中 transferring/downloading 条件，可重复执行。
 """
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import or_, select, update
@@ -95,6 +96,7 @@ async def recover_stale_tasks() -> int:
     """
     timeout_hours = await _load_timeout_hours()
     cutoff = _now() - timedelta(hours=timeout_hours)
+    t0 = time.monotonic()  # Q8①：真实耗时
 
     # 阶段①：只读快照查询（NULL updated_at 显式覆盖，P5）
     async with async_session() as session:
@@ -122,16 +124,13 @@ async def recover_stale_tasks() -> int:
         logger.info("[recover] 无超时任务")
         return 0
 
-    # 阶段②：事务外清理夸克残留 + 尝试移除 aria2 任务（网络 IO 不放事务内；
-    #          aria2 移除失败仅 warning——不必要的外呼失败不得阻断回退，P0-3a）
+    # 阶段②：事务外清理夸克残留（网络 IO 不放事务内；失败仅记录不阻塞回退）。
+    # B-3（P1）：aria2.remove 不再在本阶段执行——改为阶段③ CAS 成功后（事务
+    # 提交后）逐个移除（见下方 B-3 循环），防 CAS 冲突行误杀仍被 transfer 并发
+    # 推进的下行 aria2 任务。
     cleaned = 0
     cleanup_failures: list[str] = []
     for row in rows:
-        if row.aria2_gid:
-            try:
-                await aria2.client.remove(row.aria2_gid)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("[recover] aria2 移除失败 %s: %s", row.aria2_gid, exc)
         if not row.quark_path:
             continue
         try:
@@ -151,6 +150,8 @@ async def recover_stale_tasks() -> int:
     error = f"超时回退（{timeout_hours}h 无进展）"
     reverted = 0
     cas_conflicts = 0
+    # B-3（P1）：仅收集 CAS 成功行的 aria2 gid（事务内不发网络 IO），事务提交后统一移除
+    to_remove_aria2: list[str] = []
     async with async_session() as session:
         async with session.begin():
             for row in rows:
@@ -181,6 +182,9 @@ async def recover_stale_tasks() -> int:
                     )
                     continue
                 reverted += 1
+                if row.aria2_gid:
+                    # B-3（P1）：CAS 成功才收集 gid（先校验、后副作用）——冲突行不入列
+                    to_remove_aria2.append(row.aria2_gid)
                 await session.execute(
                     update(TransferQueue)
                     .where(
@@ -215,7 +219,18 @@ async def recover_stale_tasks() -> int:
                 message += f"；CAS 冲突跳过 {cas_conflicts} 条（retry_count 已被并发推进）"
             if cleanup_failures:
                 message += f"；清理失败 {len(cleanup_failures)} 条: {'; '.join(cleanup_failures)}"
-            await record_task_run(session, "recover", "success", message, None)
+            await record_task_run(  # Q8①：真实耗时
+                session, "recover", "success", message, None,
+                duration_seconds=time.monotonic() - t0,
+            )
+
+    # B-3（P1）：aria2.remove 移到 CAS 成功之后（事务提交后）——CAS 冲突/未回退的行
+    # 绝不移除 aria2 任务（防误杀仍被 transfer 推进的下行任务）；失败仅 warning，不阻断。
+    for gid in to_remove_aria2:
+        try:
+            await aria2.client.remove(gid)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[recover] aria2 移除失败 %s: %s", gid, exc)
 
     logger.info(
         "[recover] 恢复完成：回退 %d 条超时任务（清理残留 %d 条）",

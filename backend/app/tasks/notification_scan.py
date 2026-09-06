@@ -8,6 +8,7 @@
 空跑无待推送 → task_run(skipped)，不推送（消灭 P1 噪音）。
 """
 import logging
+import time
 
 from sqlalchemy import select
 
@@ -45,6 +46,7 @@ async def _already_notified(session, prefix: str, obj_id: int) -> bool:
 
 async def notification_scan_job() -> None:
     """通知扫描（注册：IntervalTrigger(minutes=5)）：待审批 + 失败任务 → Notifier 推送。"""
+    t0 = time.monotonic()  # Q8①：真实耗时
     sent = 0
     async with async_session() as s:
         # 1) 待审批看剧请求（§7 approval_pending → 全体/admin 通知）
@@ -84,6 +86,9 @@ async def notification_scan_job() -> None:
         # 3) 记录本次扫描：有推送 → success；空跑 → skipped（P1 不推送）
         status = "success" if sent else "skipped"
         message = f"推送 {sent} 条通知" if sent else "无待推送（空跑）"
-        await record_task_run(s, "notify", status, message)
+        await record_task_run(  # Q8①：真实耗时
+            s, "notify", status, message,
+            duration_seconds=time.monotonic() - t0,
+        )
         await s.commit()
         logger.info("[notify] 通知扫描完成: %s", message)

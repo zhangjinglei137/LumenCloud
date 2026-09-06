@@ -14,7 +14,9 @@ from app.routers.deps import get_current_user, get_session
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 
 
-def _notif_dto(r: Notification) -> dict:
+def _notif_dto(r: Notification, recipient_username: str | None = None) -> dict:
+    """通知 DTO：附加 recipient_username（Q10；recipient=NULL=全体时 LEFT JOIN 得
+    None，前端可回退；最小改动，不加多余字段）。"""
     return {
         "id": r.id,
         "event_type": r.event_type,
@@ -25,6 +27,7 @@ def _notif_dto(r: Notification) -> dict:
         "read": r.is_read,
         "message": r.body,
         "level": r.event_type,
+        "recipient_username": recipient_username,
         "created_at": r.created_at,
     }
 
@@ -39,11 +42,15 @@ async def list_notifications(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """当前用户站内信列表（未读优先）+ unread_count。"""
+    """当前用户站内信列表（未读优先）+ unread_count。
+
+    Q10：LEFT JOIN users 取收件人 username（recipient=NULL 的全体消息 → None）。
+    """
     rows = (
         (
             await session.execute(
-                select(Notification)
+                select(Notification, User.username)
+                .join(User, Notification.recipient == User.id, isouter=True)
                 .where(_scope(user.id))
                 .order_by(
                     Notification.is_read.asc(),  # 未读在前
@@ -52,12 +59,11 @@ async def list_notifications(
                 )
             )
         )
-        .scalars()
         .all()
     )
     return {
-        "items": [_notif_dto(r) for r in rows],
-        "unread_count": sum(1 for r in rows if not r.is_read),
+        "items": [_notif_dto(r[0], r[1]) for r in rows],
+        "unread_count": sum(1 for r in rows if not r[0].is_read),
     }
 
 

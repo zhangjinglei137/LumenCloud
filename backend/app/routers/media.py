@@ -8,6 +8,7 @@
 - POST   /api/media/{id}/scan  admin 手动触发巡检（§9.1 写操作鉴权）
 """
 from datetime import datetime, timezone
+import logging
 import re
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -20,9 +21,36 @@ from app.routers.deps import get_current_admin, get_current_user, get_session
 
 router = APIRouter()
 
+logger = logging.getLogger(__name__)
+
 _GB = 1024**3
 
 _VALID_STATUSES = ("tracking", "paused")
+
+
+# B-1/B-2（P1）：「进行中任务」检查——transfer_queue(pending/transferring/downloading) ∪
+# episode_state(queued/transferring/downloading) ∪ download_task(downloading)；有任一即 True。
+async def _has_in_progress_tasks(session: AsyncSession, media_id: int) -> bool:
+    return bool(
+        await session.scalar(
+            select(TransferQueue.id).where(
+                TransferQueue.media_id == media_id,
+                TransferQueue.status.in_(("pending", "transferring", "downloading")),
+            ).limit(1)
+        )
+        or await session.scalar(
+            select(EpisodeState.id).where(
+                EpisodeState.media_id == media_id,
+                EpisodeState.state.in_(("queued", "transferring", "downloading")),
+            ).limit(1)
+        )
+        or await session.scalar(
+            select(DownloadTask.id).where(
+                DownloadTask.media_id == media_id,
+                DownloadTask.status == "downloading",
+            ).limit(1)
+        )
+    )
 
 
 def _now() -> datetime:
@@ -234,6 +262,12 @@ async def create_media(
     if payload.media_type not in (None, "movie", "tv"):
         raise HTTPException(status_code=422, detail="media_type 仅支持 movie/tv")
 
+    # Q2①（P1）：已存在于影视库的 tmdb_id 拒绝重复添加（应用层去重）
+    if payload.tmdb_id is not None and await session.scalar(
+        select(Media.id).where(Media.tmdb_id == payload.tmdb_id).limit(1)
+    ):
+        raise HTTPException(status_code=409, detail="该影视已在影视库，无需重复提交")
+
     media = Media(
         title=payload.title.strip(),
         tmdb_id=payload.tmdb_id,
@@ -337,6 +371,11 @@ async def patch_media(
     if media is None:
         raise HTTPException(status_code=404, detail="影视不存在")
 
+    # B-1（P1）：任务进行中不允许设 paused（防止下载完成后 media 状态无法归位、
+    # scan 永久跳过）；paused 仅允许在无进行中任务的良性终态设置。恢复 tracking 不受限。
+    if updates.get("status") == "paused" and await _has_in_progress_tasks(session, media_id):
+        raise HTTPException(status_code=409, detail="存在进行中任务，无法暂停；请等待任务完成或先处理转存队列")
+
     for key, value in updates.items():
         setattr(media, key, value)
     media.updated_at = _now()
@@ -355,49 +394,27 @@ async def delete_media(
     删除顺序：episode_state → download_task → transfer_queue → media。
     download_task.transfer_id 外键指向 transfer_queue.id，必须先删 download_task
     再删 transfer_queue，否则 SQLite(foreign_keys=ON)/PostgreSQL 会报外键冲突。
+
+    B-2（P1）：检查+删除+commit 整体置于 scan 的 per-media 锁（_media_lock）内，
+    与 scan 入队互斥，防「检查通过后、删除前 _enqueue 写入新子表记录」的孤儿数据竞态。
     """
-    media = await session.get(Media, media_id)
-    if media is None:
-        raise HTTPException(status_code=404, detail="影视不存在")
+    # B-2（P1）：在 scan 的 per-media 锁内完成「检查+删除+commit」——与 scan 入队
+    # 互斥（scan_media 用同一 _media_lock 对象；删除后 scan 持锁时 media 已不存在
+    # 会短路跳过），防「检查通过后被 scan 写入子表记录」的孤儿数据竞态。
+    from app.tasks.scan import _media_lock  # noqa: PLC0415
 
-    # 进行中任务前置检查（P0-4）：避免与 transfer/scan worker 并发删除竞态——
-    # 存在进行中（pending/queued/transferring/downloading）任务时拒绝删除。
-    # 检查范围：transfer_queue（pending/transferring/downloading）、
-    # episode_state（queued/transferring/downloading）、download_task（downloading）。
-    if (
-        await session.scalar(
-            select(TransferQueue.id)
-            .where(
-                TransferQueue.media_id == media_id,
-                TransferQueue.status.in_(("pending", "transferring", "downloading")),
-            )
-            .limit(1)
-        )
-        or await session.scalar(
-            select(EpisodeState.id)
-            .where(
-                EpisodeState.media_id == media_id,
-                EpisodeState.state.in_(("queued", "transferring", "downloading")),
-            )
-            .limit(1)
-        )
-        or await session.scalar(
-            select(DownloadTask.id)
-            .where(
-                DownloadTask.media_id == media_id,
-                DownloadTask.status == "downloading",
-            )
-            .limit(1)
-        )
-    ):
-        raise HTTPException(status_code=409, detail="存在进行中任务，无法删除")
-
-    await session.execute(delete(EpisodeState).where(EpisodeState.media_id == media_id))
-    await session.execute(delete(DownloadTask).where(DownloadTask.media_id == media_id))
-    await session.execute(delete(TransferQueue).where(TransferQueue.media_id == media_id))
-    await session.delete(media)
-    await session.commit()
-    return {"ok": True}
+    async with _media_lock(media_id):
+        media = await session.get(Media, media_id)
+        if media is None:
+            raise HTTPException(status_code=404, detail="影视不存在")
+        if await _has_in_progress_tasks(session, media_id):
+            raise HTTPException(status_code=409, detail="存在进行中任务，无法删除")
+        await session.execute(delete(EpisodeState).where(EpisodeState.media_id == media_id))
+        await session.execute(delete(DownloadTask).where(DownloadTask.media_id == media_id))
+        await session.execute(delete(TransferQueue).where(TransferQueue.media_id == media_id))
+        await session.delete(media)
+        await session.commit()
+        return {"ok": True}
 
 
 @router.post("/media/{media_id}/scan")
@@ -405,16 +422,17 @@ async def scan_media_route(
     media_id: int,
     admin: User = Depends(get_current_admin),  # §9.1 写操作鉴权
 ) -> dict:
-    """admin 手动触发一次媒体巡检（§4.3 搜索→入队），返回本次 task_run id。"""
-    # app.tasks.scan 由另一 lane 实现；延迟导入 + 兜底，避免 import 链断裂
-    try:
-        from app.tasks.scan import scan_media as run_scan  # 预期为 async 协程
-    except ImportError:
-        run_scan = None
+    """admin 手动触发一次媒体巡检（§4.3 搜索→入队）。
 
-    if run_scan is None:
-        # 待集成统一验证：scan 任务未就绪时仍返回 ok，保持 API 契约可用
+    E-1（P1）：fire-and-forget 立即返回，不再同步等待完整巡检（防 504）。
+    响应 task_run_id=None（结果需前端轮询 /api/logs 获取；scan 完成会写
+    task_run 记录）；scan 启动失败静默返回 ok 并告警（无副作用）。
+    """
+    try:
+        from app.tasks.scan import trigger_scan_background  # 延迟导入，防 import 链断裂
+    except ImportError:
+        logger.warning("[media] trigger_scan_background 未就绪，跳过触发")
         return {"ok": True, "task_run_id": None}
 
-    task_run_id = await run_scan(media_id)
-    return {"ok": True, "task_run_id": task_run_id}
+    trigger_scan_background(media_id)
+    return {"ok": True, "task_run_id": None}

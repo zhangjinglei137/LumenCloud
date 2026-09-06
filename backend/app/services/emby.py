@@ -17,6 +17,7 @@ Emby 防重基线 / 遗漏集 / 已有集 / 影视库展示服务。
 （docs/新系统设计.md §4.3：Emby 故障时不进入新缺集发现）。
 """
 import logging
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import httpx
@@ -75,6 +76,8 @@ def _normalize_episode(item: dict[str, Any]) -> dict[str, Any]:
         "episode": episode,
         "name": item.get("Name"),
         "code": _episode_code(season, episode),
+        # C-1：Emby 原始 PremiereDate（ISO 8601 字符串或缺失/None），供 aired-only 过滤
+        "premiere_date": item.get("PremiereDate"),
     }
 
 
@@ -100,6 +103,30 @@ async def _get(path: str, params: dict[str, Any], timeout: httpx.Timeout = REQUE
         return resp.json()
     except ValueError as exc:
         raise EmbyUnavailable("Emby 响应不是合法 JSON") from exc
+
+
+# D-1（P1）：Emby serverId（/System/Info/Public 的 Id）——web 详情链接必需参数，
+# 缺失时前端打开空白页。恒定不变，模块级惰性缓存（获取一次全局复用）。
+_SERVER_ID: Optional[str] = None
+_SERVER_ID_LOADED = False
+
+
+async def _get_server_id() -> Optional[str]:
+    """惰性获取 Emby serverId：成功/失败均只尝试一次并缓存结果（恒定值）。
+
+    Public 端点（无需 api_key）；失败或响应无 Id → None（调用方降级处理）。
+    """
+    global _SERVER_ID, _SERVER_ID_LOADED
+    if _SERVER_ID_LOADED:
+        return _SERVER_ID
+    _SERVER_ID_LOADED = True
+    try:
+        payload = await _get("/System/Info/Public", {})
+        _SERVER_ID = payload.get("Id") or None
+    except EmbyUnavailable as exc:
+        logger.warning("[emby] 获取 serverId 失败，详情链接降级为 None: %s", exc)
+        _SERVER_ID = None
+    return _SERVER_ID
 
 
 async def find_emby_id(tmdb_id: int, title: Optional[str] = None) -> Optional[str]:
@@ -150,10 +177,15 @@ async def find_emby_id(tmdb_id: int, title: Optional[str] = None) -> Optional[st
 async def get_missing_episodes(emby_id: str) -> list[dict[str, Any]]:
     """查询剧集遗漏集（防重基线 / 扫描入口）。
 
+    C-1 aired-only 语义：请求 Fields=PremiereDate 显式获取播出日期，
+    返回前剔除 PremiereDate 在未来（未播出）的集（预告/未来集入漏判定），
+    避免追更场景把未播出集误入队转存（下载空文件/预告致失败）。
+
     参数:
         emby_id: Emby 剧集条目 id
     返回:
-        遗漏集列表，每项含 emby_id/season/episode/name/code（code 为 SxxExx，空串表示无法解析）
+        遗漏集列表（仅已播出），每项含 emby_id/season/episode/name/code/
+        premiere_date（Emby 原始值原样保留，缺失或未播出时的过滤见内部逻辑）
     异常:
         EmbyUnavailable: 配置缺失 / 请求失败
     """
@@ -161,11 +193,33 @@ async def get_missing_episodes(emby_id: str) -> list[dict[str, Any]]:
         "ParentId": emby_id,
         "IncludeUnaired": "true",
         "IncludeSpecials": "false",
+        "Fields": "PremiereDate",
     })
     items = payload.get("Items", []) or []
     result = [_normalize_episode(item) for item in items]
     result.sort(key=lambda ep: (ep["season"] or 0, ep["episode"] or 0))
-    logger.info("Emby 遗漏集（emby_id=%s）: %d 集", emby_id, len(result))
+    # C-1（P1）：aired-only——PremiereDate 在未来（未播出）的集剔除，防追更误入队预告/空文件。
+    # 缺失/无法解析 PremiereDate 的集保守保留（宁可多余不去，不误杀信息不全的集）。
+    now = datetime.now(timezone.utc)
+    filtered: list[dict[str, Any]] = []
+    for ep in result:
+        raw = ep.get("premiere_date")
+        if raw:
+            try:
+                dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            except ValueError:
+                dt = None
+            if dt is not None and dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            if dt is not None and dt > now:
+                continue  # 未播出集
+        filtered.append(ep)
+    dropped = len(result) - len(filtered)
+    result = filtered
+    logger.info(
+        "Emby 遗漏集（emby_id=%s）: %d 集（过滤未播出 %d 集）",
+        emby_id, len(result), dropped,
+    )
     return result
 
 
@@ -190,11 +244,16 @@ async def list_episodes(emby_id: str) -> list[dict[str, Any]]:
     return result
 
 
-def _normalize_library_item(item: dict[str, Any], base: str, api_key: Optional[str]) -> Optional[dict[str, Any]]:
+def _normalize_library_item(
+    item: dict[str, Any], base: str, api_key: Optional[str], server_id: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
     """把 Emby Item 归一化为影视库 DTO（des-3 Emby 展示页）。
 
     仅保留 Movie / Series；其余类型（Folder 等纯目录）返回 None 跳过；
     另过滤 tmdb_id 与海报均为空的目录性质条目。
+
+    D-1（P1）：emby_web_url 依赖 server_id（web 详情路由必带 serverId 定位后端
+    实例，缺参打开空白页）；server_id 为空时 emby_web_url 降级 None。
     """
     item_type = item.get("Type")
     if item_type == "Movie":
@@ -218,6 +277,12 @@ def _normalize_library_item(item: dict[str, Any], base: str, api_key: Optional[s
     if has_poster:
         poster_url = f"{base}/Items/{item_id}/Images/Primary?api_key={api_key}"
 
+    # D-1（P1）：Emby web 详情路由依赖 serverId 定位后端实例（缺参 → 空白页）；
+    # serverId 获取失败时降级 None（前端隐藏「在 Emby 中打开」入口）
+    emby_web_url = None
+    if server_id:
+        emby_web_url = f"{base}/web/index.html#!/item?id={item_id}&serverId={server_id}"
+
     return {
         "emby_id": item_id,
         "title": item.get("Name"),
@@ -225,8 +290,11 @@ def _normalize_library_item(item: dict[str, Any], base: str, api_key: Optional[s
         "year": item.get("ProductionYear"),
         "poster_url": poster_url,
         "community_rating": item.get("CommunityRating"),
+        # Q12：连载状态（Emby Series 条目为 "continuing"/"ended"，Movie 或无该字段
+        # 时缺失 → None，原样透传；用于库页「仅在更」展示）
+        "series_status": item.get("SeriesStatus"),
         "tmdb_id": str(tmdb_id) if tmdb_id else None,  # str 返回，避免大整数精度问题
-        "emby_web_url": f"{base}/web/index.html#!/item?id={item_id}",
+        "emby_web_url": emby_web_url,
     }
 
 
@@ -333,7 +401,9 @@ async def list_library(
                    找不到动漫库则返回空列表（前端显示空态，不算错误）
     返回:
         归一化条目列表，每项含 emby_id/title/type/year/poster_url/
-        community_rating/tmdb_id/emby_web_url，及增强 B 的 in_media/media_id
+        community_rating/tmdb_id/emby_web_url、series_status（Q12：在更/完结，
+        "continuing"/"ended"/None），及增强 B 的 in_media/media_id；
+        emby_web_url 在 serverId 获取失败/无 Id 时为 None（前端隐藏「在 Emby 中打开」）
     异常:
         EmbyUnavailable: 配置缺失 / 请求失败
     """
@@ -354,7 +424,7 @@ async def list_library(
     params: dict[str, Any] = {
         "Recursive": "true",
         "IncludeItemTypes": include_item_types,
-        "Fields": "ProviderIds,CommunityRating,ProductionYear",
+        "Fields": "ProviderIds,CommunityRating,ProductionYear,SeriesStatus",
         "Limit": "500",
     }
     if parent_id:
@@ -366,9 +436,11 @@ async def list_library(
     base = _base_url()
     api_key = config_store.get("emby_api_key", settings.EMBY_API_KEY)
     items = payload.get("Items", []) or []
+    # D-1（P1）：详情链接的 serverId 一次获取，批量复用（惰性缓存，失败降级 None）
+    server_id = await _get_server_id()
     result: list[dict[str, Any]] = []
     for item in items:
-        normalized = _normalize_library_item(item, base, api_key)
+        normalized = _normalize_library_item(item, base, api_key, server_id)
         if normalized is not None:
             result.append(normalized)
 

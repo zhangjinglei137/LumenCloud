@@ -16,9 +16,11 @@ import type {
   MediaPatch,
   NotificationList,
   QueueItem,
+  QuarkVerifyResult,
   SettingsResponse,
   TmdbSearchResult,
   User,
+  UserItem,
 } from '../types'
 
 // ---------- 认证 ----------
@@ -61,7 +63,8 @@ export function getMediaApi(id: number) {
 
 export function createMediaApi(data: {
   title: string
-  tmdb_id: number
+  /** Q2①/Q12：可为 null（Emby 条目无 TMDB 关联时传 null） */
+  tmdb_id: number | null
   media_type: string
   poster_path?: string | null
 }) {
@@ -77,7 +80,7 @@ export function deleteMediaApi(id: number) {
 }
 
 export function scanMediaApi(id: number) {
-  return http.post<{ ok: boolean; task_run_id: number }>(`/media/${id}/scan`).then((r) => r.data)
+  return http.post<{ ok: boolean; task_run_id: number | null }>(`/media/${id}/scan`).then((r) => r.data)
 }
 
 // ---------- TMDB ----------
@@ -139,6 +142,14 @@ export function patchSettingsApi(patch: Record<string, unknown>) {
   return http.patch<SettingsResponse>('/settings', patch).then((r) => r.data)
 }
 
+/**
+ * 设置页一键验证：比对已保存的 quark_default_folder 与 AList 夸克挂载的 root_folder_id。
+ * 后端恒 200、无请求体；失败（网络/401 等）由 http 拦截器统一提示。
+ */
+export function verifyQuarkFolderApi() {
+  return http.post<QuarkVerifyResult>('/settings/verify-quark').then((r) => r.data)
+}
+
 export function listInvitesApi() {
   return http.get<InviteCode[]>('/admin/invites').then((r) => r.data)
 }
@@ -149,6 +160,20 @@ export function createInvitesApi(count = 1) {
 
 export function deleteInviteApi(code: string) {
   return http.delete(`/admin/invites/${encodeURIComponent(code)}`).then((r) => r.data)
+}
+
+// ---------- 用户管理（Q11，管理员） ----------
+/** 用户列表；409 等错误原样抛出（自改角色 / 唯一管理员 / 校验失败），由调用方提示后端文案 */
+export function listUsersApi() {
+  return http.get<UserItem[]>('/admin/users').then((r) => r.data)
+}
+
+export function patchUserRoleApi(id: number, role: 'admin' | 'guest') {
+  return http.patch<{ ok: boolean }>(`/admin/users/${id}`, { role }).then((r) => r.data)
+}
+
+export function deleteUserApi(id: number) {
+  return http.delete<{ ok: boolean }>(`/admin/users/${id}`).then((r) => r.data)
 }
 
 // ---------- Emby 影视库 ----------

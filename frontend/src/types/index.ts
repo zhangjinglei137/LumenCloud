@@ -131,6 +131,8 @@ export interface ApprovalItem {
   reject_reason: string | null
   created_at: string | null
   requested_by: string | null
+  /** Q10：申请人用户名（join 用户表；用户已删除或无申请人为 null），展示优先于 requested_by id */
+  requested_by_username: string | null
 }
 
 /** 设置字段的中文元数据（label/desc/placeholder/默认值提示/sensitive） */
@@ -145,6 +147,8 @@ export interface SettingFieldMeta {
   default?: string
   /** 敏感凭据：后端以 *** 掩码回显，未改动时不提交 */
   sensitive?: boolean
+  /** Q4：布尔字段以下拉形式呈现（如 scan_baseline_required）；未标注的布尔仍为开关 */
+  selectOptions?: { value: boolean; label: string }[]
 }
 
 export interface SettingsResponse {
@@ -155,6 +159,48 @@ export interface SettingsResponse {
   services: Record<string, boolean>
   /** 前端可配置的凭据键清单（snake_case） */
   editable_keys?: string[]
+}
+
+/** POST /api/settings/verify-quark 诊断结果：quark_default_folder 与 AList 夸克挂载根目录比对 */
+export interface QuarkVerifyResult {
+  /** AList 地址+令牌是否已配置 */
+  alist_configured: boolean
+  /** 是否在 alist 找到夸克挂载（/quark 或 driver=Quark）；探测失败时 false */
+  quark_mount_found: boolean | null
+  /** 匹配到的挂载路径 */
+  quark_mount_path: string | null
+  quark_driver: string | null
+  /** alist 夸克驱动 root_folder_id（addition 中，空→null） */
+  root_folder_id: string | null
+  /** 已保存的 quark_default_folder（未配置→null） */
+  configured_folder_id: string | null
+  /** true=一致 false=不一致 null=无法判定 */
+  match: boolean | null
+  root_folder_status: string | null
+  /** alist /quark 目录能否列出 */
+  fs_list_ok: boolean | null
+  fs_error: string | null
+  /** /quark 现有条目名（前 20） */
+  quark_files: string[]
+  quark_file_count: number
+  /** alist 存储总数（int） */
+  storage_total: number
+  storages: { mount_path: string | null; driver: string | null }[]
+}
+
+/** Q11：用户管理（GET /api/admin/users 元素） */
+export interface UserItem {
+  id: number
+  username: string
+  role: 'admin' | 'guest' | string
+  /** 注册时使用的邀请码 */
+  invite_code: string | null
+  created_at: string | null
+}
+
+/** Q11：修改用户角色（PATCH /api/admin/users/{id}） */
+export interface PatchUserRoleRequest {
+  role: 'admin' | 'guest'
 }
 
 export interface ChangePasswordRequest {
@@ -178,11 +224,15 @@ export interface LogItem {
   message: string | null
   started_at: string | null
   finished_at: string | null
+  /** Q8①：任务真实耗时（秒，job 入口 time.monotonic() 计时；历史记录为 null） */
+  duration_seconds?: number | null
 }
 
 export interface InviteCode {
   code: string
   used_by?: string | null
+  /** Q6：使用者用户名（join 用户表；用户已删除为 null），展示优先于 used_by id */
+  used_by_username?: string | null
   used_at?: string | null
   created_at?: string | null
 }
@@ -242,12 +292,16 @@ export interface EmbyLibraryItem {
   poster_url: string | null
   /** Emby 社区评分 0~10，无则 null */
   community_rating: number | null
-  /** Emby Web 详情页完整 URL（点击卡片新窗口打开） */
-  emby_web_url: string
+  /** Q12：关联的 TMDB ID（Emby ProviderIds 无 TMDB 关联时为 null，订阅时原样传 null） */
+  tmdb_id: number | null
+  /** Emby Web 详情页完整 URL（点击卡片新窗口打开）；D-1：后端 serverId 获取失败时为 null，前端隐藏入口并阻止跳转 */
+  emby_web_url: string | null
   /** 是否已收录进本地影视清单（media 表存在同 tmdb_id 记录） */
   in_media: boolean
   /** 本地 Media 记录 id；in_media=false 时为 null */
   media_id: number | null
+  /** Q12：剧集在更状态（continuing=在更 / ended=已完结；电影或无状态为 null），后端即将返回 */
+  series_status?: 'continuing' | 'ended' | string | null
 }
 
 export interface EmbyLibraryResponse {

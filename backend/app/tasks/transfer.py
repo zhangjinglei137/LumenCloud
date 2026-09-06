@@ -354,6 +354,12 @@ async def _complete_download(dt_id, media_id, tq_id, episode, file_name, quark_p
     except Exception as exc:  # noqa: BLE001
         logger.warning("[transfer] nastools_sync 事件触发失败: %s", exc)
 
+    # A-1（P1）：下载完成即释放容量 → 触发转存续跑，容量恢复后保持 pending 的任务自动重试
+    try:
+        _spawn(process_transfer_queue)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[transfer] 下载完成后转存续跑触发失败: %s", exc)
+
 
 async def _fail_download(dt_id, media_id, tq_id, episode, reason) -> None:
     """确定性失败（aria2 error/removed）：retry_count++ → ≥3 双表 failed / <3 双表回退。
@@ -932,6 +938,10 @@ async def _process_one_pending() -> None:
                 f"转存并提交 aria2 下载: {episode}（gid={gid}）", media_id,
             )
 
+    # A-1（P1）：成功提交后触发下一 pending 消费续跑——与失败回退（:896）对称；
+    # _process_lock 保证串行（续跑仅排队等待下一轮），解决「一次 scan 入队 N 集只处理 1 集」的静默积压
+    _spawn(process_transfer_queue)
+
 
 # ---------------------------------------------------------------------------
 # 入口
@@ -966,12 +976,16 @@ async def process_transfer_queue() -> None:
 
 async def process_transfer_queue_job() -> None:
     """APScheduler job 包装（IntervalTrigger(minutes=1) 兜底）：异常不外泄。"""
+    t0 = _time.monotonic()  # Q8①：真实耗时
     try:
         await process_transfer_queue()
     except Exception as exc:  # noqa: BLE001
         logger.exception("[transfer] process_transfer_queue_job 异常")
         async with async_session() as s:
-            await record_task_run(s, "transfer", "error", f"transfer job 异常: {exc}")
+            await record_task_run(  # Q8①：真实耗时
+                s, "transfer", "error", f"transfer job 异常: {exc}",
+                duration_seconds=_time.monotonic() - t0,
+            )
             await s.commit()
 
 

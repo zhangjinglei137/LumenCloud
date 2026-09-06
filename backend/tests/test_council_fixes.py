@@ -64,7 +64,7 @@ async def read_row(db, model, obj_id):
 async def seed_pending(db, *, episode="S01E01", file_name="ep.mkv"):
     """media + es(queued) + tq(pending)。返回 (mid, es_id, tq_id)。"""
     async with db() as s:
-        media = Media(title="测试剧", media_type="tv", tmdb_id=42, status="tracking")
+        media = Media(title="测试剧", media_type="tv", tmdb_id=None, status="tracking")
         s.add(media)
         await s.flush()
         mid = media.id
@@ -88,7 +88,7 @@ async def seed_downloading(db, *, episode="S01E01", file_name="ep.mkv", gid="gid
     """media + es(downloading) + tq(downloading) + dl(downloading)。返回 (mid, es_id, tq_id, dl_id)。"""
     ts = updated_at or _now()
     async with db() as s:
-        media = Media(title="测试剧", media_type="tv", tmdb_id=42, status="downloading")
+        media = Media(title="测试剧", media_type="tv", tmdb_id=None, status="downloading")
         s.add(media)
         await s.flush()
         mid = media.id
@@ -114,7 +114,7 @@ async def seed_downloading(db, *, episode="S01E01", file_name="ep.mkv", gid="gid
 async def seed_mixed_done(db, *, episode="S01E01", file_name="ep.mkv", dl_status="complete"):
     """media + es(done) + tq(done) + dl(指定状态)。返回 (mid, es_id, tq_id, dl_id)。"""
     async with db() as s:
-        media = Media(title="测试剧", media_type="tv", tmdb_id=42, status="tracking")
+        media = Media(title="测试剧", media_type="tv", tmdb_id=None, status="tracking")
         s.add(media)
         await s.flush()
         mid = media.id
@@ -325,7 +325,10 @@ def test_complete_with_lost_double_table_no_notify(db, monkeypatch):
     mid2, es2_id, tq2_id, dl2_id = run(seed_downloading(db, episode="S01E02"))
     run(transfer_mod._complete_download(dl2_id, mid2, tq2_id, "S01E02", "ep2.mkv", "/quark/ep2.mkv"))
     assert any(e.event_type == "download_complete" for e in notifier.events)
-    assert len(spawn) == 1  # nastools_sync 事件触发
+    assert len(spawn) == 2  # nastools_sync 事件触发 + process_transfer_queue 续跑
+    # A-1 联动（另一 lane）：_complete_download 成功路径新增 _spawn(process_transfer_queue)
+    # 续跑——正常路径 spawn 由 1（仅 nastools_sync）变为 2；双表失联分支（上行
+    # len(spawn) == 0）无 spawn 保持不变（回退分支不触发任何 _spawn）。
 
 
 # ---------------------------------------------------------------------------
@@ -408,8 +411,9 @@ def test_recover_cas_conflict_skips_override(db, monkeypatch):
     monkeypatch.setattr(recovery_mod, "async_session", db)
     mid, es_id, tq_id, dl_id = run(seed_downloading(
         db, gid="gid-x", updated_at=_now() - timedelta(hours=3)))  # 超时（timeout=2h）
+    remove_mock = AsyncMock(return_value=None)
     monkeypatch.setattr(recovery_mod, "aria2",
-                        types.SimpleNamespace(client=types.SimpleNamespace(remove=AsyncMock(return_value=None))))
+                        types.SimpleNamespace(client=types.SimpleNamespace(remove=remove_mock)))
 
     # 模拟 transfer 的 P2-5 CAS 写入抢在 recovery 阶段③之前推进 retry_count（0→1）
     async def fake_cleanup(path):
@@ -429,6 +433,9 @@ def test_recover_cas_conflict_skips_override(db, monkeypatch):
     assert es.retry_count == 1         # 并发增量被保留，recovery 不再 +1（防增量丢失）
     assert run(read_row(db, TransferQueue, tq_id)).status == "downloading"  # 双表联动未执行
     assert run(read_row(db, DownloadTask, dl_id)).status == "downloading"   # dl 未终结
+    # B-3（P1）：CAS 全部冲突 → 无实际回退行 → aria2.remove 绝不被调用
+    # （防误杀仍被 transfer 并发推进的下行 aria2 任务）
+    assert remove_mock.await_count == 0
 
 
 def test_recover_partial_cas_conflict(db, monkeypatch):
@@ -441,8 +448,9 @@ def test_recover_partial_cas_conflict(db, monkeypatch):
         db, episode="S01E01", file_name="a.mkv", gid="g1", updated_at=ts))
     mid2, es2_id, tq2_id, dl2_id = run(seed_downloading(
         db, episode="S01E02", file_name="b.mkv", gid="g2", updated_at=ts))
+    remove_mock = AsyncMock(return_value=None)
     monkeypatch.setattr(recovery_mod, "aria2",
-                        types.SimpleNamespace(client=types.SimpleNamespace(remove=AsyncMock(return_value=None))))
+                        types.SimpleNamespace(client=types.SimpleNamespace(remove=remove_mock)))
 
     # 仅对 S01E01（quark_path=/quark/a.mkv）模拟 transfer 并发推进 retry_count
     async def fake_cleanup(path):
@@ -466,3 +474,6 @@ def test_recover_partial_cas_conflict(db, monkeypatch):
     assert run(read_row(db, TransferQueue, tq2_id)).status == "pending"
     assert run(read_row(db, DownloadTask, dl1_id)).status == "downloading"
     assert run(read_row(db, DownloadTask, dl2_id)).status == "failed"
+    # B-3（P1）：仅 CAS 成功的 g2 被 remove 恰好 1 次；冲突行 g1 绝不移除
+    assert remove_mock.await_count == 1
+    assert remove_mock.await_args.args[0] == "g2"

@@ -131,13 +131,13 @@ export const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
   // ---------- 夸克网盘 ----------
   quark_default_folder: {
     label: '夸克中转目录 folderId',
-    desc: '转存默认落到的夸克目录 ID（即 alist Quark 驱动的 root_folder_id，可用 alist 管理 API /api/admin/storage/list 查询）。留空 = 不指定目录。',
+    desc: '转存默认落到的夸克目录 ID（即 alist Quark 驱动的 root_folder_id，可用 alist 管理 API /api/admin/storage/list 查询）。留空 = 不指定目录。可在本页点「验证 folderId」一键检测与 AList 挂载根目录是否一致。',
     placeholder: '已配置则显示 ***，不修改可留空',
     default: '可选，留空 = 不指定',
     sensitive: true,
   },
 
-  // ---------- 系统参数 ----------
+  // ---------- 业务参数 ----------
   quark_quota_gb: {
     label: '夸克网盘容量上限（GB）',
     desc: '夸克中转网盘的可用容量上限，用于计算剩余空间并决定是否继续转存。',
@@ -187,6 +187,11 @@ export const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
     label: 'Emby 防重基线缺失时跳过巡检',
     desc: 'Emby 未收录该剧集（防重基线缺失）时的行为：开启 = 本轮跳过（强防重，防盲入占中转空间）；关闭 = 照常搜索下载（仅转搜索到的具体文件，推荐默认）。',
     default: '默认关闭（照常搜索下载）',
+    // Q4：布尔但语义为二选一行为，以下拉呈现
+    selectOptions: [
+      { value: true, label: '开启' },
+      { value: false, label: '关闭' },
+    ],
   },
 }
 

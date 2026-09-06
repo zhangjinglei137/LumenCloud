@@ -52,7 +52,10 @@ class Media(Base):
 
     id = mapped_column(BIG_PK, Identity(), primary_key=True)
     title = mapped_column(Text, nullable=False)
-    tmdb_id = mapped_column(Integer)
+    # Q2①（P1）：tmdb_id UNIQUE 兜底（应用层 409 之外的最后防线）。
+    # nullable 保持——SQLite/PostgreSQL 的 UNIQUE 均允许多个 NULL，不影响
+    # tmdb_id 为空的影视；迁移见 alembic/versions/0006_tmdb_id_unique.py。
+    tmdb_id = mapped_column(Integer, unique=True)
     media_type = mapped_column(Text)  # movie / tv
     # 线上反馈修复 Q2：影视海报相对路径（TMDB 图床 /t/p/w500/...），MediaAddView
     # 选中影视时随 POST /api/media 落库，影视库展示不再丢海报。仅存相对路径，
@@ -61,6 +64,8 @@ class Media(Base):
     status = mapped_column(  # tracking/downloading/paused/error
         Text, nullable=False, server_default=text("'tracking'")
     )
+    # Q12：在更/完结（Emby SeriesStatus：continuing/ended；NULL=未知或电影条目）
+    series_status = mapped_column(Text)
     scan_interval_minutes = mapped_column(Integer, server_default=text("60"))
     max_episode_size_gb = mapped_column(Float)
     max_movie_size_gb = mapped_column(Float)
@@ -172,6 +177,8 @@ class TaskRun(Base):
     message = mapped_column(Text)
     started_at = mapped_column(DateTime)
     finished_at = mapped_column(DateTime)
+    # Q8①：真实耗时（秒，由 job 入口 time.monotonic() 传入；历史记录为 None）
+    duration_seconds = mapped_column(Float)
 
 
 class QuarkCapacityLog(Base):

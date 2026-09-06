@@ -95,7 +95,7 @@ async function submit() {
   height: 56px;
   border-radius: 16px;
   background: linear-gradient(135deg, var(--lc-accent), #b97f1e);
-  color: #1a1408;
+  color: var(--lc-accent-ink);
   font-family: var(--lc-font-display);
   font-size: 30px;
   align-items: center;

@@ -14,6 +14,7 @@ P2-1（Oracle 审查）：模块级互斥锁串行化整条同步链路（含冷
 """
 import asyncio
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 
 from app.config import settings
@@ -46,6 +47,7 @@ async def nastools_sync() -> None:
     整条流程持 _sync_lock；冷却检查在锁内重读（首个同步完成后时间戳已更新，后续并发直接冷却跳过）。
     """
     async with _sync_lock:
+        t0 = time.monotonic()  # Q8①：真实耗时
         # 1) 冷却检查（冷启动放行）
         async with async_session() as s:
             last_raw = await get_config_value(s, _COOLDOWN_KEY, None)
@@ -59,9 +61,10 @@ async def nastools_sync() -> None:
                     last = None  # 键存在但格式损坏 → 视为从未同步，立即执行
                 effective_cooldown = float(cooldown_min or settings.NASTOOLS_SYNC_COOLDOWN_MINUTES)
                 if last is not None and _now() - last < timedelta(minutes=effective_cooldown):
-                    await record_task_run(
+                    await record_task_run(  # Q8①：真实耗时
                         s, "sync_nastools", "skipped",
                         f"冷却中（{effective_cooldown}min 制动），跳过本次同步",
+                        duration_seconds=time.monotonic() - t0,
                     )
                     await s.commit()
                     logger.info("[sync_nastools] 冷却中，跳过（last=%s）", last_raw)
@@ -83,7 +86,10 @@ async def nastools_sync() -> None:
                 recipient=None,
             ))
             async with async_session() as s:
-                await record_task_run(s, "sync_nastools", "error", f"NasTools 同步失败: {exc}")
+                await record_task_run(  # Q8①：真实耗时
+                    s, "sync_nastools", "error", f"NasTools 同步失败: {exc}",
+                    duration_seconds=time.monotonic() - t0,
+                )
                 await s.commit()
             return
 
@@ -96,7 +102,10 @@ async def nastools_sync() -> None:
                     s.add(SystemConfig(key=_COOLDOWN_KEY, value=now.isoformat()))
                 else:
                     cfg.value = now.isoformat()
-                await record_task_run(s, "sync_nastools", "success", "NasTools 目录同步完成（全部分目录）")
+                await record_task_run(  # Q8①：真实耗时
+                    s, "sync_nastools", "success", "NasTools 目录同步完成（全部分目录）",
+                    duration_seconds=time.monotonic() - t0,
+                )
         logger.info("[sync_nastools] NasTools 目录同步完成")
 
 

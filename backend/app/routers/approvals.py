@@ -42,7 +42,9 @@ class RejectRequest(BaseModel):
     reject_reason: str = Field(default="", max_length=500)
 
 
-def _wr_dto(r: WatchRequest) -> dict:
+def _wr_dto(r: WatchRequest, requested_by_username: str | None = None) -> dict:
+    """审批 DTO：保留 requested_by(id) 字段，附加 request_by_username（Q10，
+    申请人已删除/无关联时 LEFT JOIN 得 None，前端回退 id）。"""
     return {
         "id": r.id,
         "title": r.title,
@@ -54,6 +56,7 @@ def _wr_dto(r: WatchRequest) -> dict:
         "reviewed_at": r.reviewed_at,
         "created_at": r.created_at,
         "requested_by": r.requested_by,
+        "requested_by_username": requested_by_username,
     }
 
 
@@ -62,14 +65,19 @@ async def list_approvals(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
-    """审批列表：admin 看全部；guest 只看自己提交的。"""
-    stmt = select(WatchRequest).order_by(
-        WatchRequest.created_at.desc(), WatchRequest.id.desc()
+    """审批列表：admin 看全部；guest 只看自己提交的。
+
+    Q10：LEFT JOIN users 取申请人 username（outer join，不留申请人对不上不报错）。
+    """
+    stmt = (
+        select(WatchRequest, User.username)
+        .join(User, WatchRequest.requested_by == User.id, isouter=True)
+        .order_by(WatchRequest.created_at.desc(), WatchRequest.id.desc())
     )
     if user.role != "admin":
         stmt = stmt.where(WatchRequest.requested_by == user.id)
-    rows = (await session.execute(stmt)).scalars().all()
-    return [_wr_dto(r) for r in rows]
+    rows = (await session.execute(stmt)).all()
+    return [_wr_dto(r[0], r[1]) for r in rows]
 
 
 @router.post("")
@@ -81,6 +89,12 @@ async def create_approval(
     """提交「想看」请求（guest+admin 均可）→ 通知管理员（§5.3 提交即通知）。"""
     if payload.media_type not in (None, "movie", "tv"):
         raise HTTPException(status_code=422, detail="media_type 仅支持 movie/tv")
+
+    # Q2①（P1）：已存在于影视库的 tmdb_id 拒绝重复提交（应用层去重）
+    if payload.tmdb_id is not None and await session.scalar(
+        select(Media.id).where(Media.tmdb_id == payload.tmdb_id).limit(1)
+    ):
+        raise HTTPException(status_code=409, detail="该影视已在影视库，无需重复提交")
 
     wr = WatchRequest(
         requested_by=user.id,
@@ -122,6 +136,13 @@ async def approve_approval(
     if wr.status != "pending":
         raise HTTPException(status_code=409, detail="该请求已被处理")
 
+    # Q2①（P1）：审批尚未被消费前查重——已存在于影视库的 tmdb_id 拒绝批准，
+    # 不产生半提交，管理员可另行 reject
+    if wr.tmdb_id is not None and await session.scalar(
+        select(Media.id).where(Media.tmdb_id == wr.tmdb_id).limit(1)
+    ):
+        raise HTTPException(status_code=409, detail="该影视已在影视库，无需重复提交")
+
     # 条件更新防并发双重审批（§3.1 条件更新约定）；异常未 commit 时整体回滚
     result = await session.execute(
         update(WatchRequest)
@@ -162,13 +183,13 @@ async def approve_approval(
         except Exception as exc:  # noqa: BLE001
             logger.exception("入库通知失败: %s", exc)
 
-    # 可选：触发该 media 巡检（另一 lane 的 scan；故障不影响审批结果）
+    # 可选：触发该 media 巡检（fire-and-forget，E-1 不再同步等待；故障不影响审批结果）
     try:
-        from app.tasks.scan import scan_media
+        from app.tasks.scan import trigger_scan_background
 
-        await scan_media(media_id)
+        trigger_scan_background(media_id)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("批准后自动巡检失败 media=%s: %s", media_id, exc)
+        logger.warning("批准后自动巡检触发失败 media=%s: %s", media_id, exc)
 
     return {"ok": True, "media_id": media_id}
 
