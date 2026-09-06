@@ -36,20 +36,33 @@ jobs:
 
       - name: 安装依赖
         working-directory: backend
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          # 测试依赖仅 CI 安装（Dockerfile 复用 requirements.txt 装生产依赖，
+          # 不把 pytest 塞进生产镜像/trivy 扫描面）
+          pip install pytest
 
       - name: 语法与导入检查
         working-directory: backend
         run: |
           python -m compileall -q app
-          python -c "import app.main" || true  # 首次骨架阶段允许部分模块缺失，仅作 smoke
+          python -c "import app.main"          # 导入失败即红，作为 CI 门禁
+
+      - name: 运行 pytest 测试（SQLite）
+        working-directory: backend
+        env:
+          DATABASE_URL: ""                     # 空 = 内置 SQLite（database.py 回退）
+        run: python -m pytest tests/ -q
 
       - name: Alembic 迁移测试（SQLite）
         working-directory: backend
         env:
           DATABASE_URL: ""                     # 空 = 内置 SQLite（database.py 回退）
           LUMENCLOUD_DATA_DIR: /tmp/data
-        run: alembic -c alembic/alembic.ini upgrade head
+        run: |
+          alembic -c alembic/alembic.ini upgrade head
+          alembic -c alembic/alembic.ini downgrade base   # 验证 0002/0003/0004 downgrade 可逆
+          alembic -c alembic/alembic.ini upgrade head     # 恢复至 head
 
       - name: Alembic 迁移测试（Postgres）
         working-directory: backend
