@@ -1,13 +1,14 @@
 # trivy 扫描配置（仅 trivy-scan job 使用）
 #
-# 背景（CI 实证）：python:3.12-slim 基础镜像自带第三方 SBOM（trace 到
-# "WARN Third-party SBOM may lead to inaccurate vulnerability detection"）。
-# trivy 默认合并 OCI 附带的 SBOM 元数据，其中记录了基础层构建时的旧包版本
-# （setuptools 70.3.0 / msgpack 1.1.2）——即使镜像文件系统中这些包已删除
-# （pip 升级 + dist-packages 清理，诊断 step 实测仅存 84.0.0 / 1.2.2），
-# 扫描仍会命中 SBOM 里的旧版本，造成与文件系统不符的误报。
+# 背景（多轮 CI 诊断实证）：
+#   构建日志出现 "WARN Third-party SBOM may lead to inaccurate vulnerability
+#   detection"——python:3.12-slim 基础镜像的 OCI 层自带第三方 SBOM（记录
+#   基础层构建时的旧包版本 setuptools 70.3.0 / msgpack 1.1.2）。trivy 默认
+#   sbom-sources 含 oci，会把这些 SBOM 元数据与文件系统内核结果合并——即使
+#   镜像内已通过 pip 升级 + dist-packages/dpkg 清理（多次镜像内实测仅存
+#   84.0.0 / 1.2.2），合并结果仍报旧版本 → CVE 误报。
 #
-# 解法：只信任 rekor 签名的 SBOM（默认还含 oci）——本地构建的无签名镜像
-# 将不再合并基础镜像 SBOM，漏洞判定回到文件系统实测。
-sbom-sources:
-  - rekor
+# 解法：scan.sbom-sources 置空（不读取任何第三方 SBOM），只信任文件系统内核
+# 检测的包版本。空数组 = 完全关闭 SBOM 合并。
+scan:
+  sbom-sources: []
