@@ -15,6 +15,9 @@ RUN npm run build
 # ---------- Stage 2: Python 运行时 ----------
 FROM python:3.12-slim
 
+# 升级 pip 消除镜像内系统级 pip CVE（trivy 门禁要求 pip>=26.2.1）
+RUN pip install --no-cache-dir --upgrade "pip>=26.2.1" && pip --version
+
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     LUMENCLOUD_DATA_DIR=/app/data
