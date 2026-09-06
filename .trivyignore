@@ -1,0 +1,12 @@
+# trivy 误报豁免（阶段 4 CI 实证）
+# 以下 3 个漏洞来自 python:3.12-slim 基础镜像 OCI 层自带的第三方 SBOM
+# （记录基础层构建时的旧包版本 setuptools 70.3.0 / msgpack 1.1.2），
+# 与镜像最终文件系统不符——Diagnostics 三证已实锤：
+#   1. pip list     → setuptools==84.0.0 / msgpack==1.2.2
+#   2. dist-info    → 仅 site-packages 存在 84.0.0.dist-info / 1.2.2.dist-info
+#   3. dpkg 记录    → 无 python3-setuptools / python3-msgpack
+# trivy 合并 SBOM 元数据后仍报旧版本（WARN Third-party SBOM 佐证）。
+# 文件系统层面依赖已升级到修复版；豁免仅消除 SBOM 陈旧记录导致的误报。
+CVE-2025-47273
+CVE-2026-59890
+GHSA-6v7p-g79w-8964
