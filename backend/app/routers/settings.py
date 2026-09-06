@@ -36,6 +36,8 @@ _WHITELIST_EXACT = {
     "episode_state_timeout_hours",
     "scheduler_enabled",
     "capacity_safety_margin_gb",
+    # Emby 防重基线缺失（未收录该剧集）时的巡检行为开关（默认关 = 照常搜索下载）
+    "scan_baseline_required",
     # 阶段 4 生产化 / E：容量使用率告警阈值（交付 1，默认 0.90 在代码常量）
     "capacity_alert_threshold",
     # ---- Phase 8 配置入库：服务凭据可写键 ----

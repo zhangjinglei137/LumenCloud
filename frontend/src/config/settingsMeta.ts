@@ -183,6 +183,11 @@ export const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
     desc: '所有定时任务（扫描、同步等）的总开关；关闭后定时任务全部停止，只保留手动触发。',
     default: '默认关闭',
   },
+  scan_baseline_required: {
+    label: 'Emby 防重基线缺失时跳过巡检',
+    desc: 'Emby 未收录该剧集（防重基线缺失）时的行为：开启 = 本轮跳过（强防重，防盲入占中转空间）；关闭 = 照常搜索下载（仅转搜索到的具体文件，推荐默认）。',
+    default: '默认关闭（照常搜索下载）',
+  },
 }
 
 /** 取字段元数据；未知键回退为原始键名（保证后端新增键时页面不崩） */

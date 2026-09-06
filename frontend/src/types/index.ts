@@ -217,6 +217,19 @@ export const TMDB_POSTER_BASE = 'https://image.tmdb.org/t/p/w500'
 /** Emby 条目类型：movie=电影，series=剧集 */
 export type EmbyItemType = 'movie' | 'series'
 
+/** 剧集在更状态筛选：continuing=仅在更，ended=已完结（仅对剧集/动漫 Tab 生效） */
+export type EmbySeriesStatus = 'continuing' | 'ended'
+
+/** Emby 库查询参数（GET /api/emby/library） */
+export interface EmbyLibraryQuery {
+  /** 类型筛选：movie/series，缺省全部 */
+  itemType?: EmbyItemType
+  /** 剧集状态筛选：continuing 仅在更 / ended 已完结（后端用 SeriesStatus 参数） */
+  status?: EmbySeriesStatus
+  /** 限定动漫库（后端按 Name 关键词匹配 VirtualFolder，忽略 itemType 过滤） */
+  anime?: boolean
+}
+
 /** Emby 库单条媒体（GET /api/emby/library 的元素，字段由后端 DTO 保证） */
 export interface EmbyLibraryItem {
   /** Emby Item Id（字符串） */
@@ -231,6 +244,10 @@ export interface EmbyLibraryItem {
   community_rating: number | null
   /** Emby Web 详情页完整 URL（点击卡片新窗口打开） */
   emby_web_url: string
+  /** 是否已收录进本地影视清单（media 表存在同 tmdb_id 记录） */
+  in_media: boolean
+  /** 本地 Media 记录 id；in_media=false 时为 null */
+  media_id: number | null
 }
 
 export interface EmbyLibraryResponse {

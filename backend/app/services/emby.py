@@ -1,11 +1,13 @@
 """
-Emby 防重基线 / 遗漏集 / 已有集查询服务。
+Emby 防重基线 / 遗漏集 / 已有集 / 影视库展示服务。
 
 - find_emby_id      ：按 TMDB id 定位 Emby 条目（/Items + AnyProviderIdEquals）
                       未命中时做 P11 二次模糊查询兜底（需传入 title）
 - get_missing_episodes：查剧集遗漏集（/emby/Shows/Missing），作为防重基线
 - list_episodes     ：查已有集（/Shows/{id}/Episodes），供防重基线
-- list_library      ：查 Emby 影视库（/Items Recursive 全量），供 des-3 展示页
+- list_library      ：查 Emby 影视库（/Items Recursive 全量），供 des-3 展示页；
+                      支持 item_type / status（SeriesStatus 在更/完结）/ anime（动漫库）
+- list_libraries    ：查 Emby 媒体库列表（/Library/VirtualFolders），供动漫库识别
 
 契约参照 n8n 旧流程（docs/新系统设计.md §10）：
     GET {base}/Items?api_key=...&Recursive=true&HasTmdbId=true&Fields=ProviderIds
@@ -18,13 +20,22 @@ import logging
 from typing import Any, Optional
 
 import httpx
+from sqlalchemy import select
 
 from app.config import settings
+from app.database import async_session
+from app.models import Media
 from app.services import config_store
 
 logger = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT = httpx.Timeout(30.0)   # Emby 为慢端点（/Shows/Missing 实测 7s+），超时须充足
+
+# 动漫库名称关键词（大小写不敏感）：Emby 没有 CollectionType=anime，
+# 动漫库只能靠 VirtualFolderInfo.Name 匹配或库白名单判定（des-3 增强 C）
+ANIME_LIBRARY_KEYWORDS = ("动漫", "动画", "anime")
+# VirtualFolderInfo.CollectionType 白名单：仅保留影视类媒体库（movies/tvshows 或 null）
+LIBRARY_COLLECTION_TYPES = ("movies", "tvshows")
 
 
 class EmbyUnavailable(Exception):
@@ -219,24 +230,139 @@ def _normalize_library_item(item: dict[str, Any], base: str, api_key: Optional[s
     }
 
 
-async def list_library(item_type: Optional[str] = None) -> list[dict[str, Any]]:
+async def list_libraries() -> list[dict[str, Any]]:
+    """查 Emby 媒体库列表（/Library/VirtualFolders），供动漫库识别（可选增强 C）。
+
+    归一化每条 {item_id, name, collection_type}，仅保留 CollectionType 为
+    movies/tvshows 或 null 的媒体库（Emby 无 CollectionType=anime，动漫库只能靠
+    Name 关键词匹配）。VirtualFolders 调用失败时记 warn 返回空列表，不阻断主流程；
+    但配置缺失仍抛 EmbyUnavailable（保持前端「未配置空态」四态）。
+    """
+    try:
+        payload = await _get("/Library/VirtualFolders", {})
+    except EmbyUnavailable as exc:
+        if "未配置" in str(exc):
+            raise  # 配置缺失 → 交由 list_library 主流程按四态处理
+        logger.warning("Emby 媒体库列表获取失败（动漫筛选降级为空）: %s", exc)
+        return []
+    # VirtualFolders 返回裸数组；防御性兼容 dict 包装（Items 键）
+    raw_folders: Any = payload if isinstance(payload, list) else payload.get("Items")
+    folders: list[Any] = raw_folders or []
+    result: list[dict[str, Any]] = []
+    for folder in folders:
+        collection_type = folder.get("CollectionType")
+        if collection_type not in LIBRARY_COLLECTION_TYPES and collection_type is not None:
+            continue
+        result.append({
+            "item_id": folder.get("ItemId"),
+            "name": folder.get("Name"),
+            "collection_type": collection_type,
+        })
+    logger.info("Emby 媒体库列表: %d 个（影视类）", len(result))
+    return result
+
+
+async def _find_anime_library_item_id() -> Optional[str]:
+    """定位首个动漫库的 ItemId（VirtualFolderInfo.ItemId，作 /Items 的 ParentId）。
+
+    Name 含「动漫」「动画」「anime」即判定为动漫库（大小写不敏感）；
+    找不到返回 None。
+    """
+    for library in await list_libraries():
+        name = (library.get("name") or "").lower()
+        if any(keyword in name for keyword in ANIME_LIBRARY_KEYWORDS):
+            return library.get("item_id")
+    return None
+
+
+async def _attach_in_media_flag(items: list[dict[str, Any]]) -> None:
+    """为库条目附加本地收录标记（增强 B：in_media / media_id）。
+
+    收集全部非空 tmdb_id 后单次 IN 查询 Media 表，避免 N+1；
+    media.tmdb_id 为 int，Emby ProviderIds.Tmdb 为字符串，比对前转换。
+    DB 异常降级为全部 in_media=False（仅记 warn，不阻断 Emby 展示）。
+    """
+    tmdb_ids: set[int] = set()
+    for item in items:
+        tmdb_id = item.get("tmdb_id")
+        if tmdb_id:
+            try:
+                tmdb_ids.add(int(tmdb_id))
+            except (TypeError, ValueError):
+                continue  # 非法 id 忽略，保持未收录
+
+    id_by_tmdb: dict[int, int] = {}
+    if tmdb_ids:
+        try:
+            async with async_session() as session:
+                rows = (
+                    await session.execute(
+                        select(Media.id, Media.tmdb_id).where(Media.tmdb_id.in_(tmdb_ids))
+                    )
+                ).all()
+            id_by_tmdb = {row.tmdb_id: row.id for row in rows if row.tmdb_id is not None}
+        except Exception as exc:  # noqa: BLE001 DB 不可用降级，不阻断 Emby 展示
+            logger.warning("本地 Media 收录标记查询失败，降级为全部未收录: %s", exc)
+
+    for item in items:
+        tmdb_id = item.get("tmdb_id")
+        media_id = None
+        if tmdb_id:
+            try:
+                media_id = id_by_tmdb.get(int(tmdb_id))
+            except (TypeError, ValueError):
+                pass
+        item["in_media"] = media_id is not None
+        item["media_id"] = media_id
+
+
+async def list_library(
+    item_type: Optional[str] = None,
+    status: Optional[str] = None,
+    anime: bool = False,
+) -> list[dict[str, Any]]:
     """查 Emby 影视库（des-3 Emby 展示页 / GET /api/emby/library）。
 
     参数:
         item_type: "movie" 电影 / "series" 剧集 / None 全部（Movie,Series）
+        status:    "continuing" 仅在更 / "ended" 已完结；非空时 Items 请求加
+                   SeriesStatus（注意是 SeriesStatus 而非 Status，Status 需 Fields 才返回），
+                   并确保 IncludeItemTypes 含 Series
+        anime:     True 时限定动漫库（按 Name 关键词匹配 VirtualFolder，取 ItemId 作
+                   ParentId）；忽略 item_type 过滤（动漫库通常为剧集，亦有剧场版电影）；
+                   找不到动漫库则返回空列表（前端显示空态，不算错误）
     返回:
         归一化条目列表，每项含 emby_id/title/type/year/poster_url/
-        community_rating/tmdb_id/emby_web_url
+        community_rating/tmdb_id/emby_web_url，及增强 B 的 in_media/media_id
     异常:
         EmbyUnavailable: 配置缺失 / 请求失败
     """
+    # 动漫模式：定位动漫库（Name 关键词匹配），找不到直接返回空列表
+    parent_id: Optional[str] = None
+    if anime:
+        parent_id = await _find_anime_library_item_id()
+        if not parent_id:
+            logger.info("Emby 未找到动漫库（Name 含 动漫/动画/anime），返回空列表")
+            return []
+        item_type = None  # 动漫模式忽略 item_type 过滤（动漫库通常为剧集，亦有剧场版电影）
+
+    # IncludeItemTypes：按 item_type 选择；status 非空时须含 Series（SeriesStatus 只对剧集生效）
     include_item_types = {"movie": "Movie", "series": "Series"}.get(item_type or "", "Movie,Series")
-    payload = await _get("/Items", {
+    if status and "Series" not in include_item_types:
+        include_item_types = f"{include_item_types},Series"
+
+    params: dict[str, Any] = {
         "Recursive": "true",
         "IncludeItemTypes": include_item_types,
         "Fields": "ProviderIds,CommunityRating,ProductionYear",
         "Limit": "500",
-    })
+    }
+    if parent_id:
+        params["ParentId"] = parent_id
+    if status:
+        params["SeriesStatus"] = status
+
+    payload = await _get("/Items", params)
     base = _base_url()
     api_key = config_store.get("emby_api_key", settings.EMBY_API_KEY)
     items = payload.get("Items", []) or []
@@ -245,5 +371,12 @@ async def list_library(item_type: Optional[str] = None) -> list[dict[str, Any]]:
         normalized = _normalize_library_item(item, base, api_key)
         if normalized is not None:
             result.append(normalized)
-    logger.info("Emby 影视库（item_type=%s）: %d 条", item_type, len(result))
+
+    # 本地已收录标记（in_media/media_id）：按 tmdb_id 批量查 Media 表（单次 IN 查询）
+    await _attach_in_media_flag(result)
+
+    logger.info(
+        "Emby 影视库（item_type=%s, status=%s, anime=%s）: %d 条",
+        item_type, status, anime, len(result),
+    )
     return result

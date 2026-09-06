@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { listEmbyLibraryApi } from '../api'
-import type { EmbyItemType, EmbyLibraryItem } from '../types'
+import type { EmbyLibraryItem, EmbyLibraryQuery } from '../types'
 
 /** Emby 库拉取失败分类：与后端 503 detail.code 对应 */
 export type EmbyErrorCode = 'not_configured' | 'unavailable' | null
@@ -26,10 +26,14 @@ export const useEmbyStore = defineStore('emby', {
     error: null as EmbyErrorCode,
   }),
   actions: {
-    async fetchLibrary(itemType?: EmbyItemType): Promise<void> {
+    /**
+     * 拉取 Emby 库。
+     * @param params itemType 类型筛选 / status 在更完结 / anime 动漫库（详见 EmbyLibraryQuery）
+     */
+    async fetchLibrary(params?: EmbyLibraryQuery): Promise<void> {
       this.loading = true
       try {
-        const res = await listEmbyLibraryApi(itemType)
+        const res = await listEmbyLibraryApi(params)
         this.items = res.items
         this.error = null
       } catch (err) {

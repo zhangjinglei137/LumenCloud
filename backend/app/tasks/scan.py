@@ -29,7 +29,7 @@ from app.config import settings
 from app.database import async_session
 from app.models import DownloadTask, EpisodeState, Media, TransferQueue
 from app.services import cloudsaver, config_store, emby
-from app.tasks import get_config_value, record_task_run
+from app.tasks import as_bool, get_config_value, record_task_run
 
 logger = logging.getLogger(__name__)
 
@@ -118,12 +118,31 @@ async def _emby_missing_codes(media) -> list[str | None] | None:
     返回缺失集列表；**None 表示基线不可用**（Emby 未收录该剧，无法探明遗漏）。
     - tv    → 缺失集 code 列表（如 ["S01E01"]）
     - movie → 已在库 []（无遗漏）；整部缺失 [None]（全量模式，episode=文件名）
+    - tv 未收录 → 由配置项 scan_baseline_required 分流：
+        True（强防重，旧行为）→ None（主流程本轮跳过，防盲入占中转空间）；
+        False（默认软处理）→ [None]（全量模式等价表达：后续对每个搜索到的具体
+        文件都视为缺失集入队——scan 搜索链 _walk_share 只收集具体文件并受
+        max_files 与大小过滤约束，「盲入整部剧」顾虑已大幅缓解）。
     """
     emby_id = await emby.find_emby_id(media.tmdb_id, media.title)  # P11 二次模糊兜底内置
     if media.media_type == "movie":
         return [] if emby_id else [None]
     if not emby_id:
-        return None  # Emby 未收录该剧集 → 无基线，本轮跳过（防盲入占 10G 中转空间）
+        # Emby 未收录该剧集 → 防重基线缺失（本函数是唯一返回 None 的来源）
+        required = as_bool(
+            config_store.get("scan_baseline_required", settings.SCAN_BASELINE_REQUIRED)
+        )
+        if required:
+            logger.info(
+                "[scan] media=%s Emby 未收录该剧集，防重基线强制（scan_baseline_required=True），本轮跳过",
+                media.id,
+            )
+            return None
+        logger.info(
+            "[scan] media=%s Emby 未收录该剧集，防重基线缺失按全量模式处理（scan_baseline_required=False），搜索到的具体文件均视为缺失集",
+            media.id,
+        )
+        return [None]
     missing = await emby.get_missing_episodes(emby_id)
     return [ep.get("code") for ep in missing if ep.get("code")]
 
@@ -776,10 +795,13 @@ async def _scan_one(media_id: int) -> int | None:
         return rid
 
     if missing is None:
-        # 基线不可用：Emby 未收录该剧集，无法探明遗漏，本轮跳过（防盲入）
+        # 基线不可用：Emby 未收录该剧集，无法探明遗漏。
+        # _emby_missing_codes 已按开关分流——仅当 scan_baseline_required=True（强防重，
+        # 旧行为）才返回 None；False（默认）返回全量模式 [None]，走下方搜索入队路径。
+        # 此处保留旧行为（本轮跳过），并区分文案以与全量模式日志区分。
         rid = await _record_scan_result(
             media_id, "skipped",
-            "Emby 未收录该剧集，防重基线不可用，本轮跳过",
+            "Emby 未收录该剧集，防重基线强制（scan_baseline_required=True），本轮跳过",
             touch_last_scan_at=True,
         )
         return rid

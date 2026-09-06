@@ -9,8 +9,12 @@ const router = useRouter()
 const store = useEmbyStore()
 const auth = useAuthStore()
 
-/** 类型筛选：全部 / 电影 / 剧集 */
-const itemType = ref<EmbyItemType | ''>('')
+/** 类型 Tab：全部 / 电影 / 剧集 / 动漫（动漫对应后端 anime=true，按 Name 匹配动漫库） */
+type EmbyTab = '' | EmbyItemType | 'anime'
+const tab = ref<EmbyTab>('')
+
+/** 「仅在更」筛选（仅对剧集/动漫 Tab 显示；勾选时请求带 status=continuing） */
+const onlyContinuing = ref(false)
 
 /** 标题关键字（客户端即时过滤，不额外请求） */
 const keyword = ref('')
@@ -25,8 +29,21 @@ const filteredItems = computed<EmbyLibraryItem[]>(() => {
   return store.items.filter((it) => it.title.toLowerCase().includes(kw))
 })
 
-function onTypeChange(val: EmbyItemType | '') {
-  store.fetchLibrary(val || undefined)
+/** 按当前 Tab / 仅在更状态发请求（刷新、Tab 切换、checkbox 共用） */
+function fetchCurrent() {
+  store.fetchLibrary({
+    itemType: tab.value === 'anime' ? undefined : tab.value || undefined,
+    anime: tab.value === 'anime',
+    status: onlyContinuing.value ? 'continuing' : undefined,
+  })
+}
+
+function onTabChange(val: EmbyTab) {
+  // 回写选中 Tab（:model-value 单向绑定，须手动同步，否则点击不生效）
+  tab.value = val
+  // 仅在更仅对剧集/动漫有效；切到其他 Tab 时自动复位，避免残留 status 参数
+  if (val !== 'series' && val !== 'anime') onlyContinuing.value = false
+  fetchCurrent()
 }
 
 function typeLabel(type: EmbyItemType): string {
@@ -42,11 +59,21 @@ function openInEmby(item: EmbyLibraryItem) {
   <div class="lc-page">
     <div class="lc-toolbar">
       <div class="left">
-        <el-radio-group :model-value="itemType" size="small" @change="onTypeChange">
+        <el-radio-group :model-value="tab" size="small" @change="onTabChange">
           <el-radio-button value="">全部</el-radio-button>
           <el-radio-button value="movie">电影</el-radio-button>
           <el-radio-button value="series">剧集</el-radio-button>
+          <el-radio-button value="anime">动漫</el-radio-button>
         </el-radio-group>
+        <!-- 仅在更：仅对剧集/动漫 Tab 显示（后端 SeriesStatus=continuing） -->
+        <el-checkbox
+          v-if="tab === 'series' || tab === 'anime'"
+          v-model="onlyContinuing"
+          size="small"
+          @change="fetchCurrent"
+        >
+          仅在更
+        </el-checkbox>
         <span class="lc-muted">共 {{ store.items.length }} 部</span>
       </div>
       <div class="right">
@@ -61,7 +88,7 @@ function openInEmby(item: EmbyLibraryItem) {
             <el-icon><Search /></el-icon>
           </template>
         </el-input>
-        <el-button :icon="'Refresh'" :loading="store.loading" @click="onTypeChange(itemType)">
+        <el-button :icon="'Refresh'" :loading="store.loading" @click="fetchCurrent">
           刷新
         </el-button>
       </div>
@@ -90,7 +117,7 @@ function openInEmby(item: EmbyLibraryItem) {
             无法连接 Emby，请检查设置页中的 Emby 地址与 API Key 是否正确
           </p>
         </template>
-        <el-button type="primary" @click="onTypeChange(itemType)">重试</el-button>
+        <el-button type="primary" @click="fetchCurrent">重试</el-button>
       </el-empty>
 
       <!-- 已配置但库为空 -->
@@ -114,6 +141,16 @@ function openInEmby(item: EmbyLibraryItem) {
               :type="m.type === 'movie' ? 'warning' : 'primary'"
             >
               {{ typeLabel(m.type) }}
+            </el-tag>
+            <!-- 已纳入管理角标：本地 Media 表已收录（in_media=true） -->
+            <el-tag
+              v-if="m.in_media"
+              class="lc-poster-in-media"
+              size="small"
+              effect="dark"
+              type="success"
+            >
+              已纳入管理
             </el-tag>
           </div>
           <div class="lc-media-card-body">
@@ -148,5 +185,12 @@ function openInEmby(item: EmbyLibraryItem) {
   align-items: center;
   gap: 4px;
   opacity: 0.75;
+}
+
+/* 「已纳入管理」角标：海报右上角，与左上角类型标签（.lc-poster-type）对称 */
+.lc-poster-in-media {
+  position: absolute;
+  top: 10px;
+  right: 10px;
 }
 </style>

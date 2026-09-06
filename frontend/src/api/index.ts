@@ -6,7 +6,7 @@ import type {
   Capacity,
   ChangePasswordRequest,
   ChangePasswordResponse,
-  EmbyItemType,
+  EmbyLibraryQuery,
   EmbyLibraryResponse,
   InviteCode,
   LogItem,
@@ -154,15 +154,23 @@ export function deleteInviteApi(code: string) {
 // ---------- Emby 影视库 ----------
 /**
  * 拉取 Emby 媒体库列表。
- * 契约：GET /api/emby/library?item_type=movie|series（缺省 = 全部）
+ * 契约：GET /api/emby/library
+ *   item_type=movie|series（缺省 = 全部）
+ *   status=continuing|ended（在更/完结，后端用 SeriesStatus 参数，仅对剧集生效）
+ *   anime=true（限定动漫库，后端按 Name 关键词匹配，忽略 item_type）
  *   200 → EmbyLibraryResponse
  *   503 → {"detail": {"msg": "...", "code": "emby_not_configured" | "emby_unreachable"}}
  *         （code 由前端区分「未配置空态」与「不可达错误态」）
  */
-export function listEmbyLibraryApi(itemType?: EmbyItemType) {
+export function listEmbyLibraryApi(params?: EmbyLibraryQuery) {
+  const { itemType, status, anime } = params ?? {}
+  const query: Record<string, string | boolean> = {}
+  if (itemType) query.item_type = itemType
+  if (status) query.status = status
+  if (anime) query.anime = anime
   return http
     .get<EmbyLibraryResponse>('/emby/library', {
-      params: itemType ? { item_type: itemType } : undefined,
+      params: Object.keys(query).length ? query : undefined,
     })
     .then((r) => r.data)
 }

@@ -71,6 +71,11 @@ class Settings(BaseSettings):
     SCAN_INTERVAL_MINUTES: int = 60
     NASTOOLS_SYNC_COOLDOWN_MINUTES: int = 30
     EPISODE_STATE_TIMEOUT_HOURS: float = 2.0
+    # Emby 防重基线缺失（未收录该剧集）时的巡检行为开关（Phase 8，system_config 可覆盖）：
+    # True = 旧行为强防重——基线不可用即本轮跳过（防盲入占中转空间，需部署主动开启）；
+    # False = 默认软处理——未收录时按全量模式照常搜索入队（scan 搜索链只收集具体文件
+    #         并受大小/数量过滤，「防盲入」顾虑已大幅缓解，用户可下载本地没有的剧集）。
+    SCAN_BASELINE_REQUIRED: bool = False
 
 
 settings = Settings()
