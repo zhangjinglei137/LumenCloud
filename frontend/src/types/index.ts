@@ -10,6 +10,8 @@ export interface User {
 
 export interface LoginResponse {
   access_token: string
+  /** Phase 8 起后端返回 token_type；缺省按 Bearer 处理 */
+  token_type?: string
   user: User
 }
 
@@ -130,8 +132,22 @@ export interface ApprovalItem {
 }
 
 export interface SettingsResponse {
-  config: Record<string, unknown>
+  /** Phase 8 起后端返回 system_config；敏感键值为 "***" 占位 */
+  system_config?: Record<string, unknown>
+  /** 旧字段名，向后兼容 */
+  config?: Record<string, unknown>
   services: Record<string, boolean>
+  /** 前端可配置的凭据键清单（snake_case） */
+  editable_keys?: string[]
+}
+
+export interface ChangePasswordRequest {
+  old_password: string
+  new_password: string
+}
+
+export interface ChangePasswordResponse {
+  ok: boolean
 }
 
 export interface LogItem {

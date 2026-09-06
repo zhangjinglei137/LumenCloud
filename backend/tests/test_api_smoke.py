@@ -10,11 +10,12 @@ import tempfile
 
 _TMP_DATA = tempfile.mkdtemp(prefix="lumencloud_smoke_")
 os.environ["LUMENCLOUD_DATA_DIR"] = _TMP_DATA
-# 强制赋值（非 setdefault）：启动护栏要求 JWT_SECRET ≥16 字符非默认值，
-# 避免外部 shell 已导出弱 JWT_SECRET 导致 lifespan 拒绝启动。
+# Phase 8：JWT 密钥不再要求 env（自动文件化于 <data_dir>/.jwt_secret）；此处保留
+# env 值仅用于 settings 面板 `jwt_secret` 布尔断言（settings.py 检测 env 字段，
+# 认证实际使用文件密钥）。
 os.environ["JWT_SECRET"] = "smoke-secret-change-me-12345"
 os.environ["INIT_ADMIN_USERNAME"] = "admin"
-os.environ["INIT_ADMIN_PASSWORD"] = "admin123"
+# Phase 8 起 INIT_ADMIN_PASSWORD 弃用：admin 初始密码随机生成，见下方动态登录。
 # 隔离外部服务：pydantic-settings 的 settings.env_file 指向项目根 .env，
 # 其中含真实凭据，显式置空避免冒烟测试发起真实外部网络调用。
 os.environ["TMDB_API_KEY"] = ""
@@ -89,10 +90,31 @@ async def _seed_queue_data():
         return {"media_id": media.id, "failed_tq_id": failed.id}
 
 
+async def _recreate_admin() -> str:
+    """删除 admin 后重新执行 ensure_admin，确定性拿到随机初始密码（Phase 8）。
+
+    ensure_admin 首次创建时返回随机初始密码，但 TestClient 无法透传 lifespan 内
+    的返回值；此处重建一次以确定性获取初始密码用于登录断言。
+    """
+    from sqlalchemy import delete
+
+    from app.database import async_session
+    from app.models import User
+    from app.routers.auth import ensure_admin
+
+    async with async_session() as session:
+        await session.execute(delete(User).where(User.role == "admin"))
+        await session.commit()
+    password = await ensure_admin()
+    assert password is not None  # 已删除 admin，必然重新创建并返回初始密码
+    return password
+
+
 def test_full_auth_and_api_flow():
     with TestClient(app) as client:
-        # ---------- 管理员初始化 + 登录（ensure_admin 已在 lifespan 创建） ----------
-        r = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+        # ---------- 管理员初始化 + 登录（Phase 8：初始密码随机，动态获取） ----------
+        admin_password = client.portal.call(_recreate_admin)
+        r = client.post("/api/auth/login", json={"username": "admin", "password": admin_password})
         assert r.status_code == 200, r.text
         admin_tok = r.json()["access_token"]
         assert r.json()["token_type"] == "bearer"
@@ -186,7 +208,7 @@ def test_full_auth_and_api_flow():
 
         # PATCH：非白名单键 → 422；白名单 UPSERT → 200
         assert (
-            client.patch("/api/settings", json={"tmdb_api_key": "hack"}, headers=_auth(admin_tok)).status_code
+            client.patch("/api/settings", json={"hack_key": "hack"}, headers=_auth(admin_tok)).status_code
             == 422
         )
         r = client.patch(
@@ -197,6 +219,20 @@ def test_full_auth_and_api_flow():
         assert r.status_code == 200, r.text
         r = client.get("/api/settings", headers=_auth(admin_tok))
         assert r.json()["system_config"].get("quark_quota_gb") == "210"
+
+        # Phase 8 配置入库：服务凭据可经 PATCH 写入 DB 且保存即生效；
+        # GET 对敏感键不回显值（"***" 占位），services 布尔判定读 DB 值（非仅 env）。
+        r = client.patch(
+            "/api/settings",
+            json={"tmdb_api_key": "db-tmdb-key"},
+            headers=_auth(admin_tok),
+        )
+        assert r.status_code == 200, r.text
+        r = client.get("/api/settings", headers=_auth(admin_tok))
+        cfg = r.json()["system_config"]
+        assert cfg.get("tmdb_api_key") == "***"  # 敏感键不回显明文
+        assert r.json()["services"]["tmdb"] is True  # DB 来源凭据判定已配置
+        assert "tmdb_api_key" in r.json().get("editable_keys", [])
 
         # ---------- logs：仅 admin ----------
         assert client.get("/api/logs", headers=_auth(guest_tok)).status_code == 403

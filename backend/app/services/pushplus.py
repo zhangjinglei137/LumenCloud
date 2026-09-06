@@ -13,6 +13,7 @@ from typing import Any, Optional
 import httpx
 
 from app.config import settings
+from app.services import config_store
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,13 @@ class PushPlusClient:
     """PushPlus 客户端（单条推送）。"""
 
     def __init__(self, token: Optional[str] = None) -> None:
-        self._token: Optional[str] = token or (settings.PUSHPLUS_TOKEN or "").strip() or None
+        # Phase 8 配置入库：显式传入的 token 优先；否则 DB（config_store）优先、
+        # env fallback（PATCH 保存后新实例即读最新值；notifier 层每次 notify 重建）
+        self._token: Optional[str] = (
+            token
+            or (config_store.get("pushplus_token", settings.PUSHPLUS_TOKEN) or "").strip()
+            or None
+        )
         self._endpoint: str = PUSHPLUS_SEND_ENDPOINT
 
     @property

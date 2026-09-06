@@ -1,7 +1,11 @@
 import http from './http'
+import { getToken } from './http'
+import axios from 'axios'
 import type {
   ApprovalItem,
   Capacity,
+  ChangePasswordRequest,
+  ChangePasswordResponse,
   InviteCode,
   LogItem,
   LoginResponse,
@@ -28,6 +32,20 @@ export function registerApi(username: string, password: string, inviteCode: stri
 
 export function fetchMeApi() {
   return http.get<User>('/auth/me').then((r) => r.data)
+}
+
+/**
+ * 修改密码。
+ * 注意：后端对「旧密码错误」也返回 401，不能走全局 http 实例
+ * （其 401 拦截器会强制跳转登录页），因此用独立 axios 请求，
+ * 由调用方根据状态码自行提示。
+ */
+export async function changePasswordApi(body: ChangePasswordRequest) {
+  const res = await axios.post<ChangePasswordResponse>('/api/auth/change-password', body, {
+    timeout: 30000,
+    headers: { Authorization: `Bearer ${getToken() ?? ''}` },
+  })
+  return res.data
 }
 
 // ---------- 影视 ----------

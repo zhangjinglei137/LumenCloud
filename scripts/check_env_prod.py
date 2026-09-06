@@ -1,51 +1,43 @@
 """
-LumenCloud 生产环境变量强校验（阶段 4 生产化，交付 E）
+LumenCloud 生产环境校验（阶段 4 生产化，交付 E + Phase 8 配置入库）
 
-用途：
-  docker compose up 前的 fail-fast 前置检查，与后端启动护栏
-  （backend/app/routers/auth.py _assert_secure_secrets）口径一致：
-  弱默认密钥/口令或缺失必填键 → 拒绝部署。
-
-校验规则（全部为「非空」级校验，JWT/口令额外对齐启动护栏长度要求）：
-  - JWT_SECRET              必填，非空且非 "change_me"，≥16 字符
-  - INIT_ADMIN_PASSWORD     必填，非空且非 "change_me"，≥8 字符
-  - ALIST_BASE_URL / ALIST_TOKEN        必填
-  - ARIA2_RPC_URL / ARIA2_TOKEN         必填
-  - CLOUDSAVER_BASE_URL / CLOUDSAVER_USERNAME / CLOUDSAVER_PASSWORD  必填
-  - QUARK_DEFAULT_FOLDER    必填（夸克中转目录 folderId，缺失转存不落盘）
-  - TMDB_API_KEY            必填
-  其余键（EMBY_*/NASTOOLS_*/PUSHPLUS_TOKEN/TMDB_PROXY 等）为可选项，不校验。
+★ Phase 8 起 .env.prod 已【非必需】：
+   - 服务凭据全部经设置页配置入库（system_config），保存即生效、无需重启；
+   - JWT 签名密钥首启自动生成落盘 <data_dir>/.jwt_secret（chmod 600）；
+   - admin 初始口令首启自动生成并打印在服务日志（docker logs），登录后设置页修改。
+   - 因此 docker compose up 无需 .env.prod；本脚本仅作【可选的既有 .env.prod 复查】：
+     若文件存在，校验其中的旧式 env 键是否弱值（防用户误用占位值上线）。
 
 用法：
   python scripts/check_env_prod.py                # 默认读 ./.env.prod
   python scripts/check_env_prod.py --env-file /path/to/.env.prod
 
 退出码：
-  0   全部必填键齐全且通过强度校验
-  1   文件缺失 / 缺键 / 弱值（此时不应 docker compose up）
+  0    .env.prod 不存在（Phase 8 免 env，正常通过）或全部键值合格
+  1    .env.prod 存在但含缺失/弱值键（此时不应直接上线，建议改用设置页配置）
 
 安全：
-  只读文件，无第三方依赖（backend/.venv 或系统 python3 均可直接运行）；
-  输出仅列缺失/不合格的键名，绝不回显任何键值（含口令/TOKEN 密码部分）。
+  只读文件，无第三方依赖；输出仅列缺席/不合格的键名，绝不回显任何键值。
 """
 import argparse
 import os
 import sys
 from pathlib import Path
 
-# (键名, 说明, 最低长度；None 表示仅非空)
+# (键名, 说明, 最低长度；None 表示仅非空) —— 仅当 .env.prod 存在时复查这些键
+# Phase 8 起上述键全部「可选经设置页入库」；若用户仍提供 .env.prod，则按其校验
 _REQUIRED = [
-    ("JWT_SECRET", "JWT 签名密钥（≥16 字符且非 change_me）", 16),
-    ("INIT_ADMIN_PASSWORD", "初始管理员口令（≥8 字符且非 change_me）", 8),
-    ("ALIST_BASE_URL", "AList 服务地址（/quark 挂载 + 直链 + 释放）", None),
-    ("ALIST_TOKEN", "AList 管理 TOKEN", None),
-    ("ARIA2_RPC_URL", "Aria2 RPC 地址", None),
-    ("ARIA2_TOKEN", "Aria2 RPC 密钥", None),
-    ("CLOUDSAVER_BASE_URL", "CloudSaver 服务地址（网盘搜索/分享码/转存）", None),
-    ("CLOUDSAVER_USERNAME", "CloudSaver 账号", None),
-    ("CLOUDSAVER_PASSWORD", "CloudSaver 口令", None),
-    ("QUARK_DEFAULT_FOLDER", "夸克中转目录 folderId（缺失时转存不落盘）", None),
-    ("TMDB_API_KEY", "TMDB API Key", None),
+    ("JWT_SECRET", "JWT 签名密钥（≥16 字符且非 change_me；Phase 8 起可省略，自动落盘）", 16),
+    ("INIT_ADMIN_PASSWORD", "初始管理员口令（≥8 字符且非 change_me；Phase 8 起可省略，随机生成）", 8),
+    ("ALIST_BASE_URL", "AList 服务地址（可选，设置页配置）", None),
+    ("ALIST_TOKEN", "AList 管理 TOKEN（可选，设置页配置）", None),
+    ("ARIA2_RPC_URL", "Aria2 RPC 地址（可选，设置页配置）", None),
+    ("ARIA2_TOKEN", "Aria2 RPC 密钥（可选，设置页配置）", None),
+    ("CLOUDSAVER_BASE_URL", "CloudSaver 服务地址（可选，设置页配置）", None),
+    ("CLOUDSAVER_USERNAME", "CloudSaver 账号（可选，设置页配置）", None),
+    ("CLOUDSAVER_PASSWORD", "CloudSaver 口令（可选，设置页配置）", None),
+    ("QUARK_DEFAULT_FOLDER", "夸克中转目录 folderId（可选，设置页配置）", None),
+    ("TMDB_API_KEY", "TMDB API Key（可选，设置页配置）", None),
 ]
 
 _WEAK_PLACEHOLDERS = {"change_me", "changeme", "your_password", "changeme123"}

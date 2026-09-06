@@ -18,6 +18,7 @@ from typing import Any, Optional
 import httpx
 
 from app.config import settings
+from app.services import config_store
 
 logger = logging.getLogger(__name__)
 
@@ -35,12 +36,23 @@ class NasToolsClient:
     """NasTools 客户端（登录 / 重启 / 目录同步，持会话 cookie 复用）。"""
 
     def __init__(self) -> None:
-        self._base_url: Optional[str] = (settings.NASTOOLS_BASE_URL or "").strip().rstrip("/") or None
-        self._username: Optional[str] = settings.NASTOOLS_USERNAME or None
-        self._password: Optional[str] = settings.NASTOOLS_PASSWORD or None
+        # Phase 8 配置入库：base_url/username/password 改为属性每次访问经
+        # config_store 读取（DB 优先、env fallback），PATCH 保存即生效。
         self._client: Optional[httpx.AsyncClient] = None
         self._session_cookie: Optional[str] = None  # 形如 "session=abc123"
         logger.debug("NasToolsClient 初始化%s", "（未配置）" if not self._base_url else "")
+
+    @property
+    def _base_url(self) -> Optional[str]:
+        return (config_store.get("nastools_base_url", settings.NASTOOLS_BASE_URL) or "").strip().rstrip("/") or None
+
+    @property
+    def _username(self) -> Optional[str]:
+        return config_store.get("nastools_username", settings.NASTOOLS_USERNAME) or None
+
+    @property
+    def _password(self) -> Optional[str]:
+        return config_store.get("nastools_password", settings.NASTOOLS_PASSWORD) or None
 
     def _get_client(self) -> httpx.AsyncClient:
         """持会话的 AsyncClient（惰性创建，登录后 cookie 驻留复用）。"""

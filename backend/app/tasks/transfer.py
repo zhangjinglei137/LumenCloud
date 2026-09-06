@@ -36,7 +36,7 @@ from sqlalchemy import func, select, update
 from app.config import settings
 from app.database import async_session
 from app.models import DownloadTask, EpisodeState, Media, TransferQueue
-from app.services import alist, aria2, capacity, cloudsaver
+from app.services import alist, aria2, capacity, cloudsaver, config_store
 from app.services.notifier import (
     EVENT_DOWNLOAD_COMPLETE,
     EVENT_FLOW_ERROR,
@@ -660,7 +660,10 @@ async def _process_one_pending() -> None:
                 "fids": json.loads(fids or "[]"),
                 "fidTokens": json.loads(fid_tokens or "[]"),
                 # folderId 缺失时回退 QUARK_DEFAULT_FOLDER（阶段 3 实证：folderId 为空 → 转存不落盘 /quark）
-                "folderId": folder_id or settings.QUARK_DEFAULT_FOLDER or None,
+                # Phase 8：改读 config_store（system_config 优先，env fallback，保存即生效）
+                "folderId": folder_id
+                or config_store.get("quark_default_folder", settings.QUARK_DEFAULT_FOLDER)
+                or None,
                 "shareCode": share_code,
                 "receiveCode": stoken,  # G4：receiveCode 语义 = stoken（非提取码）
             })

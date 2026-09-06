@@ -15,6 +15,7 @@ from typing import Any, Optional
 import httpx
 
 from app.config import settings
+from app.services import config_store
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +42,17 @@ class Aria2Client:
     """aria2 客户端（下沉为类，便于注入 mock 与单测）。"""
 
     def __init__(self) -> None:
-        self._rpc_url: Optional[str] = (settings.ARIA2_RPC_URL or "").strip() or None
-        self._token: Optional[str] = (settings.ARIA2_TOKEN or "").strip() or None
+        # Phase 8 配置入库：RPC 端点/token 改为属性每次访问经 config_store 读取
+        # （DB 优先、env fallback），PATCH 保存后无需重启即生效。
         logger.debug("Aria2Client 初始化（RPC 端点%s）", self._rpc_url or "未配置")
+
+    @property
+    def _rpc_url(self) -> Optional[str]:
+        return (config_store.get("aria2_rpc_url", settings.ARIA2_RPC_URL) or "").strip() or None
+
+    @property
+    def _token(self) -> Optional[str]:
+        return (config_store.get("aria2_token", settings.ARIA2_TOKEN) or "").strip() or None
 
     async def _rpc(self, method: str, params: list[Any]) -> Any:
         """JSON-RPC 2.0 调用：返回响应的 result（结构随方法而变）。

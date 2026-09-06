@@ -27,7 +27,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.database import async_session
 from app.models import QuarkCapacityLog, SystemConfig
-from app.services import alist
+from app.services import alist, config_store
 from app.services.notifier import EVENT_FLOW_ERROR, NotifyEvent, notifier
 
 logger = logging.getLogger(__name__)
@@ -119,7 +119,9 @@ class CapacityProvider:
 
     def __init__(self) -> None:
         # env 默认配额（pydantic-settings，.env QUARK_QUOTA_GB）；system_config 优先，
-        # 运行时经 _load_quota_gb() 读取覆盖（「配置双源统一」约定）
+        # 运行时经 _load_quota_gb() 读取覆盖（「配置双源统一」约定）。
+        # Phase 8 配置入库：此处保留 env 作为 fallback 默认（config_store 尚未加载时
+        # 语义一致），生效配额仍以 _load_quota_gb 的 system_config 读取为准（不重复读）。
         self._fallback_quota_gb: float = settings.QUARK_QUOTA_GB
         # 保留 _quota_gb 供既有引用/测试读取（值 = env fallback）
         self._quota_gb: float = self._fallback_quota_gb
@@ -145,7 +147,11 @@ class CapacityProvider:
         ):
             return self._usage_cache
 
-        if not settings.ALIST_BASE_URL or not settings.ALIST_TOKEN:
+        # Phase 8 配置入库：alist 凭据 DB 优先、env fallback（每次调用读最新值）
+        if (
+            not config_store.get("alist_base_url", settings.ALIST_BASE_URL)
+            or not config_store.get("alist_token", settings.ALIST_TOKEN)
+        ):
             raise CapacityUnavailable("AList 未配置（ALIST_BASE_URL/ALIST_TOKEN），容量不可用")
 
         try:

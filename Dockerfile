@@ -15,8 +15,12 @@ RUN npm run build
 # ---------- Stage 2: Python 运行时 ----------
 FROM python:3.12-slim
 
-# 升级 pip 消除镜像内系统级 pip CVE（trivy 门禁要求 pip>=26.2.1）
-RUN pip install --no-cache-dir --upgrade "pip>=26.2.1" && pip --version
+# 升级 pip 消除镜像内系统级 pip CVE（trivy 门禁要求 pip>=26.2.1）；
+# setuptools/msgpack 一并升级到修复线：CVE-2025-47273（setuptools<78.1.1）、
+# GHSA-6v7p-g79w-8964（msgpack<=1.2.0）
+RUN pip install --no-cache-dir --upgrade "pip>=26.2.1" \
+    && pip install --no-cache-dir --upgrade "setuptools>=78.1.1" "msgpack>=1.2.1" \
+    && pip --version
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \

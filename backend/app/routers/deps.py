@@ -13,7 +13,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
+from app.config import _JWT_SECRET, settings
 from app.database import async_session
 from app.models import User
 
@@ -30,11 +30,14 @@ bearer_scheme = HTTPBearer(auto_error=False)
 
 
 async def _decode_user_id(token: str) -> Optional[int]:
-    """解析并校验 JWT，返回 sub（user_id）；任何非法输入返回 None。"""
+    """解析并校验 JWT，返回 sub（user_id）；任何非法输入返回 None。
+
+    Phase 8：使用文件化密钥 _JWT_SECRET 验签（与 auth.create_access_token 一致）。
+    """
     try:
         payload = jwt.decode(
             token,
-            settings.JWT_SECRET,
+            _JWT_SECRET,
             algorithms=[settings.JWT_ALGORITHM],
         )
     except JWTError:

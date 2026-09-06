@@ -1,19 +1,23 @@
 # ============================================
-# LumenCloud 生产部署（Docker Hub 镜像，单容器）—— 阶段 4 生产化硬化
+# LumenCloud 生产部署（Docker Hub 镜像，单容器）—— 阶段 4 生产化硬化 + Phase 8 免 .env
 # 用法：
-#   IMAGE_TAG=1.0.0 docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
+#   IMAGE_TAG=1.0.0 docker compose -f docker-compose.prod.yml up -d
 #
-# 生产化要点（交付 E 第二部分）：
+# ★ Phase 8 起无需 .env.prod：
+#   1. 服务凭据（alist/cloudSaver/aria2/NasTools/Emby/TMDB/PushPlus/夸克）→
+#      设置页「服务凭据配置」保存到数据库，保存即生效、无需重启；
+#   2. JWT 密钥 → 首启自动生成落盘 ./data/.jwt_secret（chmod 600），重启不失效；
+#   3. admin 初始密码 → 首启自动生成并打印在服务日志（docker logs），登录后
+#      在设置页修改（POST /api/auth/change-password）。
+#   下方 environment 段仅保留【可选】覆盖项（省略即用默认/页面配置）。
+#
+# 生产化要点：
 #   1. 健康检查：容器内 /api/health 探测（python:3.12-slim 自带 python）
-#   2. 日志轮转：json-file driver 按 10m/5 文件轮转（supervisord 直出 stdout，
-#      docker 层轮转即可，容器内不再跑 logrotate，避免多套轮转冲突）
+#   2. 日志轮转：json-file driver 按 10m/5 文件轮转（supervisord 直出 stdout）
 #   3. 资源限制：deploy.resources.limits（cpus 1.0 / memory 512M，按宿主规格调）
-#   4. 上线前置校验：docker compose up 前先跑
-#      python scripts/check_env_prod.py
-#      确认 .env.prod 必填键齐全（与后端启动护栏 fail-fast 一致）
-#   5. 数据备份：容器内 cron 参考
+#   4. 数据备份：宿主 crontab 参考
 #      python scripts/backup_db.py            # 每日备份，保留最近 14 份
-#      （建议宿主 crontab: 0 3 * * * docker exec lumencloud python scripts/backup_db.py）
+#      （建议: 0 3 * * * docker exec lumencloud python scripts/backup_db.py）
 # ============================================
 services:
   lumencloud:
@@ -22,10 +26,14 @@ services:
     ports:
       - "${PORT:-8000}:8000"
     volumes:
-      # SQLite 数据目录（含 lumencloud.db 及其 WAL/SHM 文件）
+      # SQLite 数据目录（lumencloud.db + WAL/SHM + .jwt_secret 密钥文件）
       - ./data:/app/data
-    env_file:
-      - .env.prod
+    # Phase 8：无需 env_file——配置全部走设置页入库；下方为可选覆盖项
+    environment:
+      # 留空/省略 = 内置 SQLite（存于 volume /app/data）
+      - DATABASE_URL=${DATABASE_URL:-}
+      # 默认 admin（可选覆盖用户名）
+      - INIT_ADMIN_USERNAME=${INIT_ADMIN_USERNAME:-admin}
     restart: unless-stopped
 
     # 健康检查：/api/health 返回 200 即健康
@@ -36,7 +44,7 @@ services:
       timeout: 5s
       retries: 3
 
-    # 日志轮转：单文件 10M、最多保留 5 个文件（docker logs 仍可查）
+    # 日志轮转：单文件 10M、最多保留 5 个文件（docker logs 仍可查；admin 初始密码也在其中）
     logging:
       driver: json-file
       options:

@@ -14,6 +14,7 @@ from typing import Any, Optional
 import httpx
 
 from app.config import settings
+from app.services import config_store
 
 logger = logging.getLogger(__name__)
 
@@ -25,16 +26,19 @@ class AlistUnavailable(Exception):
 
 
 def _base_url() -> str:
-    base = (settings.ALIST_BASE_URL or "").strip().rstrip("/")
+    # Phase 8 配置入库：DB（config_store）优先、env fallback；函数内读取，
+    # 每次调用读最新值（PATCH 保存即生效，无需重启）
+    base = (config_store.get("alist_base_url", settings.ALIST_BASE_URL) or "").strip().rstrip("/")
     if not base:
         raise AlistUnavailable("ALIST_BASE_URL 未配置")
     return base
 
 
 def _headers() -> dict[str, str]:
-    if not settings.ALIST_TOKEN:
+    token = config_store.get("alist_token", settings.ALIST_TOKEN)
+    if not token:
         raise AlistUnavailable("ALIST_TOKEN 未配置")
-    return {"Authorization": settings.ALIST_TOKEN}
+    return {"Authorization": token}
 
 
 async def _post(path: str, body: dict[str, Any], timeout: httpx.Timeout = REQUEST_TIMEOUT) -> dict[str, Any]:

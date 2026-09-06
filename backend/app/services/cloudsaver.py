@@ -24,6 +24,7 @@ from typing import Any, Optional
 import httpx
 
 from app.config import settings
+from app.services import config_store
 
 logger = logging.getLogger(__name__)
 
@@ -49,14 +50,17 @@ _token_lock: asyncio.Lock = asyncio.Lock()
 
 
 def _base_url() -> str:
-    base = (settings.CLOUDSAVER_BASE_URL or "").strip().rstrip("/")
+    # Phase 8 配置入库：DB 优先、env fallback；函数内读取，每次调用读最新值
+    base = (config_store.get("cloudsaver_base_url", settings.CLOUDSAVER_BASE_URL) or "").strip().rstrip("/")
     if not base:
         raise CloudSaverUnavailable("CLOUDSAVER_BASE_URL 未配置")
     return base
 
 
 def _check_login_config() -> None:
-    if not settings.CLOUDSAVER_USERNAME or not settings.CLOUDSAVER_PASSWORD:
+    username = config_store.get("cloudsaver_username", settings.CLOUDSAVER_USERNAME)
+    password = config_store.get("cloudsaver_password", settings.CLOUDSAVER_PASSWORD)
+    if not username or not password:
         raise CloudSaverUnavailable("CLOUDSAVER_USERNAME/PASSWORD 未配置")
 
 
@@ -72,8 +76,8 @@ async def _login() -> str:
     _check_login_config()
     url = f"{_base_url()}/api/user/login"
     body = {
-        "username": settings.CLOUDSAVER_USERNAME,
-        "password": settings.CLOUDSAVER_PASSWORD,
+        "username": config_store.get("cloudsaver_username", settings.CLOUDSAVER_USERNAME),
+        "password": config_store.get("cloudsaver_password", settings.CLOUDSAVER_PASSWORD),
     }
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
         try:

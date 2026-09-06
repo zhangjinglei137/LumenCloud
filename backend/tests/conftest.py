@@ -1,11 +1,21 @@
 """确保 backend 目录在 sys.path，pytest 可导入 app.*。"""
 
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# Phase 8：统一测试数据目录。app.config 首次 import 时即落 JWT 密钥文件
+# （<data_dir>/.jwt_secret），且 database.py 也会在数据目录建 SQLite——全局指向
+# 临时目录，避免单独运行单个测试文件时污染 backend/data/（test_api_smoke 会
+# 在自身模块 import 时再次覆盖为独立临时目录，无影响）。
+os.environ.setdefault(
+    "LUMENCLOUD_DATA_DIR", tempfile.mkdtemp(prefix="lumencloud_testdata_")
+)
 
 
 @pytest.fixture(autouse=True)

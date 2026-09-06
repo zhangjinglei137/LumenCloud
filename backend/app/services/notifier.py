@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional, Protocol, runtime_checkable
 
 from app.config import settings
+from app.services import config_store
 from app.services.pushplus import PushPlusClient
 
 logger = logging.getLogger(__name__)
@@ -95,17 +96,20 @@ class InAppNotifier:
 class PushPlusNotifier:
     """PushPlus 通知器（可选通道）。
 
-    settings.PUSHPLUS_TOKEN 为空时 notifier 跳过本通道（enabled=False）。
-    推送实现在 pushplus 服务（后续阶段），失败降级站内不影响主流程。
+    config_store.pushplus_token（DB 优先、env fallback）为空时 notifier 跳过本通道
+    （enabled=False）。Phase 8 配置入库：每次 notify 时重建 client 读取最新 token，
+    PATCH 保存即生效，无需重启。推送失败降级站内不影响主流程。
     """
 
     def __init__(self) -> None:
         self._client: Optional[PushPlusClient] = None
-        token = (settings.PUSHPLUS_TOKEN or "").strip()
-        if token:
-            self._client = PushPlusClient(token=token)
+
+    def _refresh_client(self) -> None:
+        token = (config_store.get("pushplus_token", settings.PUSHPLUS_TOKEN) or "").strip()
+        self._client = PushPlusClient(token=token) if token else None
 
     async def notify(self, event: NotifyEvent) -> None:
+        self._refresh_client()
         if self._client is None:
             return  # 未配置 PushPlus，跳过
         try:

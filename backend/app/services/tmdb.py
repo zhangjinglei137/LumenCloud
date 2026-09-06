@@ -13,6 +13,7 @@ from typing import Any, Optional
 import httpx
 
 from app.config import settings
+from app.services import config_store
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,8 @@ class TMDBUnavailable(Exception):
 
 def _base_url() -> str:
     """TMDB API 根地址：优先 settings.TMDB_PROXY（镜像/反向代理），否则官方地址。"""
-    proxy = (settings.TMDB_PROXY or "").strip().rstrip("/")
+    # Phase 8 配置入库：DB 优先、env fallback；函数内读取，每次调用读最新值
+    proxy = (config_store.get("tmdb_proxy", settings.TMDB_PROXY) or "").strip().rstrip("/")
     return proxy or TMDB_DEFAULT_BASE_URL
 
 
@@ -50,12 +52,13 @@ async def search_multi(q: str) -> list[dict[str, Any]]:
     if not keyword:
         raise ValueError("搜索关键词不能为空")
 
-    if not settings.TMDB_API_KEY:
+    api_key = config_store.get("tmdb_api_key", settings.TMDB_API_KEY)
+    if not api_key:
         raise TMDBUnavailable("TMDB_API_KEY 未配置")
 
     url = f"{_base_url()}{SEARCH_MULTI_PATH}"
     params = {
-        "api_key": settings.TMDB_API_KEY,
+        "api_key": api_key,
         "query": keyword,
         "language": "zh-CN",
         "page": 1,

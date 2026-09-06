@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { fetchMeApi, loginApi, registerApi } from '../api'
+import { fetchMeApi, loginApi, registerApi, changePasswordApi } from '../api'
 import { getToken, setToken } from '../api/http'
 import type { User } from '../types'
 
@@ -21,6 +21,10 @@ export const useAuthStore = defineStore('auth', {
     },
     async register(username: string, password: string, inviteCode: string): Promise<void> {
       await registerApi(username, password, inviteCode)
+    },
+    /** 修改当前用户密码；错误（旧密码错 401 / 校验 422 等）原样抛出由调用方提示 */
+    async changePassword(oldPassword: string, newPassword: string): Promise<void> {
+      await changePasswordApi({ old_password: oldPassword, new_password: newPassword })
     },
     /** 拉取当前用户；失败（含 401）时清理登录态并返回 false */
     async fetchMe(): Promise<boolean> {

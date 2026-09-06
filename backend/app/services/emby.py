@@ -19,6 +19,7 @@ from typing import Any, Optional
 import httpx
 
 from app.config import settings
+from app.services import config_store
 
 logger = logging.getLogger(__name__)
 
@@ -30,14 +31,15 @@ class EmbyUnavailable(Exception):
 
 
 def _base_url() -> str:
-    base = (settings.EMBY_BASE_URL or "").strip().rstrip("/")
+    # Phase 8 配置入库：DB 优先、env fallback；函数内读取，每次调用读最新值
+    base = (config_store.get("emby_base_url", settings.EMBY_BASE_URL) or "").strip().rstrip("/")
     if not base:
         raise EmbyUnavailable("EMBY_BASE_URL 未配置")
     return base
 
 
 def _check_config() -> None:
-    if not settings.EMBY_API_KEY:
+    if not config_store.get("emby_api_key", settings.EMBY_API_KEY):
         raise EmbyUnavailable("EMBY_API_KEY 未配置")
 
 
@@ -69,7 +71,7 @@ async def _get(path: str, params: dict[str, Any], timeout: httpx.Timeout = REQUE
     _check_config()
     url = f"{_base_url()}{path}"
     params = dict(params)
-    params.setdefault("api_key", settings.EMBY_API_KEY)
+    params.setdefault("api_key", config_store.get("emby_api_key", settings.EMBY_API_KEY))
 
     async with httpx.AsyncClient(timeout=timeout) as client:
         try:

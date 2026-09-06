@@ -21,19 +21,32 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 启动护栏（fail-closed，fail-fast）：弱默认 JWT_SECRET/INIT_ADMIN_PASSWORD 拒绝启动
+    # Phase 8：数据目录先于一切文件/JWT/DB 操作就绪。JWT 密钥在 config 模块
+    # 导入时已文件化（load_or_create_jwt_secret 内部自行 mkdir，此处显式确保
+    # 双保险，避免任何前置逻辑在目录缺失时操作失败）。
+    Path(settings.LUMENCLOUD_DATA_DIR).mkdir(parents=True, exist_ok=True)
+
+    # 启动护栏（fail-closed，fail-fast）：Phase 8 起 JWT 密钥自动文件化、admin
+    # 初始密码随机化，不再要求 env 提供；此处仅校验文件密钥实际可用
     from app.routers.auth import _assert_secure_secrets
 
     _assert_secure_secrets()
 
     await init_db()
+    # Phase 8：加载 system_config → 进程内配置缓存（services 层读取凭据的来源）。
+    # 此后各 services 的 config_store.get(key, settings.X) 均读 DB 值（env 仅 fallback）；
+    # settings PATCH 保存后由 settings.py 调 refresh() 增量刷新（保存即生效）。
+    from app.services import config_store
+
+    await config_store.load_from_db()
     # 启动恢复：扫描 episode_state/transfer_queue，超时未完成的 transferring/downloading
     # 回退 queued + retry_count++（§4.1 / §3.1；阈值 episode_state_timeout_hours 默认 2h）
     from app.tasks.recovery import recover_on_boot
     from app.scheduler import start as start_scheduler
 
     await recover_on_boot()
-    # 管理员初始化（幂等，§5.2）：无 admin 用户时用 INIT_ADMIN_USERNAME/PASSWORD 创建
+    # 管理员初始化（幂等，§5.2 + Phase 8）：无 admin 用户时随机生成初始密码并
+    # 日志打印一次（唯一获取渠道），返回密码供调用方/测试使用
     from app.routers.auth import ensure_admin
 
     await ensure_admin()

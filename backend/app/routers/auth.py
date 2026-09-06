@@ -1,12 +1,16 @@
-"""认证 API（docs/新系统设计.md §5.2 + §9.1 邀请码消耗原子性）。
+"""认证 API（docs/新系统设计.md §5.2 + §9.1 邀请码消耗原子性 + Phase 8）。
 
-- POST /api/auth/register : 邀请码注册（校验码 + 标记 used + 建用户 同一事务）
-- POST /api/auth/login    : 登录，签发 JWT
-- GET  /api/auth/me       : 当前用户
-- ensure_admin()          : 管理员初始化（幂等，main.py lifespan 调用）
+- POST /api/auth/register       : 邀请码注册（校验码 + 标记 used + 建用户 同一事务）
+- POST /api/auth/login          : 登录，签发 JWT
+- GET  /api/auth/me             : 当前用户
+- POST /api/auth/change-password: 登录用户修改自己密码（Phase 8，初始密码随机化配套）
+- ensure_admin()                : 管理员初始化（幂等，Phase 8 起随机初始密码，
+                                  main.py lifespan 调用）
 """
 import logging
+import secrets
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 import bcrypt
 from fastapi import APIRouter, Depends, HTTPException
@@ -16,7 +20,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
+from app.config import _JWT_SECRET, load_or_create_jwt_secret, settings
 from app.database import async_session
 from app.models import InviteCode, User
 from app.routers.deps import get_current_user, get_session
@@ -56,10 +60,14 @@ def _now() -> datetime:
 
 
 def create_access_token(user: User) -> str:
-    """签发 JWT（sub=user.id，携带 role，exp=JWT_EXPIRE_HOURS）。"""
+    """签发 JWT（sub=user.id，携带 role，exp=JWT_EXPIRE_HOURS）。
+
+    Phase 8：签名密钥来自文件化 _JWT_SECRET（config 导入时已解析），
+    与 deps 验签使用的同一密钥。
+    """
     expire = datetime.now(timezone.utc) + timedelta(hours=settings.JWT_EXPIRE_HOURS)
     payload = {"sub": str(user.id), "role": user.role, "exp": expire}
-    return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
+    return jwt.encode(payload, _JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +83,12 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     username: str = Field(min_length=1, max_length=64)
     password: str = Field(min_length=1, max_length=128)
+
+
+# Phase 8：登录用户修改自己密码（初始密码随机化后的配套能力）
+class ChangePasswordRequest(BaseModel):
+    old_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=6, max_length=128)  # 同 RegisterRequest（§5.2）
 
 
 # ---------------------------------------------------------------------------
@@ -151,41 +165,74 @@ async def me(user: User = Depends(get_current_user)) -> dict:
     return {"id": user.id, "username": user.username, "role": user.role}
 
 
+@router.post("/change-password")
+async def change_password(
+    payload: ChangePasswordRequest,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """登录用户修改自己的密码（Phase 8）。
+
+    校验旧密码（bcrypt）→ 条件更新 `UPDATE users SET password_hash=? WHERE
+    id=? AND password_hash=?` 防并发覆盖（行数=0 说明当前哈希已过期 → 409）。
+    取舍：不改动 JWT——改密不吊销已签发 token（单用户场景换免重新登录体验；
+    如需吊销可后续引入 token 版本号）。
+    """
+    if not verify_password(payload.old_password, user.password_hash):
+        raise HTTPException(status_code=401, detail="旧密码错误")
+
+    new_hash = hash_password(payload.new_password)
+    result = await session.execute(
+        update(User)
+        .where(User.id == user.id, User.password_hash == user.password_hash)
+        .values(password_hash=new_hash)
+    )
+    if result.rowcount == 0:
+        # 并发窗口内他人已改密，本次提交基于过期哈希 → 拒绝
+        raise HTTPException(status_code=409, detail="密码已变更，请刷新后重试")
+    await session.commit()
+    return {"ok": True}
+
+
 # ---------------------------------------------------------------------------
-# 管理员初始化（幂等）
+# 管理员初始化（幂等，Phase 8）
 # ---------------------------------------------------------------------------
+
+# Phase 8：初始密码字符集——剔除易混淆字符（0/O、1/l/I、o、8/B 附近等）
+_ADMIN_PASSWORD_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789"
+
+
+def _generate_random_password(length: int = 16) -> str:
+    """生成 16 位随机初始密码（secrets 加密随机，避免易混淆字符）。"""
+    return "".join(secrets.choice(_ADMIN_PASSWORD_CHARS) for _ in range(length))
+
 
 def _assert_secure_secrets() -> None:
-    """启动护栏：弱默认密钥/口令拒绝启动（fail-closed，alpha P1-2 + beta P0-1）。
+    """启动护栏（fail-closed，fail-fast，Phase 8）。
 
-    默认 HS256 密钥公开，任何人可伪造 sub/role=admin 的 JWT 绕过全部鉴权；
-    ensure_admin 会以默认口令落 admin 账号。故启动即校验：
-    - JWT_SECRET        ≥16 字符且非默认 "change_me"
-    - INIT_ADMIN_PASSWORD ≥8 字符且非默认 "change_me"
+    旧版要求 env 提供 JWT_SECRET / INIT_ADMIN_PASSWORD 否则拒绝启动；Phase 8 起
+    JWT 密钥自动文件化、admin 初始密码随机化，二者都不再要求 env。此处只校验
+    实际可用的密钥强度：
+    - .jwt_secret 文件正常 → load_or_create_jwt_secret 返回 64 位 hex，通过；
+    - 密钥文件写入失败且 settings.JWT_SECRET 仍为默认 "change_me"（<16 字符）
+      → 回退值过弱 → 拒绝启动（fail-closed）。
     由 main.py lifespan 在业务执行前调用（fail-fast）。
     """
-    if (
-        not settings.JWT_SECRET
-        or settings.JWT_SECRET == "change_me"
-        or len(settings.JWT_SECRET) < 16
-    ):
+    secret = load_or_create_jwt_secret(settings.LUMENCLOUD_DATA_DIR)
+    if len(secret) < 16:
         raise RuntimeError(
-            "JWT_SECRET 未配置或过弱（需 ≥16 字符且非默认值），拒绝启动——请在 .env 配置强随机密钥"
-        )
-    if (
-        not settings.INIT_ADMIN_PASSWORD
-        or settings.INIT_ADMIN_PASSWORD == "change_me"
-        or len(settings.INIT_ADMIN_PASSWORD) < 8
-    ):
-        raise RuntimeError(
-            "INIT_ADMIN_PASSWORD 未配置或过弱（需 ≥8 字符且非默认值），拒绝启动——请在 .env 配置强口令"
+            "JWT 密钥不可用：无法写入 <data_dir>/.jwt_secret 且 JWT_SECRET 环境变量未提供"
+            "强随机值，拒绝启动——请检查数据目录写入权限"
         )
 
 
-async def ensure_admin() -> None:
-    """首次启动无 admin 用户时，用 INIT_ADMIN_USERNAME/INIT_ADMIN_PASSWORD 创建（§5.2）。
+async def ensure_admin() -> Optional[str]:
+    """首次启动无 admin 用户时创建管理员（Phase 8：随机 16 位初始密码）。
 
-    幂等：已存在任一 admin → 直接返回；重复执行安全（并发时访问 IntegrityError）。
+    幂等：已存在任一 admin → 返回 None；重复执行安全（并发撞 UNIQUE 由
+    IntegrityError 兜底，返回 None）。首次创建时随机生成初始密码并 bcrypt
+    入库，通过 logger.info 打印一次（含用户名/初始密码/登录提示）——这是用户
+    唯一能拿到初始密码的渠道；同时返回该密码供调用方/测试确定性使用。
     """
     try:
         async with async_session() as session:
@@ -193,9 +240,9 @@ async def ensure_admin() -> None:
                 await session.execute(select(User.id).where(User.role == "admin").limit(1))
             ).first()
             if exists:
-                return
+                return None
             username = (settings.INIT_ADMIN_USERNAME or "").strip() or "admin"
-            password = settings.INIT_ADMIN_PASSWORD or "change_me"
+            password = _generate_random_password()
             session.add(
                 User(
                     username=username,
@@ -204,7 +251,19 @@ async def ensure_admin() -> None:
                 )
             )
             await session.commit()
-            logger.info("已初始化管理员用户：%s", username)
+            logger.info(
+                "\n"
+                "============================================================\n"
+                "已初始化管理员账号（首次启动）\n"
+                "  用户名: %s\n"
+                "  初始密码: %s\n"
+                "请立即登录 https://<host>:8000 并修改密码（/api/auth/change-password 或页面）\n"
+                "============================================================",
+                username,
+                password,
+            )
+            return password
     except IntegrityError:
         # 并发启动兜底（用户名撞 UNIQUE），幂等可接受
         logger.warning("[ensure_admin] 管理员创建冲突（并发），视为已存在")
+        return None

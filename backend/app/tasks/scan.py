@@ -28,7 +28,7 @@ from sqlalchemy.exc import IntegrityError
 from app.config import settings
 from app.database import async_session
 from app.models import DownloadTask, EpisodeState, Media, TransferQueue
-from app.services import cloudsaver, emby
+from app.services import cloudsaver, config_store, emby
 from app.tasks import get_config_value, record_task_run
 
 logger = logging.getLogger(__name__)
@@ -558,8 +558,10 @@ async def _enqueue(media_id: int, episode_key: str, file_name: str, file_size: i
                 fid_tokens=_json_dumps(payload.get("fid_tokens") or payload.get("fidTokens")),
                 # 转存目标目录 folderId：share-info 无此字段时回退 QUARK_DEFAULT_FOLDER
                 # （阶段 3 实证：folderId 为空 → cloudSaver 转存不落盘到 alist /quark）
+                # Phase 8：改读 config_store（system_config 优先，env fallback，保存即生效）
                 folder_id=payload.get("folder_id") or payload.get("folderId")
-                or settings.QUARK_DEFAULT_FOLDER or None,
+                or config_store.get("quark_default_folder", settings.QUARK_DEFAULT_FOLDER)
+                or None,
                 updated_at=_now(),
             ))
             try:

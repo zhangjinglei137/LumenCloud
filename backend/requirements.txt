@@ -5,7 +5,8 @@ aiosqlite==0.20.0
 asyncpg==0.30.0
 psycopg2-binary==2.9.10  # alembic 同步 engine 双后端迁移（Postgres 在线/CI 迁移测试）
 pydantic-settings==2.7.1
-python-jose[cryptography]==3.4.0
+python-jose[cryptography]==3.5.0  # pyasn1 约束放宽为 >=0.5.0（3.4.0 的 <0.5.0 上限导致 pyasn1 被钉在含 CVE 的 0.4.8）
+pyasn1==0.6.4  # CVE-2026-30922/59884/59885/59886 修复版（0.6.4；0.4.x/0.5.x 全部受影响）
 bcrypt==5.0.0  # 密码哈希（auth.py 直接用 bcrypt；passlib 1.7.4 与 bcrypt≥4.1 不兼容，已弃用）
 httpx==0.28.1
 apscheduler==3.10.4
