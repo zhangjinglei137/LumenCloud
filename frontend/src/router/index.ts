@@ -46,6 +46,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '影视详情' },
       },
       {
+        path: 'emby',
+        name: 'emby-library',
+        component: () => import('../views/EmbyLibraryView.vue'),
+        meta: { title: 'Emby 影视库' },
+      },
+      {
         path: 'queue',
         name: 'queue',
         component: () => import('../views/QueueView.vue'),

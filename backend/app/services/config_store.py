@@ -37,8 +37,8 @@ _loaded: bool = False
 #     cloudsaver_password、emby_api_key、quark_default_folder、jwt_secret、
 #     init_admin_password、tmdb_api_key、pushplus_token、cloudsaver_username、
 #     nastools_username/nastools_password——账号名亦属凭据）；
-#   - URL 类键（cloudsaver_base_url / emby_base_url / nastools_base_url / tmdb_proxy）
-#     不算敏感可回显（前端表单预填需要）；
+#   - URL 类键（cloudsaver_base_url / emby_base_url / nastools_base_url / tmdb_proxy /
+#     tmdb_http_proxy）不算敏感可回显（前端表单预填需要）；
 #   - 例外「统一处理」：alist_base_url / aria2_rpc_url 为服务内部地址（alist 直链
 #     网关 / aria2 RPC 端点），按服务凭据统一遮蔽，避免暴露内部网络拓扑。
 _SENSITIVE_KEYS = frozenset({

@@ -5,6 +5,7 @@ Emby 防重基线 / 遗漏集 / 已有集查询服务。
                       未命中时做 P11 二次模糊查询兜底（需传入 title）
 - get_missing_episodes：查剧集遗漏集（/emby/Shows/Missing），作为防重基线
 - list_episodes     ：查已有集（/Shows/{id}/Episodes），供防重基线
+- list_library      ：查 Emby 影视库（/Items Recursive 全量），供 des-3 展示页
 
 契约参照 n8n 旧流程（docs/新系统设计.md §10）：
     GET {base}/Items?api_key=...&Recursive=true&HasTmdbId=true&Fields=ProviderIds
@@ -175,4 +176,74 @@ async def list_episodes(emby_id: str) -> list[dict[str, Any]]:
     result = [_normalize_episode(item) for item in items]
     result.sort(key=lambda ep: (ep["season"] or 0, ep["episode"] or 0))
     logger.info("Emby 已有集（emby_id=%s）: %d 集", emby_id, len(result))
+    return result
+
+
+def _normalize_library_item(item: dict[str, Any], base: str, api_key: Optional[str]) -> Optional[dict[str, Any]]:
+    """把 Emby Item 归一化为影视库 DTO（des-3 Emby 展示页）。
+
+    仅保留 Movie / Series；其余类型（Folder 等纯目录）返回 None 跳过；
+    另过滤 tmdb_id 与海报均为空的目录性质条目。
+    """
+    item_type = item.get("Type")
+    if item_type == "Movie":
+        kind = "movie"
+    elif item_type == "Series":
+        kind = "series"
+    else:
+        return None
+
+    item_id = item.get("Id")
+    provider_ids = item.get("ProviderIds") or {}
+    tmdb_id = provider_ids.get("Tmdb")
+    image_tags = item.get("ImageTags") or {}
+    has_poster = bool(image_tags.get("Primary"))
+
+    # 过滤 tmdb_id 与海报均为空的纯目录条目（无任何可展示信息）
+    if not tmdb_id and not has_poster:
+        return None
+
+    poster_url = None
+    if has_poster:
+        poster_url = f"{base}/Items/{item_id}/Images/Primary?api_key={api_key}"
+
+    return {
+        "emby_id": item_id,
+        "title": item.get("Name"),
+        "type": kind,
+        "year": item.get("ProductionYear"),
+        "poster_url": poster_url,
+        "community_rating": item.get("CommunityRating"),
+        "tmdb_id": str(tmdb_id) if tmdb_id else None,  # str 返回，避免大整数精度问题
+        "emby_web_url": f"{base}/web/index.html#!/item?id={item_id}",
+    }
+
+
+async def list_library(item_type: Optional[str] = None) -> list[dict[str, Any]]:
+    """查 Emby 影视库（des-3 Emby 展示页 / GET /api/emby/library）。
+
+    参数:
+        item_type: "movie" 电影 / "series" 剧集 / None 全部（Movie,Series）
+    返回:
+        归一化条目列表，每项含 emby_id/title/type/year/poster_url/
+        community_rating/tmdb_id/emby_web_url
+    异常:
+        EmbyUnavailable: 配置缺失 / 请求失败
+    """
+    include_item_types = {"movie": "Movie", "series": "Series"}.get(item_type or "", "Movie,Series")
+    payload = await _get("/Items", {
+        "Recursive": "true",
+        "IncludeItemTypes": include_item_types,
+        "Fields": "ProviderIds,CommunityRating,ProductionYear",
+        "Limit": "500",
+    })
+    base = _base_url()
+    api_key = config_store.get("emby_api_key", settings.EMBY_API_KEY)
+    items = payload.get("Items", []) or []
+    result: list[dict[str, Any]] = []
+    for item in items:
+        normalized = _normalize_library_item(item, base, api_key)
+        if normalized is not None:
+            result.append(normalized)
+    logger.info("Emby 影视库（item_type=%s）: %d 条", item_type, len(result))
     return result

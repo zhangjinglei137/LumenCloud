@@ -44,7 +44,7 @@ _WHITELIST_EXACT = {
     "aria2_rpc_url", "aria2_token",
     "nastools_base_url", "nastools_username", "nastools_password",
     "emby_base_url", "emby_api_key",
-    "tmdb_api_key", "tmdb_proxy",
+    "tmdb_api_key", "tmdb_proxy", "tmdb_http_proxy",
     "pushplus_token",
     "quark_default_folder",
 }

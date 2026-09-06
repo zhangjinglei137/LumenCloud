@@ -118,7 +118,22 @@ async def _get_link_wait_visible(file_name: str, timeout: float = _LINK_WAIT_TIM
         except Exception as exc:  # noqa: BLE001  直链暂不可用（未同步/瞬时失败）→ 继续等待
             last_exc = exc
             await asyncio.sleep(5)
-    raise alist.AlistUnavailable(f"转存后等待落盘超时（{timeout:.0f}s）: {path}（{last_exc}）")
+    # P0-1（线上反馈「转存多次失败」）：save 返回 200 仅代表受理，文件异步落盘；
+    # 超时说明文件始终未在 alist /quark 可见。抛错前先列 /quark 目录记录实际内容，
+    # 便于区分「落盘到了别处（folderId 配置错）」与「文件名被云盘改名/仍在传输」。
+    folder_id = config_store.get("quark_default_folder", settings.QUARK_DEFAULT_FOLDER)
+    try:
+        entries = await alist.list_dir("/quark")
+        logger.warning(
+            "[transfer] 转存落盘超时前 /quark 目录实际内容（%d 项）: %s",
+            len(entries), [e.get("name") for e in entries],
+        )
+    except Exception as exc2:  # noqa: BLE001  列目录失败仅记录诊断，不阻断原异常抛出
+        logger.warning("[transfer] 落盘超时后列 /quark 目录失败: %s", exc2)
+    raise alist.AlistUnavailable(
+        f"转存后等待落盘超时（{timeout:.0f}s）: {path}（folderId={folder_id}，{last_exc}）；"
+        f"请用 alist 管理 API /api/admin/storage/list 核对 quark_default_folder 是否为 root_folder_id"
+    )
 
 
 def _split_quark_path(path: str) -> tuple[str, list[str]]:
@@ -658,18 +673,30 @@ async def _process_one_pending() -> None:
     #    P2-10（council）：save 幂等——tq.save_task_id 已存在（上一轮 save 已受理此文件）
     #    则跳过 cloudsaver.save，直接等落盘/取直链；save 成功即把 task_id 持久化，
     #    后续 get_link / add_uri 失败重试时不再重复 save（防重复转存占空间/cloudSaver
-    #    端重复任务）。
+    #    端重复任务）。P0-1：**仅成功路径保持幂等**——失败回退路径在下方事务中清空
+    #    save_task_id，下一轮强制重新 save（防「已受理未落盘」被当完成导致盲等死循环）。
     save_task_id = None
     try:
         if not tq_save_task_id:
+            # P0-1（线上反馈「转存多次失败」）：save 诊断日志——记录 file_name /
+            # folderId / shareCode 关键参数，便于核对 folderId 是否与 alist Quark
+            # 驱动 root_folder_id 一致（配置错 → 文件落盘到别处 /quark 永不可见）。
+            # 严禁记录 stoken（receiveCode）等敏感值。
+            folder_id_effective = (
+                folder_id
+                or config_store.get("quark_default_folder", settings.QUARK_DEFAULT_FOLDER)
+                or None
+            )
+            logger.info(
+                "[transfer] 提交 cloudsaver.save file_name=%s folderId=%s shareCode=%s",
+                file_name, folder_id_effective, share_code,
+            )
             save_res = await cloudsaver.save({
                 "fids": json.loads(fids or "[]"),
                 "fidTokens": json.loads(fid_tokens or "[]"),
                 # folderId 缺失时回退 QUARK_DEFAULT_FOLDER（阶段 3 实证：folderId 为空 → 转存不落盘 /quark）
                 # Phase 8：改读 config_store（system_config 优先，env fallback，保存即生效）
-                "folderId": folder_id
-                or config_store.get("quark_default_folder", settings.QUARK_DEFAULT_FOLDER)
-                or None,
+                "folderId": folder_id_effective,
                 "shareCode": share_code,
                 "receiveCode": stoken,  # G4：receiveCode 语义 = stoken（非提取码）
             })
@@ -696,8 +723,10 @@ async def _process_one_pending() -> None:
     except Exception as exc:  # noqa: BLE001
         # 任一步失败（含转存成功但直链/aria2 提交失败）→ 重试路径；
         # 清理可能已转存的夸克残留（避免残留占用中转空间）。
-        # P2-10：save_task_id 已存在（save 已受理）时清理行为保持（可保留），
-        # 但重试逻辑不再重复 save——下一轮跳过 save 直接等落盘/取直链。
+        # P2-10 / P0-1（线上反馈「转存多次失败」）：save_task_id 已落库代表「已受理」
+        # 而非「已完成」——若不清空，下一轮会跳过 save 并永远等不到文件（盲等死循环
+        # 到 retry 上限标 failed）。下方失败回退事务同时清空 save_task_id，强制下一轮
+        # 重新 save；仅成功路径保持幂等。
         try:
             dir_part, names = _split_quark_path(es_quark_path or f"/quark/{file_name}")
             if names:
@@ -744,6 +773,9 @@ async def _process_one_pending() -> None:
                     .values(
                         status="failed" if terminal else "pending",
                         error=reason,
+                        # P0-1：失败重试路径清空 save_task_id，下一轮强制重新 save
+                        # （打破「已受理未落盘」的盲等死循环）；成功路径才保持幂等。
+                        save_task_id=None,
                         updated_at=now,
                     )
                 )

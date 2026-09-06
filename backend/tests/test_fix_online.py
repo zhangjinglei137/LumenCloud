@@ -195,6 +195,7 @@ def _call_list_logs(session, **overrides):
         "status": None,
         "media_id": None,
         "tmdb_id": None,
+        "title": None,  # P1-2 新增参数：绕过 FastAPI 注入时须显式传默认值（否则拿到 Query 对象）
         "limit": 50,
         "offset": 0,
     }

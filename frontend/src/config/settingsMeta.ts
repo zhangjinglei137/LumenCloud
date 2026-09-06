@@ -107,10 +107,16 @@ export const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
     sensitive: true,
   },
   tmdb_proxy: {
-    label: 'TMDB 镜像地址',
-    desc: '可选。仅当你自建了 TMDB 反代镜像时才填写；留空 = 使用官方地址 https://api.themoviedb.org。⚠️ 不要填科学上网代理端口（如 192.168.3.31:7897），那样会返回 400 错误。',
+    label: 'TMDB 镜像根地址',
+    desc: '可选。仅当你自建了 TMDB 反代镜像时才填写；镜像优先——已配置则所有 TMDB 请求走该镜像根地址；留空 = 使用官方地址 https://api.themoviedb.org。⚠️ 不要填科学上网代理端口（如 192.168.3.31:7897），那样会返回 400 错误；科学上网代理请填到「TMDB 出口代理」。',
     placeholder: '留空 = 官方地址 https://api.themoviedb.org',
     default: '可选，留空 = 官方地址',
+  },
+  tmdb_http_proxy: {
+    label: 'TMDB 出口代理',
+    desc: '可选。设置 HTTP(S) 出口代理（如 http://127.0.0.1:7890），TMDB 请求经其出口访问。镜像优先：已配置「TMDB 镜像根地址」时镜像请求同样可走该出口；无镜像时配合官方地址直连官方。',
+    placeholder: 'http://127.0.0.1:7890（留空 = 直连）',
+    default: '可选，留空 = 直连',
   },
 
   // ---------- PushPlus 通知 ----------

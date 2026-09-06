@@ -3,12 +3,17 @@ import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import TmdbSearch from '../components/TmdbSearch.vue'
 import { useApprovalsStore } from '../stores/approvals'
+import { useMediaStore } from '../stores/media'
 import { useAuthStore } from '../stores/auth'
 import { TMDB_POSTER_BASE, type ApprovalItem, type TmdbSearchResult } from '../types'
 import { formatTime, mediaTypeLabel } from '../utils/format'
 
 const store = useApprovalsStore()
 const auth = useAuthStore()
+const mediaStore = useMediaStore()
+
+// 当前正在执行批准/拒绝操作的行 id 集合，用于按钮 loading 与操作互斥
+const operatingIds = ref<Set<number>>(new Set())
 
 const tab = ref<'pending' | 'all'>('pending')
 const dialogVisible = ref(false)
@@ -38,24 +43,56 @@ function poster(url: string | null): string | null {
 }
 
 async function onApprove(item: ApprovalItem) {
-  await ElMessageBox.confirm(`批准《${item.title}》后将自动加入影视库。`, '批准申请', {
-    confirmButtonText: '批准',
-    cancelButtonText: '取消',
-    type: 'success',
-  })
-  await store.approve(item.id)
-  ElMessage.success('已批准并加入影视库')
+  operatingIds.value.add(item.id)
+  try {
+    await ElMessageBox.confirm(`批准《${item.title}》后将自动加入影视库。`, '批准申请', {
+      confirmButtonText: '批准',
+      cancelButtonText: '取消',
+      type: 'success',
+    })
+  } catch {
+    // 用户取消确认框，不执行批准、不触发列表刷新
+    operatingIds.value.delete(item.id)
+    return
+  }
+  try {
+    await store.approve(item.id)
+    ElMessage.success('已批准并加入影视库')
+    // 联动刷新影视库，使新加入的条目立即可见
+    await mediaStore.fetchList()
+  } catch {
+    // 接口异常（拦截器已提示），兜底刷新审批列表
+    await store.fetchList()
+  } finally {
+    operatingIds.value.delete(item.id)
+  }
 }
 
 async function onReject(item: ApprovalItem) {
-  const { value } = await ElMessageBox.prompt('请输入拒绝原因', '拒绝申请', {
-    confirmButtonText: '拒绝',
-    cancelButtonText: '取消',
-    inputPlaceholder: '例如：资源不合适 / 重复申请',
-    inputValidator: (v: string) => (v && v.trim().length > 0) || '请填写拒绝原因',
-  })
-  await store.reject(item.id, value.trim())
-  ElMessage.success('已拒绝')
+  let reason: string
+  operatingIds.value.add(item.id)
+  try {
+    const { value } = await ElMessageBox.prompt('请输入拒绝原因', '拒绝申请', {
+      confirmButtonText: '拒绝',
+      cancelButtonText: '取消',
+      inputPlaceholder: '例如：资源不合适 / 重复申请',
+      inputValidator: (v: string) => (v && v.trim().length > 0) || '请填写拒绝原因',
+    })
+    reason = value.trim()
+  } catch {
+    // 用户取消输入框，不执行拒绝、不触发列表刷新
+    operatingIds.value.delete(item.id)
+    return
+  }
+  try {
+    await store.reject(item.id, reason)
+    ElMessage.success('已拒绝')
+  } catch {
+    // 接口异常（拦截器已提示），兜底刷新审批列表
+    await store.fetchList()
+  } finally {
+    operatingIds.value.delete(item.id)
+  }
 }
 
 function onSelect(item: TmdbSearchResult) {
@@ -131,8 +168,25 @@ async function submitRequest() {
             <div v-if="item.reject_reason" class="reject-reason">拒绝原因：{{ item.reject_reason }}</div>
           </div>
           <div v-if="auth.isAdmin && item.status === 'pending'" class="actions">
-            <el-button type="success" size="small" @click="onApprove(item)">批准</el-button>
-            <el-button type="danger" size="small" plain @click="onReject(item)">拒绝</el-button>
+            <el-button
+              type="success"
+              size="small"
+              :loading="operatingIds.has(item.id)"
+              :disabled="operatingIds.size > 0"
+              @click="onApprove(item)"
+            >
+              批准
+            </el-button>
+            <el-button
+              type="danger"
+              size="small"
+              plain
+              :loading="operatingIds.has(item.id)"
+              :disabled="operatingIds.size > 0"
+              @click="onReject(item)"
+            >
+              拒绝
+            </el-button>
           </div>
         </div>
       </div>

@@ -6,6 +6,8 @@ import type {
   Capacity,
   ChangePasswordRequest,
   ChangePasswordResponse,
+  EmbyItemType,
+  EmbyLibraryResponse,
   InviteCode,
   LogItem,
   LoginResponse,
@@ -149,15 +151,37 @@ export function deleteInviteApi(code: string) {
   return http.delete(`/admin/invites/${encodeURIComponent(code)}`).then((r) => r.data)
 }
 
+// ---------- Emby 影视库 ----------
+/**
+ * 拉取 Emby 媒体库列表。
+ * 契约：GET /api/emby/library?item_type=movie|series（缺省 = 全部）
+ *   200 → EmbyLibraryResponse
+ *   503 → {"detail": {"msg": "...", "code": "emby_not_configured" | "emby_unreachable"}}
+ *         （code 由前端区分「未配置空态」与「不可达错误态」）
+ */
+export function listEmbyLibraryApi(itemType?: EmbyItemType) {
+  return http
+    .get<EmbyLibraryResponse>('/emby/library', {
+      params: itemType ? { item_type: itemType } : undefined,
+    })
+    .then((r) => r.data)
+}
+
 // ---------- 日志 ----------
 export function listLogsApi(params: {
   task_type?: string
   status?: string
   media_id?: number
+  tmdb_id?: number
+  title?: string
   limit?: number
   offset?: number
 }) {
-  return http.get<LogItem[]>('/logs', { params }).then((r) => r.data)
+  // 仅将非空参数传给后端（undefined/null/空串一律剔除）
+  const query = Object.fromEntries(
+    Object.entries(params).filter(([, value]) => value !== undefined && value !== null && value !== ''),
+  )
+  return http.get<LogItem[]>('/logs', { params: query }).then((r) => r.data)
 }
 
 // ---------- 通知 ----------

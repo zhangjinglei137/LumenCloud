@@ -71,6 +71,10 @@ async function onReadAll() {
           <el-icon><Film /></el-icon>
           <span>影视库</span>
         </el-menu-item>
+        <el-menu-item index="/emby">
+          <el-icon><Monitor /></el-icon>
+          <span>Emby 影视库</span>
+        </el-menu-item>
         <el-menu-item index="/queue">
           <el-icon><List /></el-icon>
           <span>转存队列</span>

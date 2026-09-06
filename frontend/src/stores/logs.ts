@@ -6,6 +6,8 @@ export interface LogFilter {
   task_type?: string
   status?: string
   media_id?: number
+  tmdb_id?: number
+  title?: string
 }
 
 export const useLogsStore = defineStore('logs', {

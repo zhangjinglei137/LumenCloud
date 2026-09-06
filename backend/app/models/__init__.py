@@ -7,7 +7,7 @@ LumenCloud ORM 模型（docs/新系统设计.md §3 契约落地，11 张业务�
     TaskRun        → task_run            QuarkCapacityLog → quark_capacity_log
     User           → users               InviteCode      → invite_codes
     WatchRequest   → watch_requests      Notification    → notifications
-    SystemConfig   → system_config
+    SystemConfig   → system_config       TmdbCache       → tmdb_cache
 
 全局约定（契约，其他模块依赖这些名字，勿改名）：
 - 主键一律 BigInteger + Identity（SQLite / PostgreSQL 双后端兼容，见 §12.1，勿用 AUTOINCREMENT 字面量）
@@ -28,6 +28,7 @@ from sqlalchemy import (
     Identity,
     Index,
     Integer,
+    String,
     Text,
     UniqueConstraint,
     false,
@@ -249,3 +250,25 @@ class SystemConfig(Base):
     key = mapped_column(Text, primary_key=True)
     value = mapped_column(Text)
     updated_at = mapped_column(DateTime, server_default=text("CURRENT_TIMESTAMP"))
+
+
+class TmdbCache(Base):
+    """TMDB 元数据缓存（存字符串 TMDB id，title/poster 直接随源更新）
+
+    tmdb_id 存字符串：TMDB API 返回的 id 本身是数字，但以字符串主键存储，
+    便于兼容不同来源（搜索/详情）的取值，并规避前端大整数精度丢失问题。
+    仅缓存新增影视/想看时的元数据，读写走 services/tmdb.py（并行开发中）。
+    """
+
+    __tablename__ = "tmdb_cache"
+
+    tmdb_id = mapped_column(String(32), primary_key=True)  # 字符串 TMDB id
+    title = mapped_column(String(512), nullable=False)
+    media_type = mapped_column(String(32), nullable=False)  # movie / tv
+    poster_path = mapped_column(Text, nullable=True)  # TMDB 图床相对路径 /t/p/w500/...
+    year = mapped_column(Integer, nullable=True)
+    updated_at = mapped_column(
+        DateTime,
+        server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=func.current_timestamp(),
+    )

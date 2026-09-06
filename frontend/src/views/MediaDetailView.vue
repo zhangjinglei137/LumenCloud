@@ -26,6 +26,7 @@ const auth = useAuthStore()
 const mediaId = Number(route.params.id)
 const saving = ref(false)
 const scanning = ref(false)
+const posterBroken = ref(false)
 
 const form = ref({
   max_episode_size_gb: null as number | null,
@@ -105,11 +106,13 @@ async function onDelete() {
         <div class="poster">
           <div class="lc-poster" style="width: 120px; border-radius: 10px">
             <img
-              v-if="detail.poster_path"
+              v-if="detail.poster_path && !posterBroken"
               :src="`${TMDB_POSTER_BASE}${detail.poster_path}`"
               :alt="detail.title"
+              @error="posterBroken = true"
             />
-            <span v-else class="lc-poster-fallback" style="font-size: 14px">{{ detail.title }}</span>
+            <span v-else-if="!detail.poster_path" class="lc-poster-fallback" style="font-size: 14px">{{ detail.title }}</span>
+            <span v-else class="lc-poster-fallback" style="font-size: 30px; padding: 0">{{ detail.title.slice(0, 1) }}</span>
           </div>
         </div>
         <div class="info">

@@ -170,6 +170,10 @@ export interface LogItem {
   id: number
   task_type: string
   media_id: number | null
+  /** 关联 media 的影视名称（join media 表，media 已删除时为 null） */
+  media_title: string | null
+  /** 关联 media 的 TMDB ID（无关联时为 null） */
+  tmdb_id: number | null
   status: string
   message: string | null
   started_at: string | null
@@ -208,3 +212,30 @@ export interface TmdbSearchResult {
 }
 
 export const TMDB_POSTER_BASE = 'https://image.tmdb.org/t/p/w500'
+
+// ---------- Emby 影视库 ----------
+/** Emby 条目类型：movie=电影，series=剧集 */
+export type EmbyItemType = 'movie' | 'series'
+
+/** Emby 库单条媒体（GET /api/emby/library 的元素，字段由后端 DTO 保证） */
+export interface EmbyLibraryItem {
+  /** Emby Item Id（字符串） */
+  emby_id: string
+  title: string
+  type: EmbyItemType
+  /** 发行/首播年份，无则 null */
+  year: number | null
+  /** 海报完整 URL（后端已拼好 Emby Image 端点）；无海报为 null，前端走 fallback */
+  poster_url: string | null
+  /** Emby 社区评分 0~10，无则 null */
+  community_rating: number | null
+  /** Emby Web 详情页完整 URL（点击卡片新窗口打开） */
+  emby_web_url: string
+}
+
+export interface EmbyLibraryResponse {
+  items: EmbyLibraryItem[]
+  total: number
+  /** 库条目类型筛选回显（全部时为 null） */
+  item_type: EmbyItemType | null
+}

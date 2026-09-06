@@ -21,6 +21,7 @@ const auth = useAuthStore()
 
 const viewMode = ref<'card' | 'table'>('card')
 const scanningIds = ref<Set<number>>(new Set())
+const imgErrors = ref<Set<number>>(new Set())
 
 let timer: ReturnType<typeof setInterval> | undefined
 
@@ -120,12 +121,14 @@ async function onDelete(m: MediaItem, e: Event) {
         >
           <div class="lc-poster">
             <img
-              v-if="m.poster_path"
+              v-if="m.poster_path && !imgErrors.has(m.id)"
               :src="`${TMDB_POSTER_BASE}${m.poster_path}`"
               :alt="m.title"
               loading="lazy"
+              @error="imgErrors.add(m.id)"
             />
-            <div v-else class="lc-poster-fallback">{{ m.title }}</div>
+            <div v-else-if="!m.poster_path" class="lc-poster-fallback">{{ m.title }}</div>
+            <div v-else class="lc-poster-fallback lc-poster-initial">{{ m.title.slice(0, 1) }}</div>
             <el-tag class="lc-poster-type" size="small" effect="dark" :type="m.media_type === 'movie' ? 'warning' : 'primary'">
               {{ mediaTypeLabel(m.media_type) }}
             </el-tag>
@@ -174,11 +177,12 @@ async function onDelete(m: MediaItem, e: Event) {
             <template #default="{ row }">
               <div class="title-cell">
                 <img
-                  v-if="row.poster_path"
+                  v-if="row.poster_path && !imgErrors.has(row.id)"
                   :src="`${TMDB_POSTER_BASE}${row.poster_path}`"
                   :alt="row.title"
                   loading="lazy"
                   class="title-poster"
+                  @error="imgErrors.add(row.id)"
                 />
                 <div v-else class="title-poster title-poster-fallback">
                   {{ row.title.slice(0, 1) }}
@@ -253,5 +257,12 @@ async function onDelete(m: MediaItem, e: Event) {
   background: linear-gradient(160deg, #1d232d 0%, #12161d 100%);
   color: var(--lc-text-secondary);
   font-size: 13px;
+}
+
+.lc-poster-initial {
+  padding: 0;
+  font-size: 36px;
+  font-weight: 700;
+  line-height: 1;
 }
 </style>

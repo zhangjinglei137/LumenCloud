@@ -1,9 +1,10 @@
 """运行日志 API（admin，docs/新系统设计.md §9.2 Logs）。
 
-- GET /api/logs  task_run 查询：task_type/status/media_id/tmdb_id 过滤，按 started_at 倒序
+- GET /api/logs  task_run 查询：task_type/status/media_id/tmdb_id/title 过滤，按 started_at 倒序
   日志脱敏（§9.1）：task_run 本就不含 token/凭据明文，DTO 白名单直出。
 - 线上反馈修复 Q8：支持按 tmdb_id 搜索；返回项附 media_title（影视名称）与 tmdb_id
   （join media 表装配），前端日志不再只看数字 id。
+- P1-2：新增 title 影视名称模糊搜索（ilike，join 已有 media 表）。
 """
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
@@ -24,10 +25,12 @@ async def list_logs(
     media_id: int | None = Query(default=None),
     # Q8：按 TMDB id 搜索日志（多个 media 可同 tmdb_id，用子查询覆盖全部）
     tmdb_id: int | None = Query(default=None),
+    # P1-2：按影视名称模糊搜索（ilike；空串不生效）
+    title: str | None = Query(default=None, max_length=128),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> list[dict]:
-    """task_run 查询记录（task_type/status/media_id/tmdb_id 可选过滤，均 AND；time 倒序分页）。"""
+    """task_run 查询记录（task_type/status/media_id/tmdb_id/title 可选过滤，均 AND；time 倒序分页）。"""
     stmt = select(TaskRun, Media.title, Media.tmdb_id).join(
         Media, TaskRun.media_id == Media.id, isouter=True
     )
@@ -41,6 +44,9 @@ async def list_logs(
         # 子查询取「该 tmdb_id 对应的全部 media.id」，覆盖同 tmdb 多 media 场景；
         # 缺省 media 的 task_run（media 已删 / 无关联）不命中
         stmt = stmt.where(TaskRun.media_id.in_(select(Media.id).where(Media.tmdb_id == tmdb_id)))
+    if title:
+        # P1-2：影视名称模糊搜索（join 已有 isouter media，直接用 Media.title；空串不生效）
+        stmt = stmt.where(Media.title.ilike(f"%{title}%"))
     stmt = (
         stmt.order_by(TaskRun.started_at.desc(), TaskRun.id.desc())
         .limit(limit)

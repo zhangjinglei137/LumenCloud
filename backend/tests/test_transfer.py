@@ -28,6 +28,7 @@ from app.database import Base
 import app.models  # noqa: F401  注册全部 ORM 模型
 import app.tasks.transfer as transfer_mod
 from app.models import DownloadTask, EpisodeState, Media, TransferQueue
+from app.services.alist import AlistUnavailable as RealAlistUnavailable
 from app.services.capacity import CapacityUnavailable
 from app.services.cloudsaver import CloudSaverUnavailable
 
@@ -76,8 +77,12 @@ class FakeCloudSaver:
 
 
 class FakeAlist:
+    # P0-1：落盘超时路径会 `raise alist.AlistUnavailable(...)`——fake 需同义异常类
+    AlistUnavailable = RealAlistUnavailable
+
     def __init__(self):
         self.remove_calls = []  # [(names, dir)]
+        self.list_dir_calls = []  # [path]
         self.link = "http://alist.test/raw/ep.mkv"
 
     async def remove(self, names, dir):
@@ -86,6 +91,10 @@ class FakeAlist:
 
     async def get_link(self, path):
         return self.link
+
+    async def list_dir(self, path):
+        self.list_dir_calls.append(path)
+        return [{"name": "other.mkv", "is_dir": False, "size": 123}]
 
 
 class FakeCapacityProvider:
@@ -508,3 +517,53 @@ def test_link_wait_timeout_constant_and_default():
     assert inspect.signature(
         transfer_mod._get_link_wait_visible
     ).parameters["timeout"].default == transfer_mod._LINK_WAIT_TIMEOUT
+
+
+# ---------------------------------------------------------------------------
+# P0-1（线上反馈「转存多次失败」）：save 受理但未落盘 → 失败重试路径清空 save_task_id
+# ---------------------------------------------------------------------------
+
+def test_link_timeout_clears_save_task_id_for_retry(db, env, monkeypatch):
+    """save 返回 task_id 但文件始终不落盘（get_link 持续失败超时）→ 走 except 重试路径。
+
+    P0-1 关键断言：失败回退后 TransferQueue.save_task_id 被清空为 NULL——
+    下一轮重试会重新 save（打破「已受理即跳过 save」的盲等死循环到 retry 上限）。
+
+    同时验证超时诊断：抛错前会列 /quark 目录记录实际内容；异常消息含 folderId
+    与 alist 管理 API /api/admin/storage/list 核对提示。
+    """
+    patch_db(monkeypatch, db)
+    monkeypatch.setattr(transfer_mod, "_LINK_WAIT_TIMEOUT", 0.0)  # 单测不等 300s
+    fake_store = types.SimpleNamespace(
+        get=lambda key, default=None: "9b852b37f9fb4d11938046a6ab5356a7"
+    )
+    monkeypatch.setattr(transfer_mod, "config_store", fake_store)
+    mid, es_id, tq_id = run(seed_pending(db))
+
+    # cloudSaver 正常受理（返回 task_id=t1），但文件从未落盘 → get_link 一直失败
+    async def always_fail(path):
+        raise RuntimeError("object not found")
+
+    env["alist"].get_link = always_fail
+
+    # 第一轮：save 受理并把 task_id 落库 → get_link 超时 → 失败回退 + 清空 save_task_id
+    run(transfer_mod.process_transfer_queue())
+    tq = run(read_row(db, TransferQueue, tq_id))
+    es = run(read_row(db, EpisodeState, es_id))
+    assert len(env["cloudsaver"].save_calls) == 1
+    assert tq.status == "pending"
+    assert tq.save_task_id is None                    # 关键：失败重试路径清空幂等标记
+    assert es.state == "queued"
+    assert es.retry_count == 1
+    assert tq.error is not None
+    assert "folderId=" in tq.error                    # 超时消息带 folderId（诊断）
+    assert "/api/admin/storage/list" in tq.error      # 含配置核对提示
+    assert env["alist"].list_dir_calls == ["/quark"]  # 抛错前列目录（诊断）
+
+    # 第二轮：save_task_id 已清空 → 重新 save（防死循环的核心行为，而非跳过 save 盲等）
+    run(transfer_mod.process_transfer_queue())
+    tq = run(read_row(db, TransferQueue, tq_id))
+    es = run(read_row(db, EpisodeState, es_id))
+    assert len(env["cloudsaver"].save_calls) == 2
+    assert tq.save_task_id is None
+    assert es.retry_count == 2

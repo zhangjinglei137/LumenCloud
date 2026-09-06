@@ -9,6 +9,8 @@ const filter = reactive<LogFilter>({
   task_type: undefined,
   status: undefined,
   media_id: undefined,
+  tmdb_id: undefined,
+  title: undefined,
 })
 
 // 与后端任务类型取值对齐（backend/app/tasks/*）；media_scan/recovery 为历史别名
@@ -60,10 +62,29 @@ async function loadMore() {
             style="width: 130px"
             @change="search"
           />
+          <el-input-number
+            v-model="filter.tmdb_id"
+            placeholder="TMDB ID"
+            :controls="false"
+            :min="1"
+            style="width: 130px"
+            @change="search"
+          />
+          <el-input
+            v-model="filter.title"
+            placeholder="影视名称"
+            clearable
+            style="width: 180px"
+            @keyup.enter="search"
+          />
           <el-button type="primary" :loading="store.loading" @click="search">
             <el-icon style="vertical-align: -2px"><Search /></el-icon>&nbsp;查询
           </el-button>
         </div>
+      </div>
+
+      <div class="lc-muted" style="margin-top: 8px; font-size: 12px">
+        影视名称模糊搜索仅对仍关联 media 的日志生效（media 已删除的日志搜不到名称）
       </div>
 
       <el-empty v-if="!store.loading && store.items.length === 0" description="没有符合条件的日志" :image-size="100" />
@@ -86,9 +107,17 @@ async function loadMore() {
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="影视 ID" width="90" align="center">
+          <el-table-column label="影视" min-width="180">
             <template #default="{ row }">
-              <router-link v-if="row.media_id" :to="`/media/${row.media_id}`" class="media-link">
+              <template v-if="row.media_title">
+                <el-tooltip :content="row.media_title" placement="top" effect="dark">
+                  <span class="media-title">{{ row.media_title }}</span>
+                </el-tooltip>
+                <router-link v-if="row.media_id" :to="`/media/${row.media_id}`" class="media-link">
+                  ({{ row.media_id }})
+                </router-link>
+              </template>
+              <router-link v-else-if="row.media_id" :to="`/media/${row.media_id}`" class="media-link">
                 {{ row.media_id }}
               </router-link>
               <span v-else class="lc-muted">—</span>
@@ -149,6 +178,20 @@ async function loadMore() {
 .media-link {
   color: var(--lc-accent);
   text-decoration: none;
+}
+
+.media-title {
+  display: inline-block;
+  max-width: 200px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  margin-right: 4px;
+}
+
+.media-title + .media-link {
+  white-space: nowrap;
 }
 
 .media-link:hover {

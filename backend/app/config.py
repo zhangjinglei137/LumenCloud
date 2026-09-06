@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     # ---- 外部服务 ----
     TMDB_API_KEY: str = ""
     TMDB_PROXY: str = ""
+    # P2-2 出口代理双模式：TMDB 请求出口代理（http(s)://host:port，如科学上网
+    # 代理）。与 TMDB_PROXY（镜像根地址）相互独立可叠加：镜像请求同样可走该出口；
+    # 无镜像时配合官方地址（api.themoviedb.org）使用。
+    TMDB_HTTP_PROXY: str = ""
     EMBY_BASE_URL: str = ""
     EMBY_API_KEY: str = ""
     CLOUDSAVER_BASE_URL: str = ""

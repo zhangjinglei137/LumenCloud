@@ -11,6 +11,7 @@ from app.routers import (
     approvals,
     auth,
     capacity,
+    emby,
     logs,
     media,
     notifications,
@@ -26,6 +27,7 @@ api_router.include_router(media.router)
 api_router.include_router(queue.router)
 api_router.include_router(capacity.router)
 api_router.include_router(tmdb.router)
+api_router.include_router(emby.router)
 api_router.include_router(approvals.router)
 api_router.include_router(settings.router)
 api_router.include_router(logs.router)
