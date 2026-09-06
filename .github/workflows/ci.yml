@@ -103,6 +103,10 @@ jobs:
           print('IMPORT setuptools', setuptools.__version__, setuptools.__file__)
           print('IMPORT msgpack', msgpack.version)
           "
+          echo '--- pip 视角 ---'
+          docker run --rm lumencloud:scan pip list --format=freeze | grep -iE 'setuptools|msgpack'
+          echo '--- 全镜像 find 残留 ---'
+          docker run --rm lumencloud:scan find / -name '*setuptools*' -o -name '*msgpack*' 2>/dev/null | grep -vE 'proc|sys|dev' | head -20
 
       - name: 运行 Trivy 扫描
         uses: aquasecurity/trivy-action@v0.36.0
@@ -113,12 +117,8 @@ jobs:
           severity: HIGH,CRITICAL
           exit-code: "1"
           ignore-unfixed: true
-          # 只信任 rekor 签名的 SBOM，忽略 base image 自带第三方 SBOM——
-          # trivy 默认合并 OCI 附带的 SBOM 元数据（含已删除的旧包版本记录），
-          # 导致与文件系统实测不符的误报（诊断 step 已实锤：镜像内仅存
-          # setuptools 84.0.0 / msgpack 1.2.2，SBOM 里却是 70.3.0 / 1.1.2）。
-          # 配置见 .github/trivy.yaml（sbom-sources 不支持 inline，需 config 文件）
-          trivy-config: .github/trivy.yaml
+          # 输出 trivy 视角的全部包+版本（日志可见），定位 70.3.0/1.1.2 来源
+          list-all-pkgs: true
 
       - name: 上传 SARIF 到 GitHub
         if: always()
