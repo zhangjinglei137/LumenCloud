@@ -10,12 +10,13 @@ pending 队列预估占用（pending = 未消费积压，不代表真实占用�
 - 历史 estimated 来源已由 provider 真实化取代（Q1 实证：容量数据源 = alist）
 """
 import logging
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import User
+from app.models import QuarkCapacityLog, User
 from app.routers.deps import get_current_user, get_session
 from app.routers.queue import _load_transfer_queue_model
 
@@ -24,6 +25,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _GB = 1024**3
+
+# 阶段 4 生产化 / E：最近快照窗口（交付 3）——最近 24h 内、上限 48 条，供前端趋势图
+_RECENT_SNAPSHOT_HOURS = 24
+_RECENT_SNAPSHOT_LIMIT = 48
 
 
 @router.get("/capacity")
@@ -37,6 +42,8 @@ async def capacity(
       **pending = 未消费积压，不代表真实占用**（仅搜索入队，尚未转存/下载）。
     - 实时容量不可用（alist 故障/未配置）→ source=unavailable、used_gb=None
       （fail-closed 展示，不误导；不抛 500）。
+    - usage_rate：used_gb/total_gb 使用率（0~1；不可用/无 quota 时为 None）。
+    - recent_snapshots：最近 24h 容量快照（上限 48 条，时间升序；Q6 容量长期趋势）。
     """
     usage = await _get_usage()
 
@@ -46,6 +53,11 @@ async def capacity(
     checked_at = usage.get("checked_at")
     error = usage.get("error")
 
+    # 阶段 4 生产化 / E：使用率（total_gb 为 0/空 → None，不除零）
+    usage_rate = None
+    if used_gb is not None and total_gb:
+        usage_rate = round(used_gb / total_gb, 4)
+
     return {
         "total_gb": total_gb,
         "used_gb": used_gb,
@@ -53,7 +65,49 @@ async def capacity(
         "checked_at": checked_at,
         "error": error,
         "pending_estimate": await _pending_estimate_gb(session),
+        "usage_rate": usage_rate,
+        "recent_snapshots": await _recent_snapshots(session),
     }
+
+
+# 阶段 4 生产化 / E：最近快照查询（交付 3，Q6 容量长期趋势数据）
+async def _recent_snapshots(session: AsyncSession) -> list[dict]:
+    """最近 24h 容量快照（上限 48 条，时间升序；供前端趋势图直接按序绘制）。
+
+    数据源 quark_capacity_log（60s 节流 + 每小时巡检兜底落库）；查询失败不抛
+    500（趋势数据为增强字段，失败回退空列表并告警日志）。
+    """
+    since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
+        hours=_RECENT_SNAPSHOT_HOURS
+    )
+    try:
+        rows = (
+            (
+                await session.execute(
+                    select(QuarkCapacityLog)
+                    .where(
+                        QuarkCapacityLog.checked_at.isnot(None),
+                        QuarkCapacityLog.checked_at >= since,
+                    )
+                    .order_by(
+                        QuarkCapacityLog.checked_at.desc(),
+                        QuarkCapacityLog.id.desc(),
+                    )
+                    .limit(_RECENT_SNAPSHOT_LIMIT)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    except Exception as exc:  # noqa: BLE001  趋势数据为增强字段，失败不 500
+        logger.warning("/api/capacity 读取最近快照失败（返回空列表）: %s", exc)
+        return []
+    snapshots = [
+        {"checked_at": row.checked_at, "used_gb": row.used_gb, "total_gb": row.total_gb}
+        for row in rows
+    ]
+    snapshots.reverse()  # 升序（旧→新），前端趋势图直接按序绘制
+    return snapshots
 
 
 async def _get_usage() -> dict:

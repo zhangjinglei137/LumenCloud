@@ -1,6 +1,20 @@
-# LumenCloud 生产部署（Docker Hub 镜像，单容器）
+# ============================================
+# LumenCloud 生产部署（Docker Hub 镜像，单容器）—— 阶段 4 生产化硬化
 # 用法：
 #   IMAGE_TAG=1.0.0 docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
+#
+# 生产化要点（交付 E 第二部分）：
+#   1. 健康检查：容器内 /api/health 探测（python:3.12-slim 自带 python）
+#   2. 日志轮转：json-file driver 按 10m/5 文件轮转（supervisord 直出 stdout，
+#      docker 层轮转即可，容器内不再跑 logrotate，避免多套轮转冲突）
+#   3. 资源限制：deploy.resources.limits（cpus 1.0 / memory 512M，按宿主规格调）
+#   4. 上线前置校验：docker compose up 前先跑
+#      python scripts/check_env_prod.py
+#      确认 .env.prod 必填键齐全（与后端启动护栏 fail-fast 一致）
+#   5. 数据备份：容器内 cron 参考
+#      python scripts/backup_db.py            # 每日备份，保留最近 14 份
+#      （建议宿主 crontab: 0 3 * * * docker exec lumencloud python scripts/backup_db.py）
+# ============================================
 services:
   lumencloud:
     image: thntime/lumencloud:${IMAGE_TAG:-latest}
@@ -8,7 +22,31 @@ services:
     ports:
       - "${PORT:-8000}:8000"
     volumes:
+      # SQLite 数据目录（含 lumencloud.db 及其 WAL/SHM 文件）
       - ./data:/app/data
     env_file:
       - .env.prod
     restart: unless-stopped
+
+    # 健康检查：/api/health 返回 200 即健康
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)"]
+      start_period: 60s   # 启动含 alembic 迁移 + 前端静态加载，放宽首次窗口
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+    # 日志轮转：单文件 10M、最多保留 5 个文件（docker logs 仍可查）
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+    # 资源限制（可选建议）：docker compose（非 swarm）亦会应用 deploy.resources；
+    # 按宿主 CPU/内存规格调整，不要照抄。
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M

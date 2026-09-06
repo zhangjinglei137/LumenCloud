@@ -36,7 +36,9 @@ COPY backend/app /app/backend/app
 # Alembic 迁移脚本（app/database.py init_db 启动时执行 alembic upgrade head 必需）
 COPY backend/alembic /app/backend/alembic
 
-# 运维脚本（迁移/探测；阶段 4 用 docker exec 执行 migrate_from_n8n.py）
+# 运维脚本（迁移/探测/备份/校验；阶段 4 用 docker exec 执行 migrate_from_n8n.py / backup_db.py）
+# scripts/backup 目录不预建：备份脚本运行时 mkdir（root 用户 /app 下可写），
+# 与 migrate_from_n8n.py 的 export_backup 一致，避免空目录被 COPY 进镜像
 COPY scripts /app/scripts
 
 # 前端构建产物 → FastAPI 静态直出

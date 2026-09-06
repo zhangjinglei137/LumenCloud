@@ -22,10 +22,13 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
+from sqlalchemy import select
+
 from app.config import settings
 from app.database import async_session
 from app.models import QuarkCapacityLog, SystemConfig
 from app.services import alist
+from app.services.notifier import EVENT_FLOW_ERROR, NotifyEvent, notifier
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +48,45 @@ SAFETY_MARGIN_CONFIG_KEY = "capacity_safety_margin_gb"
 
 # system_config 中的配额键（「配置双源统一」：system_config 优先，env 仅 fallback）
 QUOTA_CONFIG_KEY = "quark_quota_gb"
+
+# ---- 阶段 4 生产化 / E：容量使用率阈值告警（交付 1）----
+# system_config 中的使用率告警阈值键（值 = 0~1 浮点，如 0.90 表示 90%）
+CAPACITY_ALERT_THRESHOLD_KEY = "capacity_alert_threshold"
+# 阈值默认值：使用率 ≥ 90% 触发告警（settings.py PATCH 白名单可写该键覆盖）
+CAPACITY_ALERT_THRESHOLD_DEFAULT = 0.90
+# 去抖：需连续 N 条快照（quark_capacity_log 最近 2 条）都超阈值才告警，
+# 避免瞬时抖动刷屏；去抖状态落在 DB 快照中，进程重启不丢
+CAPACITY_ALERT_CONSECUTIVE = 2
+# 告警冷却（秒）：30 分钟内不重复告警（模块级时间戳，思路同 transfer._alert_cooldown）
+CAPACITY_ALERT_COOLDOWN_SECONDS = 1800.0
+
+# 最近一次容量告警通知时间戳（monotonic；模块级共享状态，冷却用）
+_last_capacity_alert_at: float = 0.0
+
+
+async def _load_alert_threshold() -> float:
+    """读取使用率告警阈值（system_config capacity_alert_threshold，默认 0.90）。
+
+    模块级函数（M2，Oracle Gate3）：check_capacity_alert 与 CapacityProvider 同处
+    本模块，不依赖 provider 实例（provider 为单例，且该读取与容量判断无关）。
+    读取/解析失败均回退默认值（阈值是运维告警参数，不影响 fail-closed 主路径）。
+    """
+    default = CAPACITY_ALERT_THRESHOLD_DEFAULT
+    try:
+        async with async_session() as session:
+            row = await session.get(SystemConfig, CAPACITY_ALERT_THRESHOLD_KEY)
+    except Exception as exc:
+        logger.warning("读取 %s 失败，用默认阈值 %.2f: %s",
+                       CAPACITY_ALERT_THRESHOLD_KEY, default, exc)
+        return default
+    if row is None or not row.value:
+        return default
+    try:
+        return float(row.value)
+    except (TypeError, ValueError):
+        logger.warning("%s 非数值 %r，用默认阈值 %.2f",
+                       CAPACITY_ALERT_THRESHOLD_KEY, row.value, default)
+        return default
 
 
 def _now_naive_utc() -> datetime:
@@ -226,6 +268,14 @@ class CapacityProvider:
                            SAFETY_MARGIN_CONFIG_KEY, row.value, default)
             return default
 
+    # 阶段 4 生产化 / E：使用率告警阈值读取（交付 1）
+    async def _load_alert_threshold(self) -> float:
+        """读取使用率告警阈值（system_config capacity_alert_threshold，默认 0.90）。
+
+        读取/解析失败均回退默认值（阈值是运维告警参数，不影响 fail-closed 主路径）。
+        """
+        return await _load_alert_threshold()
+
     async def check(self, candidate_bytes: int) -> bool:
         """模型 B（硬上限，docs §6.3）判定候选转存是否放行。
 
@@ -250,6 +300,93 @@ class CapacityProvider:
                 usage.used_gb, candidate_gb, margin_gb, needed_gb, quota_gb,
             )
         return allow
+
+
+# 阶段 4 生产化 / E：容量使用率阈值告警巡检（交付 1）
+async def check_capacity_alert() -> bool:
+    """容量使用率阈值告警巡检（由 scheduler job `capacity_alert` 每小时调用）。
+
+    读 quark_capacity_log 最近 2 条快照（checked_at DESC）：
+      - 两条均 used_gb/total_gb ≥ 阈值（system_config capacity_alert_threshold，
+        默认 0.90）→ **连续 2 次超阈值**（去抖，防瞬时抖动刷屏）；
+      - 满足去抖且距上次告警 ≥ 30min（模块级 _last_capacity_alert_at）→ 发一条
+        flow_error 通知（复用 notifier 事件契约，title「夸克容量使用率过高」）。
+
+    方案权衡（注释存档，供追溯）：
+      - **不在 transfer 高频 check()/get_usage() 路径内做判定**（check 每分钟多次，
+        高频路径只做容量判断，不掺 DB 读 + 通知判定）；
+      - 独立巡检入口 + 每小时 job 驱动：job 主动 get_usage() 已保证快照定期落库
+        （Q6 容量趋势连续），每小时评估一次对运维告警足够。
+      - 去抖状态落在 quark_capacity_log（非内存）：任一条快照低于阈值即不再满足
+        「连续 2 次」→ 回落自动重置，进程重启不丢去抖进度。冷却 30min 用模块级
+        时间戳（同 transfer._alert_cooldown 思路）。
+
+    返回：本次是否发送了容量告警通知（True=已通知）。
+    快照不足 / 数据缺失 / 读取异常 → False（fail-safe：宁缺毋滥，不误报）。
+    """
+    threshold = await provider._load_alert_threshold()
+    try:
+        async with async_session() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(QuarkCapacityLog)
+                        .where(QuarkCapacityLog.checked_at.isnot(None))
+                        .order_by(
+                            QuarkCapacityLog.checked_at.desc(),
+                            QuarkCapacityLog.id.desc(),
+                        )
+                        .limit(CAPACITY_ALERT_CONSECUTIVE)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+    except Exception as exc:
+        logger.warning("容量告警评估：读取快照失败，本轮跳过（不误报）: %s", exc)
+        return False
+
+    rates = [
+        row.used_gb / row.total_gb
+        for row in rows
+        if row.total_gb and row.used_gb is not None
+    ]
+    if len(rates) < CAPACITY_ALERT_CONSECUTIVE:
+        # 快照不足（表空 / 记录太少 / 含缺失数据）→ 不判定（幂等：下轮补齐后自然判定）
+        logger.debug("容量告警评估：快照不足 %d/%d，跳过", len(rates), CAPACITY_ALERT_CONSECUTIVE)
+        return False
+    if not all(rate >= threshold for rate in rates):
+        # 回落：最近快照已低于阈值（未连续超阈值）→ 重置去抖，等待重新累计
+        logger.debug("容量告警评估：未连续 %d 次超阈值，不告警", CAPACITY_ALERT_CONSECUTIVE)
+        return False
+
+    global _last_capacity_alert_at
+    now = time.monotonic()
+    if now - _last_capacity_alert_at < CAPACITY_ALERT_COOLDOWN_SECONDS:
+        logger.info(
+            "容量使用率告警冷却中（%.0fs 内不重复通知）", CAPACITY_ALERT_COOLDOWN_SECONDS,
+        )
+        return False
+
+    latest = rows[0]  # 最新快照（checked_at DESC 首位）
+    rate_pct = rates[0] * 100
+    await notifier.notify(NotifyEvent(
+        event_type=EVENT_FLOW_ERROR,
+        title="夸克容量使用率过高",
+        body=(
+            f"夸克中转空间使用率 {rate_pct:.1f}%（used {latest.used_gb:.2f}G / "
+            f"total {latest.total_gb:.2f}G），连续 {CAPACITY_ALERT_CONSECUTIVE} 次快照"
+            f"≥ 阈值 {threshold:.0%}，请及时清理或扩容。"
+        ),
+        recipient=None,
+        extra={"source": latest.source, "checked_at": str(latest.checked_at)},
+    ))
+    _last_capacity_alert_at = time.monotonic()
+    logger.warning(
+        "夸克容量使用率过高告警: %.1f%%（used %.2fG / total %.2fG，阈值 %.0f%%）",
+        rate_pct, latest.used_gb, latest.total_gb, threshold * 100,
+    )
+    return True
 
 
 # 模块级单例

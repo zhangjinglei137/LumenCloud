@@ -31,6 +31,8 @@ _WHITELIST_EXACT = {
     "episode_state_timeout_hours",
     "scheduler_enabled",
     "capacity_safety_margin_gb",
+    # 阶段 4 生产化 / E：容量使用率告警阈值（交付 1，默认 0.90 在代码常量）
+    "capacity_alert_threshold",
 }
 
 

@@ -67,6 +67,7 @@ def as_bool(raw) -> bool:
 
 # 子模块在 helper 定义之后导入，避免部分初始化循环依赖。
 from app.tasks import (  # noqa: E402,F401
+    capacity_alert,
     cleanup,
     nastools_sync,
     notification_scan,
@@ -76,6 +77,7 @@ from app.tasks import (  # noqa: E402,F401
 )
 
 __all__ = [
+    "capacity_alert",
     "scan",
     "transfer",
     "cleanup",

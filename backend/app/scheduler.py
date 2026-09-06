@@ -4,7 +4,7 @@ APScheduler（AsyncIOScheduler）—— 单进程内嵌调度器（设计文档 
 - 单 uvicorn 进程（--workers 1）内嵌，MemoryJobStore；任务状态持久化在业务表
   （task_run / episode_state / transfer_queue），重启后按表内状态恢复（recover_on_boot），
   不依赖 jobstore 持久化。
-- 注册 6 个 job（id 固定）：
+- 注册 7 个 job（id 固定）：
   | job_id                   | 触发器                                | 阶段 4 行为 |
   |--------------------------|---------------------------------------|-------------|
   | scan_all_media           | IntervalTrigger(minutes=1)            | B 定时：每分钟 tick，scan_all_media 按各 media last_scan_at 到期过滤；注册默认 paused，阶段 4 经 system_config 启用 |
@@ -13,6 +13,7 @@ APScheduler（AsyncIOScheduler）—— 单进程内嵌调度器（设计文档 
   | release_space_cleanup    | IntervalTrigger(hours=12)             | 阶段 3 已实现；定时默认关闭 |
   | notification_scan        | IntervalTrigger(minutes=5)            | 阶段 3 已实现；定时默认关闭 |
   | recover_stale            | IntervalTrigger(hours=1)              | P2-2 新增：运行期超时回退（recover 不只 boot）；定时默认关闭 |
+  | capacity_alert           | IntervalTrigger(hours=1)              | 阶段 4（交付 E）：每小时主动统计写容量快照（Q6 趋势连续）+ 使用率阈值告警；定时默认关闭 |
 - system_config 双层开关：scheduler_enabled（全局，默认开）+ scheduler.<job_id>（job 级，
   未配置时按阶段 3 默认：定时全部关闭，阶段 4 经 system_config 启用，§12.2 冷切换）。
 - 冷切换铁律（P3-4）：注册即暂停（paused=True）——所有 job 默认不空转；仅由
@@ -27,7 +28,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from app.database import async_session
 from app.models import SystemConfig
-from app.tasks import cleanup, nastools_sync, notification_scan, recovery, scan, transfer
+from app.tasks import capacity_alert, cleanup, nastools_sync, notification_scan, recovery, scan, transfer
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ JOB_NASTOOLS_SYNC = "nastools_sync"
 JOB_RELEASE_SPACE_CLEANUP = "release_space_cleanup"
 JOB_NOTIFICATION_SCAN = "notification_scan"
 JOB_RECOVER_STALE = "recover_stale"
+JOB_CAPACITY_ALERT = "capacity_alert"
 
 JOB_IDS = [
     JOB_SCAN_ALL_MEDIA,
@@ -46,6 +48,7 @@ JOB_IDS = [
     JOB_RELEASE_SPACE_CLEANUP,
     JOB_NOTIFICATION_SCAN,
     JOB_RECOVER_STALE,
+    JOB_CAPACITY_ALERT,
 ]
 
 # job 级开关默认值（阶段 3：定时默认全部关闭——只用手动触发与事件触发；
@@ -57,6 +60,8 @@ _JOB_DEFAULT_ENABLED = {
     JOB_RELEASE_SPACE_CLEANUP: False,
     JOB_NOTIFICATION_SCAN: False,
     JOB_RECOVER_STALE: False,
+    # 阶段 4 生产化 / E：容量巡检默认关闭（经 system_config scheduler.capacity_alert=true 启用）
+    JOB_CAPACITY_ALERT: False,
 }
 
 # MemoryJobStore：任务状态持久化走业务表，jobstore 仅承载调度
@@ -161,6 +166,17 @@ def register_jobs() -> None:
         IntervalTrigger(hours=1),
         id=JOB_RECOVER_STALE,
         paused=True,  # P3-4：注册即暂停
+        max_instances=1,
+        coalesce=True,
+        replace_existing=True,
+    )
+    # 阶段 4 生产化 / E：容量巡检（交付 1+2）——每小时主动统计写快照（Q6 容量趋势
+    # 连续落库）+ 使用率阈值告警评估；默认关闭，经 system_config scheduler.capacity_alert=true 启用
+    scheduler.add_job(
+        capacity_alert.capacity_alert_job,
+        IntervalTrigger(hours=1),
+        id=JOB_CAPACITY_ALERT,
+        paused=True,  # P3-4：注册即暂停（阶段 4 默认关闭，冷切换铁律）
         max_instances=1,
         coalesce=True,
         replace_existing=True,

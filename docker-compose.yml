@@ -1,14 +1,54 @@
+# ============================================
 # LumenCloud 开发/本地环境
-# 生产环境请使用 docker-compose.prod.yml
+# 生产环境请使用 docker-compose.prod.yml（含 .env.prod 强校验 + 健康检查）
+#
+# 用法：
+#   docker compose up -d --build      # 本地构建并启动
+#   docker compose logs -f            # 查看日志
+#   docker compose down               # 停止（数据保留在 ./data 卷）
+#
+# 说明：
+#   1. 本地从 Dockerfile 构建（多阶段：前端 vite → python:3.12-slim）
+#   2. 环境变量读 .env（复制 .env.example 后填写；JWT_SECRET 必填）
+#   3. SQLite 数据在 ./data:/app/data（含 lumencloud.db + WAL/SHM）
+#   4. 健康检查 /api/health（python:3.12-slim 自带 python）
+#   5. 日志 json-file 轮转（10m/5 文件），supervisord 直出 stdout
+# ============================================
 services:
   lumencloud:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     image: thntime/lumencloud:dev
     container_name: lumencloud
     ports:
-      - "8000:8000"
+      - "${PORT:-8000}:8000"
     volumes:
+      # SQLite 数据目录（含 lumencloud.db 及其 WAL/SHM 文件）
       - ./data:/app/data
+      # 可选：容器内跑迁移/备份脚本时挂载（scripts 已在镜像内，不需要此卷）
     env_file:
       - .env
     restart: unless-stopped
+
+    # 健康检查：/api/health 返回 200 即健康
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)"]
+      start_period: 60s   # 启动含 alembic 迁移 + 前端静态加载，放宽首次窗口
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+    # 日志轮转：单文件 10M、最多保留 5 个文件（docker logs 仍可查）
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+    # 资源限制（可选建议，按本机规格调整）
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
