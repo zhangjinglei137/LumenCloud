@@ -19,23 +19,24 @@ FROM python:3.12-slim
 # setuptools/msgpack 一并升级到修复线：CVE-2025-47273（setuptools<78.1.1）、
 # GHSA-6v7p-g79w-8964（msgpack<=1.2.0）。
 #
-# ⚠️ 关键：python:3.12-slim 基于 Debian（trixie）基础镜像，自带 dist-packages
-# 旧版 setuptools-70.3.0 / msgpack-1.1.2——pip 安装只会写入 site-packages 新版，
-# 不会删除 dist-packages 旧包；trivy 扫描镜像文件系统时会同时发现 dist-packages
-# 旧 metadata → 仍命中 CVE（CI 实证：Installed Version 70.3.0 / 1.1.2）。
-# 因此 pip 装新版后必须显式清理 dist-packages 旧包目录（site-packages 已由 pip
-# 提供同功能新版本，运行时无影响）。
+# ⚠️ 关键：python:3.12-slim 基于 Debian（trixie），基础镜像自带 dist-packages
+# 旧版 setuptools-70.3.0 / msgpack-1.1.2（Debian 打包，可能位于
+# /usr/lib/python3/dist-packages 或 /usr/lib/python3.13/dist-packages 等版本化
+# 路径）。pip 安装只写 site-packages 新版，不会删除 dist-packages 旧包；trivy
+# 扫描镜像文件系统时仍发现旧 metadata → 命中 CVE（CI 实证：Installed Version
+# 70.3.0 / 1.1.2）。因此必须用 find 递归清理所有 dist-packages 下的旧包目录
+# 与 dist-info（site-packages 已由 pip 提供同功能新版本，运行时无影响）。
 #
-# 同时：不要用 apt 安装 supervisor —— apt-get 会装入 Debian 版 python3-setuptools，
+# 同时：不要用 apt 安装 supervisor —— apt-get 会装入 Debian 版 python3-setuptools
 # 与上述问题同源；supervisor 也走 pip 安装。
 RUN pip install --no-cache-dir --upgrade "pip>=26.2.1" \
     && pip install --no-cache-dir --upgrade "setuptools>=78.1.1" "msgpack>=1.2.1" \
     && pip install --no-cache-dir "supervisor>=4.2.5" \
-    && rm -rf /usr/lib/python3/dist-packages/setuptools* \
-              /usr/lib/python3/dist-packages/pkg_resources* \
-              /usr/lib/python3/dist-packages/_distutils_hack* \
-              /usr/lib/python3/dist-packages/msgpack* \
+    && find /usr/lib -type d -path "*dist-packages*" \( \
+         -name "setuptools*" -o -name "pkg_resources*" -o -name "_distutils_hack*" -o -name "msgpack*" \
+       \) -exec rm -rf {} + 2>/dev/null || true \
     && mkdir -p /etc/supervisor/conf.d \
+    && python -c "import setuptools, msgpack; print('setuptools', setuptools.__version__); print('msgpack', msgpack.version)" \
     && pip --version
 
 ENV PYTHONUNBUFFERED=1 \
