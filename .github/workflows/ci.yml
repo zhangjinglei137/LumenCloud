@@ -90,6 +90,20 @@ jobs:
       - name: 构建镜像（仅扫描用）
         run: docker build -t lumencloud:scan .
 
+      # 诊断：实测镜像内 setuptools/msgpack 的 dist-info 实际路径与版本，
+      # 与 trivy 报告的版本对照（此前怀疑 trivy 读基础镜像第三方 SBOM 而非文件系统）
+      - name: 镜像内包实测（诊断）
+        run: |
+          docker run --rm lumencloud:scan python -c "
+          import glob, os
+          for pat in ['/usr/lib/python*/dist-packages/setuptools*', '/usr/local/lib/python*/site-packages/setuptools*', '/usr/lib/python*/dist-packages/msgpack*', '/usr/local/lib/python*/site-packages/msgpack*']:
+              for p in glob.glob(pat):
+                  print('FOUND', p)
+          import setuptools, msgpack
+          print('IMPORT setuptools', setuptools.__version__, setuptools.__file__)
+          print('IMPORT msgpack', msgpack.version)
+          "
+
       - name: 运行 Trivy 扫描
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -99,6 +113,10 @@ jobs:
           severity: HIGH,CRITICAL
           exit-code: "1"
           ignore-unfixed: true
+          # 只信任 rekor 签名的 SBOM，忽略 base image OCI/SPDX 第三方 SBOM——
+          # trivy 会合并基础镜像自带的 SBOM 元数据（含已删除的旧包版本），
+          # 导致与文件系统实测不符的误报（构建日志 WARN Third-party SBOM）
+          sbom-sources: rekor
 
       - name: 上传 SARIF 到 GitHub
         if: always()
