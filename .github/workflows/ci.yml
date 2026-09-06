@@ -105,8 +105,10 @@ jobs:
           "
           echo '--- pip 视角 ---'
           docker run --rm lumencloud:scan pip list --format=freeze | grep -iE 'setuptools|msgpack'
-          echo '--- 全镜像 find 残留 ---'
-          docker run --rm lumencloud:scan find / -name '*setuptools*' -o -name '*msgpack*' 2>/dev/null | grep -vE 'proc|sys|dev' | head -20
+          echo '--- dpkg 视角 ---'
+          docker run --rm lumencloud:scan dpkg -l 2>/dev/null | grep -iE 'setuptools|msgpack' || echo 'dpkg 无 setuptools/msgpack 记录'
+          echo '--- trivy table 输出（决策证据）---'
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.70.0 image --severity HIGH,CRITICAL --ignore-unfixed --sbom-sources "" lumencloud:scan 2>&1 | grep -iE 'CVE|GHSA|setuptools|msgpack|70\.3|1\.1\.2|Total' || echo 'trivy table 无匹配'
 
       - name: 运行 Trivy 扫描
         uses: aquasecurity/trivy-action@v0.36.0
