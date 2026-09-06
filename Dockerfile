@@ -17,9 +17,14 @@ FROM python:3.12-slim
 
 # 升级 pip 消除镜像内系统级 pip CVE（trivy 门禁要求 pip>=26.2.1）；
 # setuptools/msgpack 一并升级到修复线：CVE-2025-47273（setuptools<78.1.1）、
-# GHSA-6v7p-g79w-8964（msgpack<=1.2.0）
+# GHSA-6v7p-g79w-8964（msgpack<=1.2.0）。
+# 注意：不要用 apt 安装 supervisor —— apt-get 会装入 Debian 版
+# python3-setuptools（dist-packages 旧版）与 pip 新版并存，trivy 扫到旧
+# metadata 仍命中 CVE-2025-47273（CI 实证）。故 supervisor 也走 pip 安装。
 RUN pip install --no-cache-dir --upgrade "pip>=26.2.1" \
     && pip install --no-cache-dir --upgrade "setuptools>=78.1.1" "msgpack>=1.2.1" \
+    && pip install --no-cache-dir "supervisor>=4.2.5" \
+    && mkdir -p /etc/supervisor/conf.d \
     && pip --version
 
 ENV PYTHONUNBUFFERED=1 \
@@ -27,11 +32,6 @@ ENV PYTHONUNBUFFERED=1 \
     LUMENCLOUD_DATA_DIR=/app/data
 
 WORKDIR /app
-
-# 系统依赖（supervisord）
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends supervisor \
-    && rm -rf /var/lib/apt/lists/*
 
 # 后端依赖
 COPY backend/requirements.txt /app/backend/requirements.txt
@@ -49,9 +49,9 @@ COPY backend/alembic /app/backend/alembic
 COPY scripts /app/scripts
 
 # 前端构建产物 → FastAPI 静态直出
-    # ⚠️ vite.config.ts 的 build.outDir = '../backend/static'（相对 /build/frontend）
-    #    = /build/backend/static；不要改成 dist，否则多阶段 COPY not found
-    COPY --from=frontend-builder /build/backend/static /app/backend/static
+# ⚠️ vite.config.ts 的 build.outDir = '../backend/static'（相对 /build/frontend）
+#    = /build/backend/static；不要改成 dist，否则多阶段 COPY not found
+COPY --from=frontend-builder /build/backend/static /app/backend/static
 
 # supervisord 配置
 COPY supervisord.conf /etc/supervisor/conf.d/lumencloud.conf
