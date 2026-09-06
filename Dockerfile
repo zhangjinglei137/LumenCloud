@@ -33,10 +33,15 @@ FROM python:3.12-slim
 # 顺序：pip 升级（site-packages 新版本）→ apt purge 系统旧包（dpkg 记录移除）
 # → 兜底清理 dist-packages 残留目录。site-packages 已由 pip 提供同功能新版，
 # 运行时无影响；purge 只移除系统 python 的 Debian 打包版本。
-RUN pip install --no-cache-dir --upgrade "pip>=26.2.1" \
+#
+# ⚠️ purge 前必须 apt-get update：基础镜像层含 apt 源列表，但 RUN 层无缓存；
+# 无 update 时 purge 报 'Unable to locate package' 被 || true 吞掉而静默失败
+# （CI 实证：曾因吞输出未发现 purge 未执行，trivy 仍报 Debian 70.3.0/1.1.2）。
+RUN apt-get update -qq \
+    && pip install --no-cache-dir --upgrade "pip>=26.2.1" \
     && pip install --no-cache-dir --upgrade "setuptools>=78.1.1" "msgpack>=1.2.1" \
     && pip install --no-cache-dir "supervisor>=4.2.5" \
-    && (apt-get purge -y python3-setuptools python3-msgpack 2>/dev/null || true) \
+    && apt-get purge -y python3-setuptools python3-msgpack \
     && rm -rf /usr/lib/python*/dist-packages/setuptools* \
               /usr/lib/python*/dist-packages/pkg_resources* \
               /usr/lib/python*/dist-packages/_distutils_hack* \
