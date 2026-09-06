@@ -113,10 +113,12 @@ jobs:
           severity: HIGH,CRITICAL
           exit-code: "1"
           ignore-unfixed: true
-          # 只信任 rekor 签名的 SBOM，忽略 base image OCI/SPDX 第三方 SBOM——
-          # trivy 会合并基础镜像自带的 SBOM 元数据（含已删除的旧包版本），
-          # 导致与文件系统实测不符的误报（构建日志 WARN Third-party SBOM）
-          sbom-sources: rekor
+          # 只信任 rekor 签名的 SBOM，忽略 base image 自带第三方 SBOM——
+          # trivy 默认合并 OCI 附带的 SBOM 元数据（含已删除的旧包版本记录），
+          # 导致与文件系统实测不符的误报（诊断 step 已实锤：镜像内仅存
+          # setuptools 84.0.0 / msgpack 1.2.2，SBOM 里却是 70.3.0 / 1.1.2）。
+          # 配置见 .github/trivy.yaml（sbom-sources 不支持 inline，需 config 文件）
+          trivy-config: .github/trivy.yaml
 
       - name: 上传 SARIF 到 GitHub
         if: always()
