@@ -63,13 +63,22 @@ TREE = {
 
 
 def _patched_provider(provider, alist_patch):
-    """构建已进入的 patch 上下文（ExitStack）：alist mock + settings 配置 + 快照 no-op。"""
+    """构建已进入的 patch 上下文（ExitStack）：alist mock + settings 配置 + 快照 no-op。
+
+    同时 mock _load_quota_gb 返回 env 配额（= provider._quota_gb）：本测试为纯单测，
+    不依赖共享库 system_config 的 quark_quota_gb 状态（全量跑时 test_api_smoke 可能
+    在共享库写入该配置，导致 info.total_gb 与 env 配额不一致而误失败）。
+    """
     stack = ExitStack()
     for p in (
         alist_patch,
         patch.object(settings, "ALIST_BASE_URL", "http://alist.test"),
         patch.object(settings, "ALIST_TOKEN", "test-token"),
         patch.object(provider, "_persist_snapshot", new=AsyncMock()),
+        patch.object(
+            provider, "_load_quota_gb",
+            new=AsyncMock(return_value=provider._quota_gb),
+        ),
     ):
         stack.enter_context(p)
     return stack

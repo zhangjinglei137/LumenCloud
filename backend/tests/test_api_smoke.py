@@ -219,6 +219,10 @@ def test_full_auth_and_api_flow():
         assert r.status_code == 200, r.text
         r = client.get("/api/settings", headers=_auth(admin_tok))
         assert r.json()["system_config"].get("quark_quota_gb") == "210"
+        # 还原配额配置，避免残留污染后续共享库的容量/告警测试
+        # （全量跑时 capacity 测试读同一 SQLite 的 system_config，残留 210 会在
+        # CI 等无 .env（默认配额 10）环境导致断言失败）
+        client.patch("/api/settings", json={"quark_quota_gb": "10"}, headers=_auth(admin_tok))
 
         # Phase 8 配置入库：服务凭据可经 PATCH 写入 DB 且保存即生效；
         # GET 对敏感键不回显值（"***" 占位），services 布尔判定读 DB 值（非仅 env）。

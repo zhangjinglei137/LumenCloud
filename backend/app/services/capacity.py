@@ -61,7 +61,10 @@ CAPACITY_ALERT_CONSECUTIVE = 2
 CAPACITY_ALERT_COOLDOWN_SECONDS = 1800.0
 
 # 最近一次容量告警通知时间戳（monotonic；模块级共享状态，冷却用）
-_last_capacity_alert_at: float = 0.0
+# -1.0 为「从未告警」哨兵：time.monotonic() 在新启动的进程/容器上可能小于冷却窗
+# （如 CI runner / 容器刚启动几分钟），若用 0.0 会把「从未告警」误判成「刚告警过」
+# 导致冷却吞掉首次告警。判定冷却仅当已告警过（>= 0）时生效。
+_last_capacity_alert_at: float = -1.0
 
 
 async def _load_alert_threshold() -> float:
@@ -368,7 +371,9 @@ async def check_capacity_alert() -> bool:
 
     global _last_capacity_alert_at
     now = time.monotonic()
-    if now - _last_capacity_alert_at < CAPACITY_ALERT_COOLDOWN_SECONDS:
+    # 冷却仅对「已告警过」（>=0）生效；-1（从未告警）永不冷却，
+    # 避免 monotonic 小于冷却窗（刚启动环境）时误判冷却吞掉首次告警
+    if _last_capacity_alert_at >= 0 and now - _last_capacity_alert_at < CAPACITY_ALERT_COOLDOWN_SECONDS:
         logger.info(
             "容量使用率告警冷却中（%.0fs 内不重复通知）", CAPACITY_ALERT_COOLDOWN_SECONDS,
         )

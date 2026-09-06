@@ -59,10 +59,13 @@ def _reset_capacity_alert_cooldown():
 
     冷却戳是进程级共享状态；不重置会让多个测试在 30min 真实时间窗内命中同一
     「已冷却」分支，互相吞掉断言依赖的 flow_error 通知。
+    用 -1.0（「从未告警」哨兵）而非 0.0：time.monotonic() 在刚启动的环境
+    （CI runner / 容器）可能小于 1800s，0.0 会被误判成「30 分钟内刚告警过」
+    导致首次断言被冷却吞掉（产品代码同语义，见 capacity.py _last_capacity_alert_at）。
     """
-    cap_mod._last_capacity_alert_at = 0.0
+    cap_mod._last_capacity_alert_at = -1.0
     yield
-    cap_mod._last_capacity_alert_at = 0.0
+    cap_mod._last_capacity_alert_at = -1.0
 
 
 def _aligned_check(rows, threshold_value=None, notifier_mock=None):
@@ -154,7 +157,7 @@ def test_alert_recovers_after_usage_drops():
     alerted2, _, _ = _aligned_check([_log(10.0, 8.0), _log(10.0, 9.5)], notifier_mock=n)
     assert alerted2 is False
     # ③ 模拟冷却窗口已过（30min），再次连续超阈值 → 可再次告警
-    cap_mod._last_capacity_alert_at = 0.0
+    cap_mod._last_capacity_alert_at = -1.0
     alerted3, _, _ = _aligned_check([_log(10.0, 9.6), _log(10.0, 9.4)], notifier_mock=n)
     assert alerted3 is True
 
