@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import TmdbSearch from '../components/TmdbSearch.vue'
 import { useMediaStore } from '../stores/media'
-import type { TmdbSearchResult } from '../types'
+import { TMDB_POSTER_BASE, type TmdbSearchResult } from '../types'
 import { mediaTypeLabel } from '../utils/format'
 
 const router = useRouter()
@@ -28,6 +28,7 @@ async function submit() {
       title: selected.value.title,
       tmdb_id: selected.value.tmdb_id,
       media_type: selected.value.media_type,
+      poster_path: selected.value.poster_path ?? null,
     })
     ElMessage.success(`已添加《${created.title}》`)
     router.push(`/media/${created.id}`)
@@ -49,10 +50,22 @@ async function submit() {
     <div v-if="selected" class="lc-panel">
       <h3 class="lc-panel-title">确认添加</h3>
       <div class="confirm-row">
-        <div>
-          <div style="font-size: 18px; font-weight: 600">{{ selected.title }}</div>
-          <div class="lc-muted" style="margin-top: 6px">
-            TMDB ID：{{ selected.tmdb_id }} · {{ mediaTypeLabel(selected.media_type) }}
+        <div class="confirm-info">
+          <div class="lc-poster" style="width: 72px; border-radius: 8px; flex-shrink: 0">
+            <img
+              v-if="selected.poster_path"
+              :src="`${TMDB_POSTER_BASE}${selected.poster_path}`"
+              :alt="selected.title"
+            />
+            <span v-else class="lc-poster-fallback" style="font-size: 12px; padding: 8px">暂无海报</span>
+          </div>
+          <div>
+            <div style="font-size: 18px; font-weight: 600">
+              {{ selected.title }}<span v-if="selected.year" class="lc-muted">（{{ selected.year }}）</span>
+            </div>
+            <div class="lc-muted" style="margin-top: 6px">
+              TMDB ID：{{ selected.tmdb_id }} · {{ mediaTypeLabel(selected.media_type) }}
+            </div>
           </div>
         </div>
         <el-button type="primary" size="large" :loading="submitting" @click="submit">
@@ -70,5 +83,11 @@ async function submit() {
   justify-content: space-between;
   gap: 16px;
   flex-wrap: wrap;
+}
+
+.confirm-info {
+  display: flex;
+  align-items: center;
+  gap: 14px;
 }
 </style>

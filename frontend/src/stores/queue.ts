@@ -29,9 +29,9 @@ export const useQueueStore = defineStore('queue', {
         this.loading = false
       }
     },
-    async fetchCapacity(): Promise<void> {
+    async fetchCapacity(force = false): Promise<void> {
       try {
-        this.capacity = await getCapacityApi()
+        this.capacity = await getCapacityApi(force)
       } catch {
         // 容量接口失败不阻塞队列展示；拦截器已提示
       }

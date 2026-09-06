@@ -9,6 +9,7 @@
   过短 422 / 改密后旧密码失效新密码可登录。
 """
 import asyncio
+import logging
 import stat
 from datetime import datetime, timezone
 
@@ -127,6 +128,36 @@ def test_ensure_admin_keeps_existing_password(auth_db):
             assert user.username == "root"
             assert auth_mod.verify_password("fixed-pass-1", user.password_hash)
     run(_check())
+
+
+def test_ensure_admin_existing_logs_skip(auth_db, monkeypatch):
+    """已有 admin → 跳过分支打印明确日志（「跳过」而非静默/失败，Q9 线上排障）。
+
+    用户「清空数据库」重启未看到新初始密码：若 users 表残留 admin 行则命中本分支，
+    日志应出现「已存在管理员用户，跳过初始化」，便于区分「未触发」与「初始化失败」。
+
+    ⚠️ 不用 caplog 断言：全量顺序下 test_api_smoke 的 TestClient(app) lifespan 已
+    为全局 logger 注册过 handler，caplog.at_level 捕获不到（单独跑文件才过）——
+    改为 monkeypatch 记录 logger.info 调用，确定性断言。
+    """
+    logged: list[str] = []
+    monkeypatch.setattr(
+        auth_mod.logger, "info",
+        lambda *a, **k: logged.append(" ".join(str(x) for x in a)),
+    )
+
+    async def _seed():
+        async with auth_db() as session:
+            session.add(User(
+                username="root",
+                password_hash=auth_mod.hash_password("fixed-pass-1"),
+                role="admin",
+            ))
+            await session.commit()
+    run(_seed())
+
+    assert run(auth_mod.ensure_admin()) is None
+    assert any("已存在管理员用户，跳过初始化" in m for m in logged)
 
 
 # ---------------------------------------------------------------------------

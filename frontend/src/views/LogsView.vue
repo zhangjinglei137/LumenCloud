@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, reactive } from 'vue'
 import { useLogsStore, type LogFilter } from '../stores/logs'
-import { formatTime, taskStatusLabel, taskStatusType } from '../utils/format'
+import { formatTime, taskStatusLabel, taskStatusType, taskTypeLabel, taskTypeType } from '../utils/format'
 
 const store = useLogsStore()
 
@@ -11,7 +11,8 @@ const filter = reactive<LogFilter>({
   media_id: undefined,
 })
 
-const taskTypes = ['media_scan', 'transfer', 'download', 'cleanup', 'nastools_sync', 'notification_scan', 'recovery']
+// 与后端任务类型取值对齐（backend/app/tasks/*）；media_scan/recovery 为历史别名
+const taskTypes = ['scan_media', 'scan_all_media', 'media_scan', 'transfer', 'transfer_retry', 'download', 'cleanup', 'nastools_sync', 'notification_scan', 'capacity_alert', 'recover', 'recovery']
 
 onMounted(() => {
   store.fetchPage(filter)
@@ -38,7 +39,7 @@ async function loadMore() {
             style="width: 180px"
             @change="search"
           >
-            <el-option v-for="t in taskTypes" :key="t" :label="t" :value="t" />
+            <el-option v-for="t in taskTypes" :key="t" :label="taskTypeLabel(t)" :value="t" />
           </el-select>
           <el-select
             v-model="filter.status"
@@ -73,7 +74,16 @@ async function loadMore() {
           </el-table-column>
           <el-table-column label="任务类型" width="170">
             <template #default="{ row }">
-              <span style="font-family: monospace; font-size: 13px">{{ row.task_type }}</span>
+              <el-tooltip
+                v-if="taskTypeLabel(row.task_type) === row.task_type"
+                :content="`未知类型：${row.task_type}`"
+                placement="top"
+              >
+                <el-tag size="small" type="info" effect="plain">{{ row.task_type }}</el-tag>
+              </el-tooltip>
+              <el-tag v-else size="small" :type="taskTypeType(row.task_type)" effect="plain">
+                {{ taskTypeLabel(row.task_type) }}
+              </el-tag>
             </template>
           </el-table-column>
           <el-table-column label="影视 ID" width="90" align="center">

@@ -53,6 +53,11 @@ _IMPLEMENTED = True
 _COMMENT_PREFIX = "lumencloud:"
 # 确定性失败 / 超时回退消耗 retry_count 的上限：≥3 转 failed，需人工 retry（§4.5）
 _RETRY_LIMIT = 3
+# save 受理后等待转存文件在 alist 可见的超时上限（秒）。
+# 阶段 3 实证 + 线上反馈：1.5-2.6G 大文件落盘耗时 60-180s，叠加 alist 同步延迟，
+# 180s 上限偏紧（个别超时）；放宽至 300s 作兜底。超时抛 AlistUnavailable 走外层
+# 重试路径（retry_count++，≥3 → failed），故上限放宽不造成「无限等」，只是多给一轮。
+_LINK_WAIT_TIMEOUT = 300.0
 # P3-2（council）：quota 拒绝累计告警阈值——容量不足连续累计 ≥5 次触发
 # flow_error 告警（复用 P2-2 的 capacity 类别节流，防每分钟 job 刷屏）。
 # quota 拒绝只走 quota_reject_count，绝不消耗 retry_count（§4.5）。
@@ -92,14 +97,15 @@ def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-async def _get_link_wait_visible(file_name: str, timeout: float = 180.0) -> str:
+async def _get_link_wait_visible(file_name: str, timeout: float = _LINK_WAIT_TIMEOUT) -> str:
     """save 受理后轮询等待转存文件在 alist /quark 可见，返回直链。
 
     阶段 3 实证：cloudSaver save 返回 task_id 受理后转存**异步落盘**，alist 同步存在
-    延迟（阶段 1 实测 164KB srt 约 15s 落盘；本次实证 1.5-2.6G 文件落盘耗时
-    60-180s，n8n 用「Wait(10s)」节点兜底但大文件不够）。立即 get_link 会 object
-    not found。此处每 5s 轮询直至可见或超时（默认 180s）；超时抛 AlistUnavailable
-    走外层重试路径（retry_count++，≥3 → failed）。
+    延迟（阶段 1 实测 164KB srt 约 15s 落盘；实证 1.5-2.6G 文件落盘耗时 60-180s，
+    n8n 用「Wait(10s)」节点兜底但大文件不够）。立即 get_link 会 object not found。
+    此处每 5s 轮询直至可见或超时（默认 _LINK_WAIT_TIMEOUT=300s——线上反馈 2.6G
+    个别落盘超 180s，放宽兜底）；超时抛 AlistUnavailable 走外层重试路径
+    （retry_count++，≥3 → failed）。
     """
     import time as _time
 
@@ -681,7 +687,7 @@ async def _process_one_pending() -> None:
                         )
         else:
             save_task_id = tq_save_task_id
-        link = await _get_link_wait_visible(file_name)
+        link = await _get_link_wait_visible(file_name, timeout=_LINK_WAIT_TIMEOUT)
         gid = await aria2.client.add_uri(
             link,
             out=file_name,

@@ -44,6 +44,9 @@ class MediaCreate(BaseModel):
     title: str = Field(min_length=1, max_length=255)
     tmdb_id: int | None = None
     media_type: str | None = None  # movie / tv
+    # 线上反馈修复 Q2：海报相对路径（TMDB 图床 /t/p/w500/...，MediaAddView 透传，
+    # 落库后影视库展示不再丢海报；前端拼完整图床地址，后端不做拼接）
+    poster_path: str | None = None
 
 
 class MediaPatch(BaseModel):
@@ -119,6 +122,7 @@ def _media_dto(m: Media) -> dict:
         "title": m.title,
         "tmdb_id": m.tmdb_id,
         "media_type": m.media_type,
+        "poster_path": m.poster_path,  # 线上反馈修复 Q2：后端有值即回显（不拼接图床地址）
         "status": m.status,
         "scan_interval_minutes": m.scan_interval_minutes,
         "max_episode_size_gb": m.max_episode_size_gb,
@@ -236,6 +240,7 @@ async def create_media(
         media_type=payload.media_type,
         status="tracking",
         in_emby=False,
+        poster_path=payload.poster_path,  # Q2：海报相对路径落库
     )
     session.add(media)
     await session.commit()

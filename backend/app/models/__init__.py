@@ -53,6 +53,10 @@ class Media(Base):
     title = mapped_column(Text, nullable=False)
     tmdb_id = mapped_column(Integer)
     media_type = mapped_column(Text)  # movie / tv
+    # 线上反馈修复 Q2：影视海报相对路径（TMDB 图床 /t/p/w500/...），MediaAddView
+    # 选中影视时随 POST /api/media 落库，影视库展示不再丢海报。仅存相对路径，
+    # 不拼接图床地址（前端已有 TMDB_POSTER_BASE）。
+    poster_path = mapped_column(Text, nullable=True)
     status = mapped_column(  # tracking/downloading/paused/error
         Text, nullable=False, server_default=text("'tracking'")
     )

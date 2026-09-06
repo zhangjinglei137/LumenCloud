@@ -57,7 +57,12 @@ export function getMediaApi(id: number) {
   return http.get<MediaDetail>(`/media/${id}`).then((r) => r.data)
 }
 
-export function createMediaApi(data: { title: string; tmdb_id: number; media_type: string }) {
+export function createMediaApi(data: {
+  title: string
+  tmdb_id: number
+  media_type: string
+  poster_path?: string | null
+}) {
   return http.post<MediaItem>('/media', data).then((r) => r.data)
 }
 
@@ -89,8 +94,16 @@ export function retryQueueItemApi(id: number) {
   return http.post(`/queue/${id}/retry`).then((r) => r.data)
 }
 
-export function getCapacityApi() {
-  return http.get<Capacity>('/capacity').then((r) => r.data)
+/**
+ * 容量状态。
+ * force=true 时携带 ?force=1：与后端可选的强制刷新契约对齐——
+ * 当前后端版本仍会返回 30s TTL 内的缓存值（忽略该参数），
+ * 待后端支持 force 后同一调用即变为真正绕过缓存。
+ */
+export function getCapacityApi(force = false) {
+  return http
+    .get<Capacity>('/capacity', { params: force ? { force: 1 } : undefined })
+    .then((r) => r.data)
 }
 
 // ---------- 审批 ----------

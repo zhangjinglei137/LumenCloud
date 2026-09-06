@@ -5,6 +5,11 @@ import type { FormInstance, FormRules } from 'element-plus'
 import type { AxiosError } from 'axios'
 import { useSettingsStore } from '../stores/settings'
 import { useAuthStore } from '../stores/auth'
+import {
+  CRED_GROUP_LABELS,
+  CRED_GROUP_ORDER,
+  getSettingMeta,
+} from '../config/settingsMeta'
 
 const store = useSettingsStore()
 const auth = useAuthStore()
@@ -13,13 +18,13 @@ const generateCount = ref(1)
 const savingKeys = ref<Set<string>>(new Set())
 
 const SERVICE_LABELS: Record<string, string> = {
-  tmdb: 'TMDB',
-  emby: 'Emby',
-  cloudsaver: 'cloudSaver',
-  alist: 'alist',
-  aria2: 'aria2',
-  nastools: 'NasTools',
-  pushplus: 'PushPlus 通知',
+  tmdb: 'TMDB 元数据',
+  emby: 'Emby 媒体库',
+  cloudsaver: 'cloudSaver 网盘搜索',
+  alist: 'AList 网盘网关',
+  aria2: 'aria2 下载器',
+  nastools: 'NasTools 目录同步',
+  pushplus: 'PushPlus 微信通知',
 }
 
 // 凭据类 key 永不展示（后端契约不返回，这里做纵深防御）
@@ -54,35 +59,16 @@ const serviceEntries = computed<[string, boolean][]>(() =>
 /** 后端对敏感值的回显占位，绝不作为真实值提交 */
 const MASK = '***'
 
-/** 凭据输入框当前值；敏感项回显为 ***，留空表示不修改 */
+/** 凭据输入框当前值；敏感项回显为 *** */
 const credValues = reactive<Record<string, string>>({})
 
+/** 凭据初始值（fetch 后的快照），用于判断「是否已修改」 */
+const credOriginal = reactive<Record<string, string>>({})
+
+/** 正在清除单个凭据的键集合 */
 const savingCredKeys = ref<Set<string>>(new Set())
 
-/** 服务凭据分组（按 key 前缀） */
-const CRED_GROUP_ORDER = [
-  'alist',
-  'cloudsaver',
-  'aria2',
-  'nastools',
-  'emby',
-  'tmdb',
-  'pushplus',
-  'quark',
-]
-
-const CRED_GROUP_LABELS: Record<string, string> = {
-  alist: 'alist',
-  cloudsaver: 'cloudSaver',
-  aria2: 'aria2',
-  nastools: 'NasTools',
-  emby: 'Emby',
-  tmdb: 'TMDB',
-  pushplus: 'PushPlus 通知',
-  quark: '夸克网盘',
-}
-
-const credGroups = computed<{ label: string; keys: string[] }[]>(() => {
+const credGroups = computed<{ prefix: string; label: string; keys: string[] }[]>(() => {
   const map = new Map<string, string[]>()
   for (const key of editableKeys.value) {
     const prefix = key.split('_')[0] ?? ''
@@ -93,46 +79,97 @@ const credGroups = computed<{ label: string; keys: string[] }[]>(() => {
       map.set(prefix, [key])
     }
   }
-  const groups: { label: string; keys: string[] }[] = []
+  const groups: { prefix: string; label: string; keys: string[] }[] = []
   for (const prefix of CRED_GROUP_ORDER) {
     const keys = map.get(prefix)
     if (keys) {
-      groups.push({ label: CRED_GROUP_LABELS[prefix] ?? prefix, keys })
+      groups.push({ prefix, label: CRED_GROUP_LABELS[prefix] ?? prefix, keys })
       map.delete(prefix)
     }
   }
   for (const [prefix, keys] of map) {
-    groups.push({ label: CRED_GROUP_LABELS[prefix] ?? prefix, keys })
+    groups.push({ prefix, label: CRED_GROUP_LABELS[prefix] ?? prefix, keys })
   }
   return groups
 })
 
-/** 敏感类键渲染为密码框（可显隐切换） */
+/** 敏感类键渲染为密码框（可显隐切换）；优先用映射表标注，未知键按命名约定兜底 */
 function isSecretKey(key: string): boolean {
-  return /password|token|secret|api_key|apikey|folder/i.test(key)
-}
-
-function credPlaceholder(key: string): string {
-  if (key.includes('base_url')) return 'https://…'
-  if (isSecretKey(key)) return '保持原值（*** 不修改则不填）'
-  return ''
+  return (
+    getSettingMeta(key).sensitive === true ||
+    /password|token|secret|api_key|apikey|folder/i.test(key)
+  )
 }
 
 function syncCredValues(): void {
   const sys = systemConfig.value
   for (const key of editableKeys.value) {
     const v = sys[key]
-    credValues[key] = typeof v === 'string' ? v : v == null ? '' : String(v)
+    const s = typeof v === 'string' ? v : v == null ? '' : String(v)
+    credValues[key] = s
+    credOriginal[key] = s
   }
 }
 
-async function doCredSave(key: string, value: string, successMsg: string): Promise<void> {
+/**
+ * 是否已修改（未保存）。以初始快照为基准比较原始字符串；
+ * 输入框里只剩空白也算未修改，避免误提交。
+ */
+function isCredModified(key: string): boolean {
+  return (credValues[key] ?? '') !== (credOriginal[key] ?? '')
+}
+
+/**
+ * 待提交的键集合：已修改、非空、且不再是掩码 *** 的字段。
+ * 未改动 / 留空 / 仍为 *** 的字段绝不提交，避免误清空其它服务的凭据。
+ */
+const dirtyCredKeys = computed<string[]>(() =>
+  editableKeys.value.filter((key) => {
+    const v = (credValues[key] ?? '').trim()
+    return v !== '' && v !== MASK && isCredModified(key)
+  }),
+)
+
+const savingAll = ref(false)
+
+/** 保存全部：一次性 PATCH 所有已修改字段 */
+async function saveAll(): Promise<void> {
+  const keys = dirtyCredKeys.value
+  if (keys.length === 0 || savingAll.value) return
+  const patch: Record<string, string> = {}
+  for (const key of keys) {
+    patch[key] = (credValues[key] ?? '').trim()
+  }
+  savingAll.value = true
+  try {
+    await store.patchConfig(patch)
+    ElMessage.success(`已保存 ${keys.length} 项配置（生效无需重启）`)
+    await store.fetchSettings()
+    syncCredValues()
+  } catch {
+    // 拦截器已提示
+  } finally {
+    savingAll.value = false
+  }
+}
+
+/** 显式清空某凭据（发送空字符串） */
+async function clearCred(key: string): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      `确定清除「${getSettingMeta(key).label}」吗？清除后对应服务将不可用，可重新填写并「保存全部」恢复。`,
+      '清除凭据',
+      { confirmButtonText: '清除', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return
+  }
   const next = new Set(savingCredKeys.value)
   next.add(key)
   savingCredKeys.value = next
   try {
-    await store.patchConfig({ [key]: value })
-    ElMessage.success(successMsg)
+    await store.patchConfig({ [key]: '' })
+    ElMessage.success('已清除该凭据')
     await store.fetchSettings()
     syncCredValues()
   } catch {
@@ -142,30 +179,6 @@ async function doCredSave(key: string, value: string, successMsg: string): Promi
     done.delete(key)
     savingCredKeys.value = done
   }
-}
-
-/** 保存：留空或仍为掩码 = 不修改该项，直接跳过 */
-async function saveCred(key: string): Promise<void> {
-  const value = (credValues[key] ?? '').trim()
-  if (!value || value === MASK) {
-    ElMessage.info('未填写新值，该项未作修改')
-    return
-  }
-  await doCredSave(key, value, '已保存（生效无需重启）')
-}
-
-/** 显式清空某凭据（发送空字符串） */
-async function clearCred(key: string): Promise<void> {
-  try {
-    await ElMessageBox.confirm(
-      `确定清除「${key}」吗？清除后对应服务将不可用，可重新填写保存恢复。`,
-      '清除凭据',
-      { confirmButtonText: '清除', cancelButtonText: '取消', type: 'warning' },
-    )
-  } catch {
-    return
-  }
-  await doCredSave(key, '', '已清除该凭据')
 }
 
 // ---------- 修改密码 ----------
@@ -239,7 +252,7 @@ async function saveKey(key: string, value: unknown) {
   savingKeys.value = next
   try {
     await store.patchConfig({ [key]: value })
-    ElMessage.success(`「${key}」已保存`)
+    ElMessage.success(`「${getSettingMeta(key).label}」已保存`)
   } catch {
     // 拦截器已提示
   } finally {
@@ -312,31 +325,55 @@ function serviceLabel(key: string): string {
 
       <!-- 服务凭据配置 -->
       <div v-if="editableKeys.length > 0" class="lc-panel">
-        <h3 class="lc-panel-title">服务凭据配置</h3>
-        <p class="lc-muted cred-hint">
-          留空表示不修改该项；已配置的敏感值仅显示 *** 掩码，保存时不会提交掩码内容。
-        </p>
-        <div v-for="group in credGroups" :key="group.label" class="cred-group">
+        <div class="lc-toolbar" style="margin-bottom: 12px">
+          <div>
+            <h3 class="lc-panel-title" style="margin: 0">服务凭据配置</h3>
+            <p class="lc-muted cred-hint">
+              一次填好所有要改的字段，点右上角「保存全部」统一提交；未改动 / 留空 / 仍为
+              *** 的字段不会提交，敏感值只显示掩码。
+            </p>
+          </div>
+          <div class="right">
+            <el-button
+              type="primary"
+              :disabled="dirtyCredKeys.length === 0"
+              :loading="savingAll"
+              @click="saveAll"
+            >
+              保存全部{{ dirtyCredKeys.length > 0 ? `（${dirtyCredKeys.length} 项）` : '' }}
+            </el-button>
+          </div>
+        </div>
+        <div v-for="group in credGroups" :key="group.prefix" class="cred-group">
           <el-divider content-position="left">{{ group.label }}</el-divider>
           <div class="cred-list">
-            <div v-for="key in group.keys" :key="key" class="cred-item">
-              <span class="key" :title="key">{{ key }}</span>
+            <div
+              v-for="key in group.keys"
+              :key="key"
+              class="cred-field"
+              :class="{ modified: isCredModified(key) }"
+            >
+              <div class="cred-field-main">
+                <div class="cred-label-row">
+                  <span class="mod-dot" aria-hidden="true" />
+                  <span class="cred-label">{{ getSettingMeta(key).label }}</span>
+                  <el-tag v-if="getSettingMeta(key).default" size="small" effect="plain" type="info">
+                    {{ getSettingMeta(key).default }}
+                  </el-tag>
+                  <el-tag v-if="isCredModified(key)" size="small" type="warning" effect="plain">
+                    已修改
+                  </el-tag>
+                </div>
+                <div class="cred-desc">{{ getSettingMeta(key).desc }}</div>
+              </div>
               <el-input
                 v-model="credValues[key]"
                 :type="isSecretKey(key) ? 'password' : 'text'"
                 :show-password="isSecretKey(key)"
-                :placeholder="credPlaceholder(key)"
+                :placeholder="getSettingMeta(key).placeholder ?? ''"
                 class="cred-input"
-                @keyup.enter="saveCred(key)"
+                @keyup.enter="saveAll"
               />
-              <el-button
-                type="primary"
-                size="small"
-                :loading="savingCredKeys.has(key)"
-                @click="saveCred(key)"
-              >
-                保存
-              </el-button>
               <el-button
                 size="small"
                 link
@@ -356,7 +393,12 @@ function serviceLabel(key: string): string {
         <h3 class="lc-panel-title">通知开关</h3>
         <div class="notify-list">
           <div v-for="[key, value] in notifyEntries" :key="key" class="notify-item">
-            <span class="key">{{ key }}</span>
+            <div class="config-info">
+              <span class="config-label">{{ getSettingMeta(key).label }}</span>
+              <span v-if="getSettingMeta(key).desc" class="config-desc">
+                {{ getSettingMeta(key).desc }}
+              </span>
+            </div>
             <el-switch
               :model-value="Boolean(value)"
               :loading="savingKeys.has(key)"
@@ -372,7 +414,12 @@ function serviceLabel(key: string): string {
         <el-empty v-if="otherEntries.length === 0" description="暂无配置项" :image-size="60" />
         <div v-else class="config-list">
           <div v-for="[key, value] in otherEntries" :key="key" class="config-item">
-            <span class="key" :title="key">{{ key }}</span>
+            <div class="config-info">
+              <span class="config-label">{{ getSettingMeta(key).label }}</span>
+              <span v-if="getSettingMeta(key).desc" class="config-desc">
+                {{ getSettingMeta(key).desc }}
+              </span>
+            </div>
             <template v-if="typeof value === 'boolean'">
               <el-switch
                 :model-value="value"
@@ -498,17 +545,76 @@ function serviceLabel(key: string): string {
 .cred-list {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
 }
 
-.cred-item {
+.cred-field {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease;
+}
+
+.cred-field:hover {
+  background: var(--lc-hover-bg, rgba(128, 128, 128, 0.06));
+}
+
+.cred-field.modified {
+  background: rgba(230, 162, 60, 0.08);
+  border-color: rgba(230, 162, 60, 0.4);
+}
+
+.cred-field-main {
+  width: 340px;
+  flex-shrink: 0;
+}
+
+.cred-label-row {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.mod-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: transparent;
+  flex-shrink: 0;
+  transition: background-color 0.2s ease;
+}
+
+.cred-field.modified .mod-dot {
+  background: #e6a23c;
+}
+
+.cred-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--lc-text-primary, #e8eaed);
+}
+
+.cred-field.modified .cred-label {
+  color: #e6a23c;
+}
+
+.cred-desc {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--lc-text-secondary, #9aa0a6);
 }
 
 .cred-input {
   max-width: 420px;
+  flex: 1;
+  margin-top: 2px;
 }
 
 .service-grid {
@@ -545,14 +651,23 @@ function serviceLabel(key: string): string {
   gap: 16px;
 }
 
-.key {
-  width: 260px;
+.config-info {
+  width: 340px;
   flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.config-label {
   font-size: 13px;
-  color: var(--lc-text-regular, #c3c9cf);
-  font-family: monospace;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-weight: 600;
+  color: var(--lc-text-primary, #e8eaed);
+}
+
+.config-desc {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--lc-text-secondary, #9aa0a6);
 }
 </style>

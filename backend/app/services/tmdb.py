@@ -30,7 +30,40 @@ def _base_url() -> str:
     """TMDB API 根地址：优先 settings.TMDB_PROXY（镜像/反向代理），否则官方地址。"""
     # Phase 8 配置入库：DB 优先、env fallback；函数内读取，每次调用读最新值
     proxy = (config_store.get("tmdb_proxy", settings.TMDB_PROXY) or "").strip().rstrip("/")
+    if proxy:
+        # 防御校验（ora-6）：TMDB_PROXY 语义是「API 镜像根地址」——形如 http://host:port
+        # 的配置极可能是科学上网代理端口被误填（用户实证：192.168.3.31:7897 返回 HTTP 400，
+        # 因为该端口只接受代理协议、不支持直接 GET /3/search/multi）。
+        # 这类误填在请求阶段暴露为 400，用户难排查；此处尽早以明确错误提示。
+        if "://" not in proxy and ":" in proxy:
+            # 无 scheme 的 host:port（如 192.168.3.31:7897）→ 一定是误填的代理端口
+            raise TMDBUnavailable(
+                f"TMDB 镜像地址疑似填了代理端口（{proxy}）。TMDB 镜像应为反代根地址 "
+                "如 https://tmdb-mirror.example.com；科学上网代理请在容器/系统网络层配置，"
+                "不要填在这里（会返回 400）。设置页 → 服务凭据配置 → 元数据 · TMDB 修改。"
+            )
     return proxy or TMDB_DEFAULT_BASE_URL
+
+
+def _extract_year(item: dict[str, Any]) -> str | None:
+    """从 TMDB 条目提取 4 位年份（线上反馈修复 Q1：搜索结果显示年份）。
+
+    - movie → release_date 前 4 位
+    - tv    → first_air_date 前 4 位
+    - person（及其他类型）→ None
+    防御：日期为空 / 格式非法 / 非 4 位数字前缀 → None（不因异常中断单条装配）。
+    """
+    media_type = item.get("media_type")
+    if media_type == "movie":
+        raw = item.get("release_date")
+    elif media_type == "tv":
+        raw = item.get("first_air_date")
+    else:
+        return None
+    text = str(raw or "").strip()
+    if len(text) >= 4 and text[:4].isdigit():
+        return text[:4]
+    return None
 
 
 async def search_multi(q: str) -> list[dict[str, Any]]:
@@ -40,10 +73,12 @@ async def search_multi(q: str) -> list[dict[str, Any]]:
         q: 搜索关键词
     返回:
         归一化结果列表，每项含:
-            title:      影视名称（movie 用 title，tv 用 name）
-            tmdb_id:    TMDB id
-            media_type: movie / tv / person
+            title:       影视名称（movie 用 title，tv 用 name）
+            tmdb_id:     TMDB id
+            media_type:  movie / tv / person
             poster_path: 海报相对路径（可为 None，前端拼图床完整地址）
+            year:        上映/首播年份（4 位字符串；movie 取 release_date、
+                         tv 取 first_air_date；缺失/非法/person → None）
     异常:
         ValueError:    关键词为空
         TMDBUnavailable: 未配置 key / 请求失败 / 响应异常
@@ -88,6 +123,7 @@ async def search_multi(q: str) -> list[dict[str, Any]]:
                 "tmdb_id": item.get("id"),
                 "media_type": item.get("media_type"),
                 "poster_path": item.get("poster_path"),
+                "year": _extract_year(item),
             }
         )
     logger.info("TMDB 搜索「%s」命中 %d 条", keyword, len(results))

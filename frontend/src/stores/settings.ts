@@ -24,7 +24,9 @@ export const useSettingsStore = defineStore('settings', {
       }
     },
     async patchConfig(patch: Record<string, unknown>): Promise<void> {
-      this.settings = await patchSettingsApi(patch)
+      // 后端 PATCH 只返回 { ok: true }，不能赋给 settings（会清掉配置数据）；
+      // 最新配置由调用方按需 fetchSettings() 重新拉取。
+      await patchSettingsApi(patch)
     },
     async fetchInvites(): Promise<void> {
       this.invites = await listInvitesApi()

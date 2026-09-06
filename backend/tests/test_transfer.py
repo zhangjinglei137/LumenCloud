@@ -490,3 +490,21 @@ def test_no_pending_is_skipped(db, env, monkeypatch):
     run(transfer_mod.process_transfer_queue())
     assert env["cloudsaver"].save_calls == []
     assert env["notifier"].events == []
+
+
+# ---------------------------------------------------------------------------
+# 落盘等待超时上限（Q3：线上反馈大文件超时放宽兜底）
+# ---------------------------------------------------------------------------
+
+def test_link_wait_timeout_constant_and_default():
+    """_LINK_WAIT_TIMEOUT=300s，且函数默认超时与常量一致（防魔法数漂移）。
+
+    阶段 3 实证 1.5-2.6G 文件落盘 60-180s，180s 上限偏紧导致个别超时；
+    放宽至 300s 作兜底（超时仍走外层重试路径 retry_count++，非无限等）。
+    """
+    import inspect
+
+    assert transfer_mod._LINK_WAIT_TIMEOUT == 300.0
+    assert inspect.signature(
+        transfer_mod._get_link_wait_visible
+    ).parameters["timeout"].default == transfer_mod._LINK_WAIT_TIMEOUT

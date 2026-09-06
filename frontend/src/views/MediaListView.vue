@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useMediaStore } from '../stores/media'
 import { useAuthStore } from '../stores/auth'
-import type { MediaItem } from '../types'
+import { TMDB_POSTER_BASE, type MediaItem } from '../types'
 import {
   formatTime,
   mediaStatusLabel,
@@ -119,7 +119,13 @@ async function onDelete(m: MediaItem, e: Event) {
           @click="router.push(`/media/${m.id}`)"
         >
           <div class="lc-poster">
-            <div class="lc-poster-fallback">{{ m.title }}</div>
+            <img
+              v-if="m.poster_path"
+              :src="`${TMDB_POSTER_BASE}${m.poster_path}`"
+              :alt="m.title"
+              loading="lazy"
+            />
+            <div v-else class="lc-poster-fallback">{{ m.title }}</div>
             <el-tag class="lc-poster-type" size="small" effect="dark" :type="m.media_type === 'movie' ? 'warning' : 'primary'">
               {{ mediaTypeLabel(m.media_type) }}
             </el-tag>
@@ -166,10 +172,22 @@ async function onDelete(m: MediaItem, e: Event) {
         <el-table :data="store.items" style="width: 100%" @row-click="(row: MediaItem) => router.push(`/media/${row.id}`)">
           <el-table-column label="标题" min-width="200">
             <template #default="{ row }">
-              <span style="font-weight: 600">{{ row.title }}</span>
-              <el-tag size="small" effect="plain" style="margin-left: 8px">
-                {{ mediaTypeLabel(row.media_type) }}
-              </el-tag>
+              <div class="title-cell">
+                <img
+                  v-if="row.poster_path"
+                  :src="`${TMDB_POSTER_BASE}${row.poster_path}`"
+                  :alt="row.title"
+                  loading="lazy"
+                  class="title-poster"
+                />
+                <div v-else class="title-poster title-poster-fallback">
+                  {{ row.title.slice(0, 1) }}
+                </div>
+                <span style="font-weight: 600">{{ row.title }}</span>
+                <el-tag size="small" effect="plain" style="margin-left: 8px">
+                  {{ mediaTypeLabel(row.media_type) }}
+                </el-tag>
+              </div>
             </template>
           </el-table-column>
           <el-table-column label="状态" width="110">
@@ -212,3 +230,28 @@ async function onDelete(m: MediaItem, e: Event) {
     </div>
   </div>
 </template>
+
+<style scoped>
+.title-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.title-poster {
+  width: 32px;
+  height: 46px;
+  border-radius: 4px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.title-poster-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(160deg, #1d232d 0%, #12161d 100%);
+  color: var(--lc-text-secondary);
+  font-size: 13px;
+}
+</style>

@@ -32,7 +32,12 @@ export const useMediaStore = defineStore('media', {
         this.loading = false
       }
     },
-    async create(data: { title: string; tmdb_id: number; media_type: string }): Promise<MediaItem> {
+    async create(data: {
+      title: string
+      tmdb_id: number
+      media_type: string
+      poster_path?: string | null
+    }): Promise<MediaItem> {
       return createMediaApi(data)
     },
     async patch(id: number, patch: MediaPatch): Promise<void> {

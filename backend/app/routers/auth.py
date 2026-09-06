@@ -240,6 +240,11 @@ async def ensure_admin() -> Optional[str]:
                 await session.execute(select(User.id).where(User.role == "admin").limit(1))
             ).first()
             if exists:
+                # 线上反馈（Q9）：用户「清空数据库」重启未看到新初始密码——大概率
+                # 只清了业务表、users 表仍残留 admin 行，此处命中跳过分支且此前
+                # 无任何日志，线上无从判断。显式打印「跳过」而非静默返回，便于判断
+                # 是「未触发初始化」而非「初始化失败」。
+                logger.info("[ensure_admin] 已存在管理员用户，跳过初始化")
                 return None
             username = (settings.INIT_ADMIN_USERNAME or "").strip() or "admin"
             password = _generate_random_password()

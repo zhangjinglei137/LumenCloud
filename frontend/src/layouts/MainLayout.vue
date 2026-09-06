@@ -80,10 +80,11 @@ async function onReadAll() {
           <span>想看审批</span>
         </el-menu-item>
         <template v-if="auth.isAdmin">
-          <el-menu-item index="/media/add">
+          <!-- 「添加影视」入口统一收拢到影视库页右上角按钮（/media/add 路由保留可用），避免双入口 -->
+          <!-- <el-menu-item index="/media/add">
             <el-icon><CirclePlus /></el-icon>
             <span>添加影视</span>
-          </el-menu-item>
+          </el-menu-item> -->
           <el-menu-item index="/settings">
             <el-icon><Setting /></el-icon>
             <span>设置</span>

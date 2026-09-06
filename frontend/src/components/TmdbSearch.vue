@@ -80,7 +80,9 @@ function posterUrl(p: string | null): string | null {
         </div>
         <div class="name">
           <div>
-            <div>{{ item.title }}</div>
+            <div>
+              {{ item.title }}<span v-if="item.year" class="year">（{{ item.year }}）</span>
+            </div>
             <el-tag size="small" effect="plain" style="margin-top: 4px">
               {{ mediaTypeLabel(item.media_type) }}
             </el-tag>
@@ -90,3 +92,10 @@ function posterUrl(p: string | null): string | null {
     </div>
   </div>
 </template>
+
+<style scoped>
+.year {
+  color: var(--lc-text-secondary, #9aa0a6);
+  font-weight: 400;
+}
+</style>

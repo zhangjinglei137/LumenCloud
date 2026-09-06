@@ -100,6 +100,32 @@ export function taskStatusType(status: string | null | undefined): string {
   return TASK_STATUS_MAP[status]?.[1] ?? 'info'
 }
 
+/** 任务类型 → 中文标签 + Element Plus tag type（未知类型回退原值 / info） */
+const TASK_TYPE_MAP: Record<string, [string, string]> = {
+  scan_media: ['影视巡检', 'primary'],
+  media_scan: ['影视巡检', 'primary'],
+  scan_all_media: ['定时巡检', 'primary'],
+  transfer: ['转存', 'warning'],
+  transfer_retry: ['转存重试', 'warning'],
+  download: ['下载', 'primary'],
+  nastools_sync: ['目录同步入库', 'success'],
+  cleanup: ['空间清理', 'info'],
+  notification_scan: ['通知扫描', 'info'],
+  capacity_alert: ['容量告警', 'danger'],
+  recover: ['超时恢复', 'danger'],
+  recovery: ['超时恢复', 'danger'],
+}
+
+export function taskTypeLabel(type: string | null | undefined): string {
+  if (!type) return '—'
+  return TASK_TYPE_MAP[type]?.[0] ?? type
+}
+
+export function taskTypeType(type: string | null | undefined): string {
+  if (!type) return 'info'
+  return TASK_TYPE_MAP[type]?.[1] ?? 'info'
+}
+
 export function mediaTypeLabel(t: string | null | undefined): string {
   if (t === 'tv') return '剧集'
   if (t === 'movie') return '电影'

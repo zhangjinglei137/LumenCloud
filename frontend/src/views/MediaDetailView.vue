@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useMediaStore } from '../stores/media'
 import { useAuthStore } from '../stores/auth'
+import { TMDB_POSTER_BASE } from '../types'
 import {
   formatBytes,
   formatGb,
@@ -103,7 +104,12 @@ async function onDelete() {
       <div class="lc-panel detail-header">
         <div class="poster">
           <div class="lc-poster" style="width: 120px; border-radius: 10px">
-            <span class="lc-poster-fallback" style="font-size: 14px">{{ detail.title }}</span>
+            <img
+              v-if="detail.poster_path"
+              :src="`${TMDB_POSTER_BASE}${detail.poster_path}`"
+              :alt="detail.title"
+            />
+            <span v-else class="lc-poster-fallback" style="font-size: 14px">{{ detail.title }}</span>
           </div>
         </div>
         <div class="info">

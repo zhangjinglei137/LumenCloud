@@ -42,6 +42,8 @@ export interface MediaItem {
   media_type: MediaType | string
   status: string
   in_emby: boolean
+  /** TMDB 海报路径（含前缀 / 的相对路径；配合 TMDB_POSTER_BASE 拼完整 URL；可为空） */
+  poster_path?: string | null
   last_scan_at: string | null
   max_episode_size_gb: number | null
   max_movie_size_gb: number | null
@@ -131,6 +133,20 @@ export interface ApprovalItem {
   requested_by: string | null
 }
 
+/** 设置字段的中文元数据（label/desc/placeholder/默认值提示/sensitive） */
+export interface SettingFieldMeta {
+  /** 中文标签 */
+  label: string
+  /** 字段下方灰字说明 */
+  desc: string
+  /** 输入框占位（中文说明性占位） */
+  placeholder?: string
+  /** 默认值 / 可选性提示（如「默认 60 分钟」「可选，留空 = 官方地址」） */
+  default?: string
+  /** 敏感凭据：后端以 *** 掩码回显，未改动时不提交 */
+  sensitive?: boolean
+}
+
 export interface SettingsResponse {
   /** Phase 8 起后端返回 system_config；敏感键值为 "***" 占位 */
   system_config?: Record<string, unknown>
@@ -187,6 +203,8 @@ export interface TmdbSearchResult {
   tmdb_id: number
   media_type: MediaType | string
   poster_path: string | null
+  /** 年份（movie=release_date / tv=first_air_date 的前 4 位；person 或无年份时为 null） */
+  year?: string | null
 }
 
 export const TMDB_POSTER_BASE = 'https://image.tmdb.org/t/p/w500'
