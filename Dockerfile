@@ -18,12 +18,23 @@ FROM python:3.12-slim
 # 升级 pip 消除镜像内系统级 pip CVE（trivy 门禁要求 pip>=26.2.1）；
 # setuptools/msgpack 一并升级到修复线：CVE-2025-47273（setuptools<78.1.1）、
 # GHSA-6v7p-g79w-8964（msgpack<=1.2.0）。
-# 注意：不要用 apt 安装 supervisor —— apt-get 会装入 Debian 版
-# python3-setuptools（dist-packages 旧版）与 pip 新版并存，trivy 扫到旧
-# metadata 仍命中 CVE-2025-47273（CI 实证）。故 supervisor 也走 pip 安装。
+#
+# ⚠️ 关键：python:3.12-slim 基于 Debian（trixie）基础镜像，自带 dist-packages
+# 旧版 setuptools-70.3.0 / msgpack-1.1.2——pip 安装只会写入 site-packages 新版，
+# 不会删除 dist-packages 旧包；trivy 扫描镜像文件系统时会同时发现 dist-packages
+# 旧 metadata → 仍命中 CVE（CI 实证：Installed Version 70.3.0 / 1.1.2）。
+# 因此 pip 装新版后必须显式清理 dist-packages 旧包目录（site-packages 已由 pip
+# 提供同功能新版本，运行时无影响）。
+#
+# 同时：不要用 apt 安装 supervisor —— apt-get 会装入 Debian 版 python3-setuptools，
+# 与上述问题同源；supervisor 也走 pip 安装。
 RUN pip install --no-cache-dir --upgrade "pip>=26.2.1" \
     && pip install --no-cache-dir --upgrade "setuptools>=78.1.1" "msgpack>=1.2.1" \
     && pip install --no-cache-dir "supervisor>=4.2.5" \
+    && rm -rf /usr/lib/python3/dist-packages/setuptools* \
+              /usr/lib/python3/dist-packages/pkg_resources* \
+              /usr/lib/python3/dist-packages/_distutils_hack* \
+              /usr/lib/python3/dist-packages/msgpack* \
     && mkdir -p /etc/supervisor/conf.d \
     && pip --version
 
