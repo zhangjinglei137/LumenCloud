@@ -123,7 +123,7 @@ class TransferQueue(Base):
     # P2-10（council）：cloudSaver save 受理后返回的转存任务 id。
     # 作为 save 幂等标记——save 一受理即落此列，后续 get_link/add_uri 失败重试时
     # 不再重复调用 cloudsaver.save（防重复转存占空间 / cloudSaver 端重复任务），
-    # 只继续等落盘/取直链。迁移见 alembic/versions/0002_add_transfer_queue_save_task_id.py。
+    # 只继续等落盘/取直链。迁移见 alembic/versions/0002_save_task_id.py。
     save_task_id = mapped_column(Text)
     enqueued_at = mapped_column(DateTime, server_default=text("CURRENT_TIMESTAMP"))
     updated_at = mapped_column(DateTime, onupdate=func.current_timestamp())
