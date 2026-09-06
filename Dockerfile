@@ -19,21 +19,24 @@ FROM python:3.12-slim
 # setuptools/msgpack 一并升级到修复线：CVE-2025-47273（setuptools<78.1.1）、
 # GHSA-6v7p-g79w-8964（msgpack<=1.2.0）。
 #
-# ⚠️ 关键：python:3.12-slim 基于 Debian，镜像内系统 python（trixie 默认
-# python3.12/3.13 包链）自带 dist-packages 旧版 setuptools-70.3.0 /
-# msgpack-1.1.2，位于 /usr/lib/python3/dist-packages 或版本化
-# /usr/lib/python3.NN/dist-packages。pip 安装只写 site-packages 新版，不会删
-# dist-packages 旧包 → trivy 扫到旧 metadata 仍命中 CVE（CI 实证 Installed 70.3.0
-# / 1.1.2）。必须显式删除 dist-packages 旧包目录与 dist-info（site-packages 已由
-# pip 提供同功能新版本，运行时无影响）。用 python* 通配覆盖版本化路径；
-# 不要用带 ( ) 的 find 表达式（RUN 的 bash 中括号需转义，曾被 2>/dev/null 吞掉
-# 导致清理静默失效——CI 实证该坑）。
+# ⚠️ 关键（CI 多轮实证后定稿）：
+#   1. python:3.12-slim（Debian trixie）的系统 python 包链自带 dist-packages
+#      旧版 setuptools-70.3.0 / msgpack-1.1.2（Debian 打包，版本化路径）。
+#      pip 只写 site-packages 新版，不删 dist-packages 旧包；
+#   2. 单纯 rm -rf 文件不够——Debian 包经 apt 安装会在 /var/lib/dpkg/status
+#      留有记录，trivy 对 Debian 镜像从 dpkg 数据库读包版本，rm 文件不更新
+#      dpkg 记录 → 仍报旧版本（CI 实证：文件系统实测仅 84.0.0 / 1.2.2，trivy
+#      仍报 70.3.0 / 1.1.2）。所以必须 apt purge 从 dpkg 移除这些系统包；
+#   3. 同时不要用 apt 安装 supervisor：apt-get 会装入 Debian 版
+#      python3-setuptools（与上述同源）；supervisor 走 pip 安装。
 #
-# 同时：不要用 apt 安装 supervisor —— apt-get 会装入 Debian 版 python3-setuptools
-# 与上述问题同源；supervisor 也走 pip 安装。
+# 顺序：pip 升级（site-packages 新版本）→ apt purge 系统旧包（dpkg 记录移除）
+# → 兜底清理 dist-packages 残留目录。site-packages 已由 pip 提供同功能新版，
+# 运行时无影响；purge 只移除系统 python 的 Debian 打包版本。
 RUN pip install --no-cache-dir --upgrade "pip>=26.2.1" \
     && pip install --no-cache-dir --upgrade "setuptools>=78.1.1" "msgpack>=1.2.1" \
     && pip install --no-cache-dir "supervisor>=4.2.5" \
+    && (apt-get purge -y python3-setuptools python3-msgpack 2>/dev/null || true) \
     && rm -rf /usr/lib/python*/dist-packages/setuptools* \
               /usr/lib/python*/dist-packages/pkg_resources* \
               /usr/lib/python*/dist-packages/_distutils_hack* \
