@@ -108,7 +108,25 @@ def normalize_title(title: str) -> str:
     return (title or "").strip().lower()
 
 
-# ---- 旧库读取（同步 psycopg2 驱动，惰性 import）----
+# ---- 旧库读取（同步 psycopg2 / psycopg3 驱动，惰性 import）----
+def _connect_old_db(dsn: str):
+    """连接旧 Postgres：psycopg2 优先（容器 py3.12），psycopg3 回退（本地 py3.14 无
+    psycopg2 cp314 wheel）。两者 cursor.execute/fetchall 接口兼容，统一由本函数封装。
+    """
+    try:
+        import psycopg2  # noqa: PLC0415
+    except ModuleNotFoundError:
+        try:
+            import psycopg  # noqa: PLC0415
+        except ModuleNotFoundError as exc:
+            raise SystemExit(
+                "[错误] 缺少 PostgreSQL 驱动（psycopg2 或 psycopg 均不可用），无法连接旧库。\n"
+                "      请确认已安装 backend/requirements.txt 依赖，或 `pip install psycopg[binary]`。"
+            ) from exc
+        return psycopg.connect(dsn, connect_timeout=15)
+    return psycopg2.connect(dsn, connect_timeout=15)
+
+
 def read_old_rows(dsn: str) -> list:
     """连接旧 Postgres 读取 media 表。
 
@@ -116,15 +134,7 @@ def read_old_rows(dsn: str) -> list:
     返回: [(media, tmdb_id), ...]
     """
     try:
-        import psycopg2
-    except ModuleNotFoundError as exc:
-        raise SystemExit(
-            f"[错误] 当前环境缺少 psycopg2 驱动（缺失模块: {exc.name}），无法连接旧库。\n"
-            "      请确认已安装 backend/requirements.txt 中的 psycopg2-binary。"
-        )
-
-    try:
-        conn = psycopg2.connect(dsn, connect_timeout=15)
+        conn = _connect_old_db(dsn)
     except Exception as exc:  # noqa: BLE001
         raise SystemExit(f"[错误] 连接旧库失败（{mask_dsn(dsn)}）: {exc}")
 
