@@ -235,6 +235,9 @@ def test_check_model_b_allow_and_boundary():
                 patch.object(settings, "ALIST_BASE_URL", "http://alist.test"),
                 patch.object(settings, "ALIST_TOKEN", "test-token"),
                 patch.object(provider, "_persist_snapshot", new=AsyncMock()),
+                # P1-2a 后 quota 运行时读 system_config（测试顺序下共享库可能被
+                # test_api_smoke 的 PATCH 污染），此处固定为 env 值以聚焦判定逻辑
+                patch.object(provider, "_load_quota_gb", new=AsyncMock(return_value=quota)),
                 patch.object(provider, "_load_margin_gb", new=AsyncMock(return_value=margin)),
             ):
                 stack.enter_context(p)
@@ -264,6 +267,9 @@ def test_check_uses_margin_from_config_key():
                 patch.object(settings, "ALIST_BASE_URL", "http://alist.test"),
                 patch.object(settings, "ALIST_TOKEN", "test-token"),
                 patch.object(provider, "_persist_snapshot", new=AsyncMock()),
+                # P1-2a 后 quota 运行时读 system_config（测试顺序下共享库可能被
+                # test_api_smoke 的 PATCH 污染），此处固定为 env 值以聚焦 margin 配置
+                patch.object(provider, "_load_quota_gb", new=AsyncMock(return_value=provider._quota_gb)),
                 patch.object(provider, "_load_margin_gb", new=AsyncMock(return_value=1.0)),
             ):
                 stack.enter_context(p)

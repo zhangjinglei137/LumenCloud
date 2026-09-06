@@ -26,7 +26,7 @@ from sqlalchemy.pool import StaticPool
 from app.database import Base
 import app.models  # noqa: F401  注册全部 ORM 模型
 import app.tasks.transfer as transfer_mod
-from app.models import DownloadTask, EpisodeState, Media, Notification, TransferQueue, WatchRequest
+from app.models import DownloadTask, EpisodeState, Media, Notification, TaskRun, TransferQueue, WatchRequest
 from app.services.notifier import EVENT_APPROVAL_PENDING, EVENT_FLOW_ERROR
 
 
@@ -67,7 +67,7 @@ async def read_row(db, model, obj_id):
 
 
 async def seed_done_state(db, *, episode="S01E01", file_name="ep.mkv", dl_status="complete",
-                          media_id=None):
+                          media_id=None, retry_count=0):
     """media + es(done) + tq(done) + download_task(指定状态)。返回 (mid, es_id, tq_id, dl_id)。
 
     media_id 传入时复用既有 media（同一影视多集场景）。
@@ -82,6 +82,7 @@ async def seed_done_state(db, *, episode="S01E01", file_name="ep.mkv", dl_status
             mid = media_id
         es = EpisodeState(media_id=mid, episode=episode, state="done",
                           file_name=file_name, file_size=1024, share_code="sc",
+                          retry_count=retry_count,
                           quark_path=f"/quark/{file_name}", aria2_gid="g1", updated_at=_now())
         s.add(es)
         await s.flush()
@@ -519,3 +520,165 @@ def test_notification_scan_prefix_with_space(db, monkeypatch):
     run(notif_mod.notification_scan_job())
     assert len([e for e in fake.events if e.event_type == EVENT_APPROVAL_PENDING]) == 1
     assert len([e for e in fake.events if e.event_type == EVENT_FLOW_ERROR]) == 1
+
+
+# ---------------------------------------------------------------------------
+# P3-1：done→failed 循环上限（retry_count 增量 + 达上限保持 done）
+# ---------------------------------------------------------------------------
+
+def test_done_resolution_failed_respects_retry_count_below_limit(db, monkeypatch):
+    """P3-1：未达上限（retry_count=2 < 3）→ 转 failed 并发推进位（retry_count +1）+ tq 联动。"""
+    from app.tasks import scan as scan_mod
+
+    monkeypatch.setattr(scan_mod, "async_session", db)
+    mid, es_id, tq_id, _dl_id = run(seed_done_state(db, episode="S01E01", retry_count=2))
+    run(scan_mod._resolve_done_states(types.SimpleNamespace(id=mid), {"S01E01"}, False))
+
+    es = run(read_row(db, EpisodeState, es_id))
+    tq = run(read_row(db, TransferQueue, tq_id))
+    assert es.state == "failed"
+    assert es.retry_count == 3  # done→failed 算一次循环，retry_count SQL 自增
+    assert es.error == scan_mod._DONE_FAIL_ERROR
+    assert tq.status == "failed"  # es 转 failed 成功 → 联动 tq
+
+
+def test_done_resolution_hit_retry_limit_keeps_done(db, monkeypatch):
+    """P3-1：达循环上限（retry_count=3）→ 保持 done、不删除、仅写上限 error，tq 不联动。"""
+    from app.tasks import scan as scan_mod
+
+    monkeypatch.setattr(scan_mod, "async_session", db)
+    mid, es_id, tq_id, _dl_id = run(seed_done_state(db, episode="S01E01", retry_count=3))
+    run(scan_mod._resolve_done_states(types.SimpleNamespace(id=mid), {"S01E01"}, False))
+
+    es = run(read_row(db, EpisodeState, es_id))
+    tq = run(read_row(db, TransferQueue, tq_id))
+    assert es is not None and es.state == "done"  # 不再转 failed（防重保留）
+    assert es.retry_count == 3  # 不消耗 / 不再递增
+    assert es.error == scan_mod._DONE_LIMIT_ERROR  # 上限 error 文案，人工核实 Emby 端
+    assert tq.status == "done"  # 上限分支不联动 tq
+
+
+# ---------------------------------------------------------------------------
+# B 定时：scan_all_media 按 last_scan_at 到期过滤（阶段 4，job 每分钟 tick）
+# ---------------------------------------------------------------------------
+
+def test_scan_all_media_filters_by_last_scan_at(db, monkeypatch):
+    """B 定时：last_scan_at IS NULL 或已到期 → 巡检；未到期 → 跳过（scan_media 不触发）。"""
+    from datetime import timedelta
+
+    from app.tasks import scan as scan_mod
+
+    monkeypatch.setattr(scan_mod, "async_session", db)
+    routed = []
+
+    async def fake_scan_media(media_id):
+        routed.append(media_id)
+        return 1
+
+    monkeypatch.setattr(scan_mod, "scan_media", fake_scan_media)
+    now = _now()
+
+    async def seed():
+        async with db() as s:
+            a = Media(title="A 未巡检", media_type="tv", status="tracking",
+                      scan_interval_minutes=1, last_scan_at=None)
+            b = Media(title="B 已到期", media_type="tv", status="downloading",
+                      scan_interval_minutes=1, last_scan_at=now - timedelta(minutes=2))
+            c = Media(title="C 未到期", media_type="tv", status="tracking",
+                      scan_interval_minutes=1, last_scan_at=now)
+            s.add_all([a, b, c])
+            await s.commit()
+            return [m.id for m in (a, b, c)]
+
+    ids = run(seed())
+    run(scan_mod.scan_all_media())
+
+    # A（last_scan_at=None）与 B（2 分钟前超 1 分钟周期）巡检；C（刚刚）未到期跳过
+    assert sorted(routed) == sorted([ids[0], ids[1]])
+
+
+# ---------------------------------------------------------------------------
+# M1（Oracle Gate2）：scan_all_media_job 异常兜底
+# ---------------------------------------------------------------------------
+
+def test_scan_all_media_job_records_task_run_on_error(db, monkeypatch):
+    """M1：scan_all_media_job 整体异常 → 记录 task_run(scan_all_media, error) 兜底，不外泄。"""
+    from app.tasks import scan as scan_mod
+
+    monkeypatch.setattr(scan_mod, "async_session", db)
+
+    async def boom():
+        raise RuntimeError("DB 抖动")
+
+    monkeypatch.setattr(scan_mod, "scan_all_media", boom)
+    run(scan_mod.scan_all_media_job())  # 不应抛出
+
+    async def count():
+        async with db() as s:
+            return (
+                await s.execute(
+                    select(TaskRun).where(TaskRun.task_type == "scan_all_media")
+                )
+            ).scalars().all()
+
+    rows = run(count())
+    assert len(rows) == 1
+    assert rows[0].status == "error"
+    assert "定时巡检异常" in rows[0].message
+
+
+# ---------------------------------------------------------------------------
+# M3（Oracle Gate2）：scan_all_media(force=True) 全量不过滤
+# ---------------------------------------------------------------------------
+
+def test_scan_all_media_force_skips_due_filter(db, monkeypatch):
+    """M3：force=True 跳过 last_scan_at 到期过滤，全部触及 media 一律巡检。"""
+    from app.tasks import scan as scan_mod
+
+    monkeypatch.setattr(scan_mod, "async_session", db)
+    routed = []
+
+    async def fake_scan_media(media_id):
+        routed.append(media_id)
+        return 1
+
+    monkeypatch.setattr(scan_mod, "scan_media", fake_scan_media)
+    now = _now()
+
+    async def seed():
+        async with db() as s:
+            a = Media(title="A 刚巡检未到期", media_type="tv", status="tracking",
+                      scan_interval_minutes=60, last_scan_at=now)
+            b = Media(title="B 从未巡检", media_type="tv", status="tracking",
+                      scan_interval_minutes=60, last_scan_at=None)
+            s.add_all([a, b])
+            await s.commit()
+            return [m.id for m in (a, b)]
+
+    ids = run(seed())
+    run(scan_mod.scan_all_media(force=True))
+
+    assert sorted(routed) == sorted(ids)  # force 全量：A（未到期）也巡检
+
+
+# ---------------------------------------------------------------------------
+# m1（Oracle Gate2）：上限分支 error 已写入后不再重复改写
+# ---------------------------------------------------------------------------
+
+def test_done_resolution_limit_error_not_rewritten(db, monkeypatch):
+    """m1：已达上限记录 error 已写上限文案后，再次 resolve 不再重复写（updated_at 稳定）。"""
+    from app.tasks import scan as scan_mod
+
+    monkeypatch.setattr(scan_mod, "async_session", db)
+    mid, es_id, tq_id, _dl_id = run(seed_done_state(db, episode="S01E01", retry_count=3))
+
+    run(scan_mod._resolve_done_states(types.SimpleNamespace(id=mid), {"S01E01"}, False))
+    es1 = run(read_row(db, EpisodeState, es_id))
+    assert es1.error == scan_mod._DONE_LIMIT_ERROR
+    first_ts = es1.updated_at  # 首次写入 error 时的时间戳
+
+    run(scan_mod._resolve_done_states(types.SimpleNamespace(id=mid), {"S01E01"}, False))
+    es2 = run(read_row(db, EpisodeState, es_id))
+    # 第二轮不再改写：error 保持上限文案、updated_at 未被污染
+    assert es2.error == scan_mod._DONE_LIMIT_ERROR
+    assert es2.updated_at == first_ts

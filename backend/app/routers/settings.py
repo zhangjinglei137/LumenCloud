@@ -2,8 +2,10 @@
 
 - GET  /api/settings  system_config 全量（字符串值）+ services 凭据「是否已配置」布尔
                      —— 绝不回显任何凭据值，只回 {key: bool}
-- PATCH /api/settings 白名单键 UPSERT（非敏感键）
+- PATCH /api/settings 白名单键 UPSERT（非敏感键）；含调度相关键时 commit 后
+                      事件驱动重新应用 job 开关（M2，Oracle Gate2）
 """
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
@@ -14,6 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings as app_settings
 from app.models import SystemConfig, User
 from app.routers.deps import get_current_admin, get_session
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -92,4 +96,25 @@ async def patch_settings(
             continue
         await session.merge(SystemConfig(key=key, value=str(value), updated_at=now))
     await session.commit()
+
+    # M2（Oracle Gate2）：事件驱动冷切换——配置保存即应用，无需重启。
+    # 阶段 4 用户经 settings 页启用定时（scheduler_enabled / scheduler.<job_id>）时，
+    # 若 PATCH 后不重新应用 job 开关，调度器不会启动对应 job（_apply_job_switches
+    # 仅在 lifespan start() 调用一次）。此处 commit 成功后按需重新落地开关：
+    # - 延迟导入 app.scheduler（其 import 会实例化 APScheduler），避免本模块 import
+    #   链副作用；_apply_job_switches 幂等可重复调用（resume 对已激活 job、pause 对
+    #   已暂停 job 均按 next_run_time 判断后无副作用操作）。
+    # - 失败仅告警（配置已保存，restart 兜底），不阻塞 PATCH 返回 ok。
+    scheduler_touched = any(
+        k == "scheduler_enabled" or k.startswith("scheduler.") for k in payload
+    )
+    if scheduler_touched:
+        try:
+            from app.scheduler import _apply_job_switches  # noqa: PLC0415 延迟导入
+
+            await _apply_job_switches()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[settings] 调度开关已保存但应用失败，请重启生效（%s）", exc
+            )
     return {"ok": True}

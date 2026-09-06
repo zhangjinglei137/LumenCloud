@@ -140,6 +140,28 @@ class Aria2Client:
         )
         return result or []
 
+    async def tell_waiting(self, offset: int = 0, num: int = 100) -> list[dict[str, Any]]:
+        """aria2.tellWaiting：等待队列任务列表（转存前 GID 来源校验用，§12.2）。
+
+        P2-6（council）：waiting 队列中的陌生任务同样代表 n8n 误启动（排队中的
+        双转存），仅校验 tell_active 会漏检。返回字段同 tell_active
+        （gid/status/comment/totalLength/completedLength），transfer 层将
+        active + waiting 合并后做统一来源校验。
+
+        参数:
+            offset: 起始位置偏移（默认 0）
+            num:    返回条数上限（默认 100）
+        """
+        result = await self._rpc(
+            "aria2.tellWaiting",
+            [
+                offset,
+                num,
+                ["gid", "status", "comment", "totalLength", "completedLength"],
+            ],
+        )
+        return result or []
+
     async def remove(self, gid: str) -> dict[str, Any]:
         """aria2.remove：移除下载任务（recovery 超时回退时清理残留任务）。
 

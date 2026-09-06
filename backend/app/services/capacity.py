@@ -36,8 +36,15 @@ QUARK_ROOT = "/quark"
 SNAPSHOT_THROTTLE_SECONDS = 60.0
 _last_snapshot_written_at: float = 0.0
 
+# get_usage 进程内缓存 TTL（秒）：短 TTL 缓存避免每个 pending 任务/每轮 job
+# 都全量递归 alist /quark 目录树（P2-7）。fail-closed 语义不变：异常永不缓存。
+USAGE_CACHE_TTL_SECONDS = 30.0
+
 # system_config 中的安全余量键（缺省 = quota × 5%，docs §6.3）
 SAFETY_MARGIN_CONFIG_KEY = "capacity_safety_margin_gb"
+
+# system_config 中的配额键（「配置双源统一」：system_config 优先，env 仅 fallback）
+QUOTA_CONFIG_KEY = "quark_quota_gb"
 
 
 def _now_naive_utc() -> datetime:
@@ -69,19 +76,33 @@ class CapacityProvider:
     """
 
     def __init__(self) -> None:
-        self._quota_gb: float = settings.QUARK_QUOTA_GB
+        # env 默认配额（pydantic-settings，.env QUARK_QUOTA_GB）；system_config 优先，
+        # 运行时经 _load_quota_gb() 读取覆盖（「配置双源统一」约定）
+        self._fallback_quota_gb: float = settings.QUARK_QUOTA_GB
+        # 保留 _quota_gb 供既有引用/测试读取（值 = env fallback）
+        self._quota_gb: float = self._fallback_quota_gb
+        # P2-7：进程内短 TTL 用量缓存（命中直接返回，不再递归 alist / 写快照）
+        self._usage_cache: Optional[CapacityInfo] = None
+        self._usage_cached_at: float = 0.0
         logger.debug(
-            "CapacityProvider 初始化：数据源=alist %s，quota=%.2f G（模型 B 硬上限）",
+            "CapacityProvider 初始化：数据源=alist %s，quota=%.2f G（模型 B 硬上限，"
+            "system_config quark_quota_gb 优先）",
             QUARK_ROOT,
             self._quota_gb,
         )
 
     async def get_usage(self) -> CapacityInfo:
-        """获取容量快照（实时：alist /quark 目录统计）。
+        """获取容量快照（实时：alist /quark 目录统计，P2-7 进程内 30s 缓存）。
 
         失败（alist 未配置 / 网络故障 / 全部目录统计失败）→ 抛 CapacityUnavailable，
-        调用方须 fail-closed（绝不用估算值放行转存）。
+        调用方须 fail-closed（绝不用估算值放行转存）。异常不缓存。
         """
+        # P2-7：缓存命中且未过期 → 直接返回（不再递归 alist、不再写快照）
+        if self._usage_cache is not None and (
+            time.monotonic() - self._usage_cached_at < USAGE_CACHE_TTL_SECONDS
+        ):
+            return self._usage_cache
+
         if not settings.ALIST_BASE_URL or not settings.ALIST_TOKEN:
             raise CapacityUnavailable("AList 未配置（ALIST_BASE_URL/ALIST_TOKEN），容量不可用")
 
@@ -94,14 +115,18 @@ class CapacityProvider:
         if not any_ok:
             raise CapacityUnavailable("alist 目录统计全部失败，容量不可用（fail-closed）")
 
+        quota_gb = await self._load_quota_gb()
         used_gb = used_bytes / (1024 ** 3)
         snap = CapacityInfo(
-            total_gb=self._quota_gb,
+            total_gb=quota_gb,
             used_gb=used_gb,
             source="alist",
             checked_at=_now_naive_utc(),
         )
         await self._persist_snapshot(snap)
+        # 成功路径（含快照归档）后刷新缓存；异常路径永不写入缓存
+        self._usage_cache = snap
+        self._usage_cached_at = time.monotonic()
         return snap
 
     async def _total_used_bytes(self, root: str) -> tuple[float, bool]:
@@ -154,12 +179,37 @@ class CapacityProvider:
         except Exception as exc:
             logger.warning("容量快照写入 quark_capacity_log 失败（不影响主流程）: %s", exc)
 
-    async def _load_margin_gb(self) -> float:
+    async def _load_quota_gb(self) -> float:
+        """读取配额（system_config quark_quota_gb 优先，env 仅 fallback 默认）。
+
+        「配置双源统一」约定：settings.py PATCH 白名单可写 quark_quota_gb，
+        运行时此处读 system_config；缺失/非法/异常均回退 env 默认，不抛。
+        """
+        default = self._fallback_quota_gb
+        try:
+            async with async_session() as session:
+                row = await session.get(SystemConfig, QUOTA_CONFIG_KEY)
+        except Exception as exc:
+            logger.warning("读取 %s 失败，用 env 默认配额 %.2fG: %s",
+                           QUOTA_CONFIG_KEY, default, exc)
+            return default
+        if row is None or not row.value:
+            return default
+        try:
+            return float(row.value)
+        except (TypeError, ValueError):
+            logger.warning("%s 非数值 %r，用 env 默认配额 %.2fG",
+                           QUOTA_CONFIG_KEY, row.value, default)
+            return default
+
+    async def _load_margin_gb(self, quota_gb: Optional[float] = None) -> float:
         """读取安全余量（system_config capacity_safety_margin_gb，缺省 = quota × 5%）。
 
         读取/解析失败均回退默认值（余量不影响 fail-closed 主路径）。
+        quota_gb 可选：缺省用 self._quota_gb（env fallback），check 传入刚读到的
+        system_config 实际配额，保证「默认 = quota × 5%」与生效配额一致。
         """
-        default = self._quota_gb * 0.05
+        default = (quota_gb if quota_gb is not None else self._quota_gb) * 0.05
         try:
             async with async_session() as session:
                 row = await session.get(SystemConfig, SAFETY_MARGIN_CONFIG_KEY)
@@ -189,14 +239,15 @@ class CapacityProvider:
             logger.warning("容量检查: get_usage 返回 used_gb=None，fail-closed 不放行")
             return False
 
-        margin_gb = await self._load_margin_gb()
+        quota_gb = await self._load_quota_gb()
+        margin_gb = await self._load_margin_gb(quota_gb)
         candidate_gb = candidate_bytes / (1024 ** 3)
         needed_gb = usage.used_gb + candidate_gb + margin_gb
-        allow = needed_gb <= self._quota_gb
+        allow = needed_gb <= quota_gb
         if not allow:
             logger.warning(
                 "容量不足（模型 B）: used=%.2fG + candidate=%.2fG + margin=%.2fG = %.2fG > quota=%.2fG",
-                usage.used_gb, candidate_gb, margin_gb, needed_gb, self._quota_gb,
+                usage.used_gb, candidate_gb, margin_gb, needed_gb, quota_gb,
             )
         return allow
 

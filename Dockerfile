@@ -40,7 +40,9 @@ COPY backend/alembic /app/backend/alembic
 COPY scripts /app/scripts
 
 # 前端构建产物 → FastAPI 静态直出
-COPY --from=frontend-builder /build/frontend/dist /app/backend/static
+    # ⚠️ vite.config.ts 的 build.outDir = '../backend/static'（相对 /build/frontend）
+    #    = /build/backend/static；不要改成 dist，否则多阶段 COPY not found
+    COPY --from=frontend-builder /build/backend/static /app/backend/static
 
 # supervisord 配置
 COPY supervisord.conf /etc/supervisor/conf.d/lumencloud.conf

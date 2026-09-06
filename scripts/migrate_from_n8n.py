@@ -63,6 +63,10 @@ CAST_INVALID = "invalid"
 
 _DIGITS_RE = re.compile(r"(\d+)")
 
+# P3-3：TMDB 补查并发上限。电影列表 N 条 × TMDB HTTP 往返（每条可能秒级+），
+# 串行执行大列表迁移很慢；gather 并发但用信号量限制并发数，避免压垮上游。
+TMDB_CONCURRENCY = 4
+
 
 def mask_dsn(dsn: str) -> str:
     """DSN 密码脱敏（日志/提示不泄露凭据）。非 URL 形式时直接模糊主机部分。"""
@@ -260,17 +264,26 @@ async def enrich_media_type(plan: list) -> list:
     """
     if not settings.TMDB_API_KEY:
         print("[TMDB] TMDB_API_KEY 未配置 → media_type 全部标记「待补」，迁移继续进行")
-    pending = 0
-    for item in plan:
-        if item["action"] != "write":
-            continue
-        mt = await _fetch_media_type(item["title"])
-        item["media_type"] = mt
+    # P3-3：并发补查全部 write 行。write_idx 记录下标保证输出顺序稳定，
+    # 结果按下标逐个回填 plan[i]["media_type"]（不并发写共享结构）。
+    write_idx = [i for i, item in enumerate(plan) if item["action"] == "write"]
+    if not write_idx:
+        return plan
+    sem = asyncio.Semaphore(TMDB_CONCURRENCY)
+
+    async def _fetch_limited(title: str):
+        async with sem:
+            return await _fetch_media_type(title)
+
+    results = await asyncio.gather(
+        *(_fetch_limited(plan[i]["title"]) for i in write_idx)
+    )
+    for i, mt in zip(write_idx, results):
+        plan[i]["media_type"] = mt
         if mt is None:
-            pending += 1
-            print(f"[TMDB] ⚠ 待补 media_type: {item['title'][:40]}")
+            print(f"[TMDB] ⚠ 待补 media_type: {plan[i]['title'][:40]}")
         else:
-            print(f"[TMDB] {item['title'][:40]} → media_type={mt}")
+            print(f"[TMDB] {plan[i]['title'][:40]} → media_type={mt}")
     return plan
 
 

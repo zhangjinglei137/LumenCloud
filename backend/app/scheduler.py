@@ -5,9 +5,9 @@ APScheduler（AsyncIOScheduler）—— 单进程内嵌调度器（设计文档 
   （task_run / episode_state / transfer_queue），重启后按表内状态恢复（recover_on_boot），
   不依赖 jobstore 持久化。
 - 注册 6 个 job（id 固定）：
-  | job_id                   | 触发器                                | 阶段 3 行为 |
+  | job_id                   | 触发器                                | 阶段 4 行为 |
   |--------------------------|---------------------------------------|-------------|
-  | scan_all_media           | 不注册定时（add 后 paused，手动触发） | API /api/media/{id}/scan 调用 scan.scan_media |
+  | scan_all_media           | IntervalTrigger(minutes=1)            | B 定时：每分钟 tick，scan_all_media 按各 media last_scan_at 到期过滤；注册默认 paused，阶段 4 经 system_config 启用 |
   | process_transfer_queue   | IntervalTrigger(minutes=1)            | 阶段 3 已实现；定时默认关闭（事件 + 手动触发） |
   | nastools_sync            | IntervalTrigger(hours=1) 兜底（正式事件触发） | 阶段 3 已实现；定时默认关闭（事件触发） |
   | release_space_cleanup    | IntervalTrigger(hours=12)             | 阶段 3 已实现；定时默认关闭 |
@@ -15,6 +15,9 @@ APScheduler（AsyncIOScheduler）—— 单进程内嵌调度器（设计文档 
   | recover_stale            | IntervalTrigger(hours=1)              | P2-2 新增：运行期超时回退（recover 不只 boot）；定时默认关闭 |
 - system_config 双层开关：scheduler_enabled（全局，默认开）+ scheduler.<job_id>（job 级，
   未配置时按阶段 3 默认：定时全部关闭，阶段 4 经 system_config 启用，§12.2 冷切换）。
+- 冷切换铁律（P3-4）：注册即暂停（paused=True）——所有 job 默认不空转；仅由
+  _apply_job_switches 依据 system_config 恢复。开关读取失败时降级为暂停（fail-closed：
+  读不到配置 = 不启用定时，绝不让定时意外开启）。
 """
 import logging
 
@@ -99,15 +102,19 @@ async def get_job_enabled(job_id: str) -> bool:
 def register_jobs() -> None:
     """注册 6 个 job（id 固定，幂等 replace_existing）。
 
-    scan_all_media 阶段 2 不注册定时：add_job(paused=True) 仅保留 run 函数
-    （scan.scan_all_media_job → scan_all_media）供 API 手动触发；
-    阶段 4 通过 system_config scheduler.scan_all_media=true 启用定时。
+    B 定时（阶段 4）：scan_all_media 注册为 IntervalTrigger(minutes=1) 每分钟 tick，
+    job 内部按各 media last_scan_at 到期过滤（scan.scan_all_media），到期才巡检；
+    API 手动触发（scan.scan_media）不经过期检查，语义不变。
+
+    P3-4 冷切换铁律：全部 job 注册时显式 paused=True（阶段 3 默认关闭，与
+    _JOB_DEFAULT_ENABLED 全 False 一致）——注册即暂停，由 _apply_job_switches
+    依据 system_config 恢复；未启用前不会空转。
     """
     scheduler.add_job(
         scan.scan_all_media_job,
-        IntervalTrigger(hours=1),
+        IntervalTrigger(minutes=1),  # B 定时：每分钟 tick（内部按 last_scan_at 到期过滤）
         id=JOB_SCAN_ALL_MEDIA,
-        paused=True,  # 阶段2 手动触发：POST /api/media/{id}/scan → app.tasks.scan.scan_media
+        paused=True,  # P3-4：注册即暂停；阶段 4 经 system_config scheduler.scan_all_media=true 启用
         max_instances=1,
         coalesce=True,
         replace_existing=True,
@@ -116,14 +123,16 @@ def register_jobs() -> None:
         transfer.process_transfer_queue_job,
         IntervalTrigger(minutes=1),
         id=JOB_PROCESS_TRANSFER_QUEUE,
+        paused=True,  # P3-4：注册即暂停（阶段 3 默认关闭，事件 + 手动触发）
         max_instances=1,
         coalesce=True,
         replace_existing=True,
     )
     scheduler.add_job(
         nastools_sync.nastools_sync_job,
-        IntervalTrigger(hours=1),  # 正式为下载完成事件触发（§4.2），阶段2 以低频兜底注册
+        IntervalTrigger(hours=1),  # 正式为下载完成事件触发（§4.2），低频兜底注册
         id=JOB_NASTOOLS_SYNC,
+        paused=True,  # P3-4：注册即暂停（正式为事件触发）
         max_instances=1,
         coalesce=True,
         replace_existing=True,
@@ -132,6 +141,7 @@ def register_jobs() -> None:
         cleanup.release_space_cleanup_job,
         IntervalTrigger(hours=12),
         id=JOB_RELEASE_SPACE_CLEANUP,
+        paused=True,  # P3-4：注册即暂停
         max_instances=1,
         coalesce=True,
         replace_existing=True,
@@ -140,6 +150,7 @@ def register_jobs() -> None:
         notification_scan.notification_scan_job,
         IntervalTrigger(minutes=5),
         id=JOB_NOTIFICATION_SCAN,
+        paused=True,  # P3-4：注册即暂停
         max_instances=1,
         coalesce=True,
         replace_existing=True,
@@ -149,6 +160,7 @@ def register_jobs() -> None:
         recovery.recover_stale_tasks,
         IntervalTrigger(hours=1),
         id=JOB_RECOVER_STALE,
+        paused=True,  # P3-4：注册即暂停
         max_instances=1,
         coalesce=True,
         replace_existing=True,
@@ -156,7 +168,11 @@ def register_jobs() -> None:
 
 
 async def _apply_job_switches() -> None:
-    """双层开关落地：按 system_config 决定各 job 激活/暂停（读失败保持注册默认）。"""
+    """双层开关落地：按 system_config 决定各 job 激活/暂停。
+
+    P3-4（延后项）：读取 job 开关失败时降级为**暂停**（fail-closed）——冷切换铁律：
+    读不到配置 = 不启用定时，绝不让定时意外开启（注册默认已全部 paused，读失败保持暂停）。
+    """
     for job_id in JOB_IDS:
         job = scheduler.get_job(job_id)
         if job is None:
@@ -164,7 +180,11 @@ async def _apply_job_switches() -> None:
         try:
             enabled = await get_job_enabled(job_id)
         except Exception as exc:
-            logger.warning("[scheduler] 读取 job=%s 开关失败: %s，保持注册默认", job_id, exc)
+            logger.warning(
+                "[scheduler] 读取 job=%s 开关失败: %s，降级为暂停（冷切换铁律：读不到配置=不启用定时）",
+                job_id, exc,
+            )
+            job.pause()
             continue
         if enabled and job.next_run_time is None:
             job.resume()

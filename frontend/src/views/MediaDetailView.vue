@@ -51,11 +51,12 @@ const episodes = computed(() => detail.value?.episode_state ?? [])
 
 function episodeLabel(ep: Record<string, unknown>): string {
   const season = ep.season ?? ep.season_number
-  const episode = ep.episode ?? ep.episode_number
-  if (season !== undefined && season !== null && episode !== undefined && episode !== null) {
-    return `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`
+  const episodeNumber = ep.episode_number
+  if (season !== undefined && season !== null && episodeNumber !== undefined && episodeNumber !== null) {
+    return `S${String(season).padStart(2, '0')}E${String(episodeNumber).padStart(2, '0')}`
   }
-  if (episode !== undefined && episode !== null) return `第 ${episode} 集`
+  // 无 season/episode_number（全量模式 movie：episode=文件名）→ 直接显示原始 episode
+  if (ep.episode !== undefined && ep.episode !== null) return String(ep.episode)
   return '—'
 }
 

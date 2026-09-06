@@ -9,7 +9,8 @@
     - complete      → 释放夸克残留 + 双表 done + download_complete 通知 + 触发 nastools_sync（带冷却，不阻塞）
     - error/removed → 确定性失败路径：retry_count++ → ≥3 双表 failed + flow_error 告警；
                         <3 双表回退（es queued / tq pending）+ 清理夸克残留
-    - active/waiting/paused → 仍在下载：显式刷新 updated_at（防 recover 2h 误回退）
+    - active/waiting（及未知状态）→ 仍在下载：显式刷新 updated_at（防 recover 2h 误回退）
+    - paused（外部暂停）→ 不刷新进度，等待 recover 超时回退（P2-9）
     - aria2 故障（Aria2Unavailable）→ 该任务本轮跳过（不误判失败），记 task_run(error)
 - 阶段 B：取最早一个 pending 任务串行转存（交付 B）
     GID 来源校验（§12.2 简化版）→ 容量门槛 fail-closed（§6.2/§6.3 模型 B）→ 条件更新抢占 →
@@ -27,13 +28,14 @@
 import asyncio
 import json
 import logging
+import time as _time
 from datetime import datetime, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from app.config import settings
 from app.database import async_session
-from app.models import DownloadTask, EpisodeState, TransferQueue
+from app.models import DownloadTask, EpisodeState, Media, TransferQueue
 from app.services import alist, aria2, capacity, cloudsaver
 from app.services.notifier import (
     EVENT_DOWNLOAD_COMPLETE,
@@ -51,6 +53,10 @@ _IMPLEMENTED = True
 _COMMENT_PREFIX = "lumencloud:"
 # 确定性失败 / 超时回退消耗 retry_count 的上限：≥3 转 failed，需人工 retry（§4.5）
 _RETRY_LIMIT = 3
+# P3-2（council）：quota 拒绝累计告警阈值——容量不足连续累计 ≥5 次触发
+# flow_error 告警（复用 P2-2 的 capacity 类别节流，防每分钟 job 刷屏）。
+# quota 拒绝只走 quota_reject_count，绝不消耗 retry_count（§4.5）。
+_QUOTA_REJECT_ALERT_THRESHOLD = 5
 # 转存/下载进行中态（recovery 超时回退候选，语义同 recovery.py 的 _PROGRESS_STATES）
 _PROGRESS_STATES = ("transferring", "downloading")
 # P3-3（Oracle 审查）：后台任务强引用集合——防 asyncio.create_task 的任务被 GC 回收未执行
@@ -59,6 +65,15 @@ _background_tasks: set[asyncio.Task] = set()
 # 防 scan 事件触发 / 手动 retry / 定时 job（阶段 4）三路并发各自消费不同 pending、
 # 容量模型 B 双过检双双转存 → /quark 突破硬上限；违反「串行单任务」约定。
 _process_lock = asyncio.Lock()
+
+# P2-2（council）：flow_error 通知节流窗（秒）。GID 校验失败/容量不可用等
+# fail-closed 场景由每分钟兜底 job 重复触发，同一告警 10 分钟内只 notify 一次，
+# 防通知刷屏（task_run(error) 仍每次记录，仅通知节流）。
+_ALERT_COOLDOWN_SECONDS = 600.0
+# P2-2：告警节流表。key = f"{media_id}:{category}"；值 = (最近 notify 的
+# monotonic 时间戳, 上次消息)。同一 key 在窗口内重复触发时，仅当消息与上次
+# **完全相同**才跳过 notify（消息变化视为根因变化的新告警，必须通知）。
+_alert_cooldown: dict[str, tuple[float, str]] = {}
 
 
 def _spawn(coro_factory) -> None:
@@ -115,6 +130,26 @@ def _split_quark_path(path: str) -> tuple[str, list[str]]:
     return "/", [path]
 
 
+def _extract_save_task_id(data) -> str | None:
+    """从 cloudsaver.save 返回的 data 字典中健壮提取 task_id（P2-10）。
+
+    save 返回结构多样（各版本 cloudSaver 字段不一）：优先取常见键
+    （task_id / taskId / taskID / saveTaskId，兼容大小写变体）；取不到返回 None，
+    调用方忽略（不落 save_task_id，退化回原重试行为）。
+
+    注意（Oracle M1）：不做单键兜底——`{"error": ...}`/`{"msg": ...}` 等错误响应
+    若被当 task_id 落库，会让下一轮重试跳过 save 并永远等不到文件（死循环到
+    retry 上限标 failed）。宁可不落（重复 save 是安全行为），不可落假 id。
+    """
+    if not isinstance(data, dict):
+        return None
+    for key in ("task_id", "taskId", "taskID", "saveTaskId", "save_task_id"):
+        val = data.get(key)
+        if val:
+            return str(val)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # 阶段 A：downloading 完成轮询（交付 D）
 # ---------------------------------------------------------------------------
@@ -158,8 +193,18 @@ async def _poll_downloading_tasks() -> None:
         elif status in ("error", "removed"):
             await _fail_download(dt_id, media_id, tq_id, episode, f"aria2 任务状态 {status}")
         else:
-            # active / waiting / paused（及未知状态按进行中处理）：刷新 updated_at
-            await _refresh_progress(tq_id, media_id, episode)
+            # active / waiting（及未知状态按进行中处理）：刷新 updated_at
+            if status == "paused":
+                # P2-9（council）：aria2 任务被外部暂停 → 不再刷新 updated_at，
+                # 让其超过 episode_state_timeout_hours 老化后由 recover_stale_tasks
+                # 超时回退 queued（+ 清理残留）；此前 paused 也刷新进度导致
+                # recover 2h 超时永不触发，任务永久卡在 downloading。
+                logger.debug(
+                    "[transfer] aria2 任务被外部暂停（gid=%s），不刷新进度，等待 recover %sh 超时回退",
+                    gid, settings.EPISODE_STATE_TIMEOUT_HOURS,
+                )
+            else:
+                await _refresh_progress(tq_id, media_id, episode)
 
     if aria2_errors:
         async with async_session() as s:
@@ -224,6 +269,9 @@ async def _complete_download(dt_id, media_id, tq_id, episode, file_name, quark_p
             await record_task_run(
                 s, "transfer", "success", f"下载完成: {episode} ({file_name})", media_id,
             )
+            # P3-6（council）：es 转 done 后检查该 media 是否还有其他进行中 es，
+            # 无则回 tracking（条件更新不覆盖 paused）。与 tq/es/dl 同一事务。
+            await _sync_media_status(media_id, s)
 
     # c) 通知（§7 download_complete，全体）
     await notifier.notify(NotifyEvent(
@@ -245,6 +293,11 @@ async def _fail_download(dt_id, media_id, tq_id, episode, reason) -> None:
     """确定性失败（aria2 error/removed）：retry_count++ → ≥3 双表 failed / <3 双表回退。
 
     回退前清理夸克残留（alist.remove，失败仅告警不阻断）。
+
+    P2-5（council）：retry_count 增量改用 CAS 条件更新（WHERE 含
+    retry_count=读到的旧值），替代「读-改-写」——recovery 并发回退同一任务时，
+    写死 new_retry 会丢失对方增量；CAS 未命中（rowcount=0）视为并发冲突，
+    本轮跳过状态转移、不重复计数（仅记 task_run(error)），交由并发方/下一轮推进。
     """
     # 读当前 retry_count（防重权威源 = episode_state）
     async with async_session() as s:
@@ -274,12 +327,13 @@ async def _fail_download(dt_id, media_id, tq_id, episode, reason) -> None:
     err = f"{reason}（retry={new_retry}/{_RETRY_LIMIT}）" if terminal else reason
     async with async_session() as s:
         async with s.begin():
-            await s.execute(
+            r_es = await s.execute(
                 update(EpisodeState)
                 .where(
                     EpisodeState.media_id == media_id,
                     EpisodeState.episode == episode,
                     EpisodeState.state == "downloading",
+                    EpisodeState.retry_count == retry,  # P2-5 CAS：防读-改-写丢增量
                 )
                 .values(
                     state="failed" if terminal else "queued",
@@ -288,6 +342,14 @@ async def _fail_download(dt_id, media_id, tq_id, episode, reason) -> None:
                     updated_at=now,
                 )
             )
+            if r_es.rowcount == 0:
+                # P2-5：CAS 冲突（recovery 并发已回退/已计数）→ 不重复计数、不转移状态
+                await record_task_run(
+                    s, "transfer", "error",
+                    f"下载失败但 retry_count CAS 冲突（并发回退?），本轮跳过不计数: {reason}",
+                    media_id,
+                )
+                return
             await s.execute(
                 update(TransferQueue)
                 .where(TransferQueue.id == tq_id, TransferQueue.status == "downloading")
@@ -306,6 +368,10 @@ async def _fail_download(dt_id, media_id, tq_id, episode, reason) -> None:
                 s, "transfer", "error",
                 f"{episode} 下载失败: {err}", media_id,
             )
+            # P3-6（council）：仅终态（es 转 failed）才回 tracking——非终态回退
+            # queued 仍属进行中（排队中），media 保持 downloading。与双表同一事务。
+            if terminal:
+                await _sync_media_status(media_id, s)
 
     if terminal:
         await notifier.notify(NotifyEvent(
@@ -322,7 +388,10 @@ async def _fail_download(dt_id, media_id, tq_id, episode, reason) -> None:
 
 
 async def _refresh_progress(tq_id, media_id, episode) -> None:
-    """仍在下载（active/waiting/paused）→ 显式刷新 updated_at（防 recover 2h 误回退）。"""
+    """仍在下载（active/waiting/未知状态）→ 显式刷新 updated_at（防 recover 2h 误回退）。
+
+    P2-9：paused 不再刷新（由 recover 超时回退），故调用方只在非 paused 时调用。
+    """
     now = _now()
     async with async_session() as s:
         async with s.begin():
@@ -342,16 +411,90 @@ async def _refresh_progress(tq_id, media_id, episode) -> None:
             )
 
 
+# P3-6（council）：media 上"进行中"的 episode_state 状态集合——转存排队中也算
+# 处理中（前端/系统以此区分正在处理的影视）；failed/done 不算。
+_ACTIVE_ES_STATES = ("queued", "transferring", "downloading")
+
+
+async def _sync_media_status(media_id: int, session=None) -> int:
+    """P3-6（council）：media 不再有任何进行中 es → 条件回退 status='tracking'。
+
+    进行中 = EpisodeState.state in _ACTIVE_ES_STATES（queued 排队中也算处理中；
+    failed/done 不算）。条件更新 WHERE media.status='downloading'：不覆盖用户手动
+    paused，也不干扰其余状态；无匹配行（用户已 paused / 已非 downloading）返回 0 忽略。
+
+    参数 session：传入时复用外部事务（由调用方统一提交，减少额外 session）；
+    不传则自开短事务。返回回退 update 的行数（0 或 1）。
+    """
+    async def _run(s):
+        active = (
+            await s.scalar(
+                select(func.count())
+                .select_from(EpisodeState)
+                .where(
+                    EpisodeState.media_id == media_id,
+                    EpisodeState.state.in_(_ACTIVE_ES_STATES),
+                )
+            )
+        ) or 0
+        if active:
+            return 0
+        result = await s.execute(
+            update(Media)
+            .where(Media.id == media_id, Media.status == "downloading")
+            .values(status="tracking", updated_at=_now())
+        )
+        return result.rowcount
+
+    if session is not None:
+        return await _run(session)
+    async with async_session() as s:
+        async with s.begin():
+            return await _run(s)
+
+
 # ---------------------------------------------------------------------------
 # 阶段 B：取一个 pending 任务串行转存（交付 B）
 # ---------------------------------------------------------------------------
 
-async def _record_alert(media_id, message) -> None:
-    """record task_run(error) + flow_error 通知（GID 校验 / 容量数据不可用等 fail-closed 分支）。"""
+def _alert_bucket(message: str) -> str:
+    """告警节流指纹：消息固定前缀（去掉 ': <exc>' 变量尾巴）。
+
+    Oracle M4：GID/容量告警消息尾部的 exc 会随网络抖动变化（超时/拒连/解析失败…），
+    直接整条比较会让节流对变量尾巴失效（每分钟 job 刷屏）。取冒号前固定前缀作
+    比较指纹；不同前缀 = 不同根因，照常放行通知。
+    """
+    return (message or "").split(": ", 1)[0]
+
+
+async def _record_alert(media_id, message, category=None, bucket=None) -> None:
+    """record task_run(error) + flow_error 通知（GID 校验 / 容量数据不可用等 fail-closed 分支）。
+
+    P2-2（council）：flow_error 通知节流——GID 校验失败/容量不可用由每分钟兜底
+    job 重复触发会通知刷屏；此处按 (media_id, 告警类别) 在 _ALERT_COOLDOWN_SECONDS
+    内去重：首次必须通知，窗口内**同类别且节流指纹（bucket）相同**的重复触发跳过
+    notify（task_run(error) 仍每次记录）。告警类别：GID 校验失败用 "gid"、容量失败
+    用 "capacity"、其他用消息前缀前 40 字符。
+
+    bucket：节流指纹，默认 _alert_bucket(message) 推断（M4：截掉变量尾巴）。
+    可显式传入使**不同消息共享同一指纹**——如 P3-2 容量不足告警（消息含累计次数、
+    随计数变化）与容量不可用告警（消息含 exc 文本）协议统一传 bucket="capacity"，
+    使"容量不足/容量不可用"10 分钟内对同一 media 只 notify 一次（任务 P3-2 要求）。
+    """
     logger.warning("[transfer] %s", message)
     async with async_session() as s:
         await record_task_run(s, "transfer", "error", message, media_id)
         await s.commit()
+    bucket = bucket if bucket is not None else _alert_bucket(message)
+    key = f"{media_id}:{category or bucket[:40]}"
+    now = _time.monotonic()
+    last_ts, last_bucket = _alert_cooldown.get(key, (0.0, None))
+    if last_bucket == bucket and (now - last_ts) < _ALERT_COOLDOWN_SECONDS:
+        logger.info(
+            "[transfer] flow_error 通知节流（%ds 内同类重复告警 %s）", _ALERT_COOLDOWN_SECONDS, key,
+        )
+        return
+    _alert_cooldown[key] = (now, bucket)
     await notifier.notify(NotifyEvent(
         event_type=EVENT_FLOW_ERROR,
         title="转存流程告警",
@@ -385,6 +528,8 @@ async def _process_one_pending() -> None:
         file_name, file_size = tq.file_name, tq.file_size
         share_code, stoken = tq.share_code, tq.stoken
         fids, fid_tokens, folder_id = tq.fids, tq.fid_tokens, tq.folder_id
+        # P2-10（council）：快照 cloudSaver save 幂等标记（步骤 5 据此跳过重复 save）
+        tq_save_task_id = tq.save_task_id
         es = (
             await s.execute(
                 select(EpisodeState).where(
@@ -396,12 +541,19 @@ async def _process_one_pending() -> None:
         es_retry = es.retry_count if es is not None else 0
         es_quark_path = es.quark_path if es is not None else None
 
-    # 2) GID 来源校验兜底（§12.2 简化版）：存在陌生 aria2 活动任务 → 本轮跳过并告警
+    # 2) GID 来源校验兜底（§12.2 简化版）：存在陌生 aria2 活动/等待任务 → 本轮跳过并告警
     #    （不处理、不 ++quota_reject_count；防 n8n 被误启动时的双转存）
+    #    P2-6（council）：合并校验 active + waiting 队列——waiting 中的陌生任务同样
+    #    代表排队中的双转存，仅校验 active 会漏检；任一调用异常仍走 fail-closed。
     try:
         actives = await aria2.client.tell_active() or []
+        tell_waiting = getattr(aria2.client, "tell_waiting", None)
+        if tell_waiting is not None:
+            actives = actives + (await tell_waiting() or [])
     except Exception as exc:  # noqa: BLE001  Aria2Unavailable → 无法确认来源，fail-closed
-        await _record_alert(media_id, f"aria2 状态不可用，暂停转存（GID 校验失败）: {exc}")
+        await _record_alert(
+            media_id, f"aria2 状态不可用，暂停转存（GID 校验失败）: {exc}", category="gid",
+        )
         return
     for t in actives:
         if not str(t.get("comment") or "").startswith(_COMMENT_PREFIX):
@@ -409,6 +561,7 @@ async def _process_one_pending() -> None:
                 media_id,
                 "检测到陌生 aria2 任务（无本系统 GID 来源标记），暂停转存（§12.2 冷切换兜底），"
                 "请人工确认 n8n 未误启动",
+                category="gid",
             )
             return
 
@@ -416,7 +569,12 @@ async def _process_one_pending() -> None:
     try:
         capacity_ok = await capacity.provider.check(file_size)
     except Exception as exc:  # noqa: BLE001  CapacityUnavailable → 保持 pending，不耗 retry / quota
-        await _record_alert(media_id, f"容量数据不可用，保持 pending（fail-closed）: {exc}")
+        # P3-2：bucket 与容量不足告警统一为 "capacity"，共享 P2-2 节流——
+        # "容量数据不可用"/"容量不足"10 分钟内对同一 media 只 notify 一次。
+        await _record_alert(
+            media_id, f"容量数据不可用，保持 pending（fail-closed）: {exc}",
+            category="capacity", bucket="capacity",
+        )
         return
     if not capacity_ok:
         # 容量不足：保持 pending + quota_reject_count++（绝不消耗 retry_count，§4.5）
@@ -434,6 +592,25 @@ async def _process_one_pending() -> None:
                 await record_task_run(
                     s, "transfer", "skipped", f"容量不足等待释放: {file_name}", media_id,
                 )
+                # P3-2（council）: 读取更新后的累计次数；达到阈值（≥5）→ 容量类
+                # flow_error 告警。task_run(skipped) 仍每次记录，告警复用 P2-2 的
+                # "capacity" 类别 + 统一指纹 bucket（与"容量数据不可用"共享，
+                # 10 分钟内同类只 notify 一次，防每分钟 job 刷屏；消息含累计次数/
+                # 文件名，故显式固定 bucket 而非按消息前缀推断）。
+                qc = (
+                    await s.scalar(
+                        select(TransferQueue.quota_reject_count).where(
+                            TransferQueue.id == tq_id
+                        )
+                    )
+                ) or 0
+        if qc >= _QUOTA_REJECT_ALERT_THRESHOLD:
+            await _record_alert(
+                media_id,
+                f"容量不足已累计 {qc} 次，请人工检查夸克空间或配置: {file_name}",
+                category="capacity",
+                bucket="capacity",
+            )
         return
 
     # 4) 条件更新抢占（单 worker 也做，防 recover 并发；任一行数=0 → 冲突跳过）
@@ -461,17 +638,46 @@ async def _process_one_pending() -> None:
                     media_id,
                 )
                 return
+            # P3-6（council）：media.status → downloading（转存/下载进行中的影视
+            # 标记）。条件更新 WHERE status='tracking'：防覆盖用户手动 paused
+            # （paused 只允许从 tracking 设置）；rowcount=0 无妨——可能已被本链路
+            # 置过（多集连续转存）或用户已 paused，均非错误。
+            await s.execute(
+                update(Media)
+                .where(Media.id == media_id, Media.status == "tracking")
+                .values(status="downloading", updated_at=now)
+            )
 
     # 5) 转存链路：cloudSaver save → 等落盘可见 → alist 直链 → aria2 addUri（receiveCode 用 stoken，双语义 G4）
+    #    P2-10（council）：save 幂等——tq.save_task_id 已存在（上一轮 save 已受理此文件）
+    #    则跳过 cloudsaver.save，直接等落盘/取直链；save 成功即把 task_id 持久化，
+    #    后续 get_link / add_uri 失败重试时不再重复 save（防重复转存占空间/cloudSaver
+    #    端重复任务）。
+    save_task_id = None
     try:
-        await cloudsaver.save({
-            "fids": json.loads(fids or "[]"),
-            "fidTokens": json.loads(fid_tokens or "[]"),
-            # folderId 缺失时回退 QUARK_DEFAULT_FOLDER（阶段 3 实证：folderId 为空 → 转存不落盘 /quark）
-            "folderId": folder_id or settings.QUARK_DEFAULT_FOLDER or None,
-            "shareCode": share_code,
-            "receiveCode": stoken,  # G4：receiveCode 语义 = stoken（非提取码）
-        })
+        if not tq_save_task_id:
+            save_res = await cloudsaver.save({
+                "fids": json.loads(fids or "[]"),
+                "fidTokens": json.loads(fid_tokens or "[]"),
+                # folderId 缺失时回退 QUARK_DEFAULT_FOLDER（阶段 3 实证：folderId 为空 → 转存不落盘 /quark）
+                "folderId": folder_id or settings.QUARK_DEFAULT_FOLDER or None,
+                "shareCode": share_code,
+                "receiveCode": stoken,  # G4：receiveCode 语义 = stoken（非提取码）
+            })
+            save_task_id = _extract_save_task_id(save_res)
+            if save_task_id:
+                # save 一受理即落库（条件更新 WHERE status='transferring'，行数未中
+                # 则忽略），保证在 get_link / add_uri 之前 task_id 已可被重试读取
+                now_save = _now()
+                async with async_session() as s:
+                    async with s.begin():
+                        await s.execute(
+                            update(TransferQueue)
+                            .where(TransferQueue.id == tq_id, TransferQueue.status == "transferring")
+                            .values(save_task_id=save_task_id, updated_at=now_save)
+                        )
+        else:
+            save_task_id = tq_save_task_id
         link = await _get_link_wait_visible(file_name)
         gid = await aria2.client.add_uri(
             link,
@@ -480,7 +686,9 @@ async def _process_one_pending() -> None:
         )
     except Exception as exc:  # noqa: BLE001
         # 任一步失败（含转存成功但直链/aria2 提交失败）→ 重试路径；
-        # 清理可能已转存的夸克残留（避免残留占用中转空间）
+        # 清理可能已转存的夸克残留（避免残留占用中转空间）。
+        # P2-10：save_task_id 已存在（save 已受理）时清理行为保持（可保留），
+        # 但重试逻辑不再重复 save——下一轮跳过 save 直接等落盘/取直链。
         try:
             dir_part, names = _split_quark_path(es_quark_path or f"/quark/{file_name}")
             if names:
@@ -497,12 +705,13 @@ async def _process_one_pending() -> None:
         reason = f"转存失败: {exc}"
         async with async_session() as s:
             async with s.begin():
-                await s.execute(
+                r_es = await s.execute(
                     update(EpisodeState)
                     .where(
                         EpisodeState.media_id == media_id,
                         EpisodeState.episode == episode,
                         EpisodeState.state == "transferring",
+                        EpisodeState.retry_count == es_retry,  # P2-5 CAS：防读-改-写丢增量
                     )
                     .values(
                         state="failed" if terminal else "queued",
@@ -511,6 +720,15 @@ async def _process_one_pending() -> None:
                         updated_at=now,
                     )
                 )
+                if r_es.rowcount == 0:
+                    # P2-5：CAS 冲突（recovery 并发已回退/已计数）→ 本轮不计数、不
+                    # 转移状态、不触发续跑（避免与并发方争抢），交由对方/下一轮 job 推进
+                    await record_task_run(
+                        s, "transfer", "error",
+                        f"{episode} 转存失败但 retry_count CAS 冲突（并发回退?），本轮跳过不计数: {exc}",
+                        media_id,
+                    )
+                    return
                 await s.execute(
                     update(TransferQueue)
                     .where(TransferQueue.id == tq_id, TransferQueue.status == "transferring")
@@ -524,6 +742,10 @@ async def _process_one_pending() -> None:
                     s, "transfer", "error",
                     f"{episode} 转存失败（retry={new_retry}/{_RETRY_LIMIT}）: {exc}", media_id,
                 )
+                # P3-6（council）：转存失败转 failed 与 _fail_download 终态同语义——
+                # es 不再是进行中态时，media 若无其他进行中 es 则回 tracking。
+                if terminal:
+                    await _sync_media_status(media_id, s)
         if terminal:
             await notifier.notify(NotifyEvent(
                 event_type=EVENT_FLOW_ERROR,
@@ -555,7 +777,11 @@ async def _process_one_pending() -> None:
             await s.execute(
                 update(TransferQueue)
                 .where(TransferQueue.id == tq_id, TransferQueue.status == "transferring")
-                .values(status="downloading", updated_at=now)
+                .values(
+                    status="downloading",
+                    save_task_id=save_task_id if save_task_id else None,
+                    updated_at=now,
+                )
             )
             await s.execute(
                 update(EpisodeState)
@@ -625,3 +851,29 @@ async def trigger_transfer() -> None:
         await process_transfer_queue()
     except Exception:  # noqa: BLE001
         logger.exception("[transfer] trigger_transfer 事件触发异常")
+
+
+# ---------------------------------------------------------------------------
+# council 审查修复记录（P2-2 / P2-4 / P2-5 / P2-6 / P2-9 / P2-10 / P3-2 / P3-6）
+# ---------------------------------------------------------------------------
+# P2-2  ：flow_error 通知节流。_record_alert 按 (media_id, 告警类别) 在 10 分钟
+#         （_ALERT_COOLDOWN_SECONDS）内去重：task_run(error) 每次记录，notify 仅在
+#         「首次」或「消息变化（新根因）」时发出；每分钟兜底 job 重复触发同类告警
+#         不再刷屏。类别：GID 校验失败 "gid" / 容量失败 "capacity" / 其他取消息前 40 字符。
+# P2-4/P2-10：cloudsaver.save 幂等 + save_task_id 记录。TransferQueue 新增
+#         save_task_id 列（迁移 0002），save 一受理即落库；重试时若非空则跳过
+#         save，直接 _get_link_wait_visible 等落盘/取直链，防重复转存。
+# P2-5  ：retry_count 增量改 CAS 条件更新（WHERE 含 retry_count=读到的旧值），
+#         替代「读-改-写」；recovery 并发回退不丢增量，CAS 未命中本轮跳过不计数。
+# P2-6  ：GID 来源校验合并 active + waiting 队列（aria2.tell_waiting）；
+#         waiting 中陌生任务同样阻断转存并告警。
+# P2-9  ：paused 不再刷新 updated_at，由 recover_stale_tasks 按
+#         episode_state_timeout_hours 超时回退 queued + 清理残留。
+# P3-2  ：quota 拒绝累计告警阈值 _QUOTA_REJECT_ALERT_THRESHOLD=5。容量不足更新
+#         后累计次数 ≥5 → flow_error 告警（category/bucket 均 "capacity"，与
+#         "容量数据不可用"共享 P2-2 节流，10 分钟内同类只 notify 一次）。
+# P3-6  ：media.status=downloading 写入者。步骤 4 抢占成功 → tracking→downloading
+#         （WHERE status='tracking' 不覆盖 paused）；_complete_download done、
+#         _fail_download 终态 failed、转存失败终态 failed 后经 _sync_media_status
+#         检查该 media 无任何进行中 es（queued/transferring/downloading）→ 回 tracking。
+# ---------------------------------------------------------------------------

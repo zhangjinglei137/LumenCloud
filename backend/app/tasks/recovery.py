@@ -19,7 +19,7 @@ from sqlalchemy import or_, select, update
 
 from app.config import settings
 from app.database import async_session
-from app.models import DownloadTask, EpisodeState, TransferQueue
+from app.models import DownloadTask, EpisodeState, SystemConfig, TransferQueue
 from app.services import alist, aria2  # noqa: F401  服务层由另一 lane 创建，集成时统一验证
 from app.tasks import record_task_run
 
@@ -30,9 +30,35 @@ _PROGRESS_STATES = ("transferring", "downloading")
 # transfer_queue 中与进行中态对应的执行流状态
 _TQ_PROGRESS_STATES = ("transferring", "downloading")
 
+# system_config 中的超时阈值键（「配置双源统一」：system_config 优先，env 仅 fallback）
+EPISODE_TIMEOUT_CONFIG_KEY = "episode_state_timeout_hours"
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+async def _load_timeout_hours() -> float:
+    """读取超时阈值（system_config episode_state_timeout_hours，缺失/非法/异常 → env fallback）。
+
+    settings.py PATCH 白名单可写该键，运行时此处读 system_config 使配置生效。
+    """
+    default = settings.EPISODE_STATE_TIMEOUT_HOURS
+    try:
+        async with async_session() as session:
+            row = await session.get(SystemConfig, EPISODE_TIMEOUT_CONFIG_KEY)
+    except Exception as exc:
+        logger.warning("读取 %s 失败，用默认超时 %.1fh: %s",
+                       EPISODE_TIMEOUT_CONFIG_KEY, default, exc)
+        return default
+    if row is None or not row.value:
+        return default
+    try:
+        return float(row.value)
+    except (TypeError, ValueError):
+        logger.warning("%s 非数值 %r，用默认超时 %.1fh",
+                       EPISODE_TIMEOUT_CONFIG_KEY, row.value, default)
+        return default
 
 
 def _split_quark_path(path: str) -> tuple[str, list[str]]:
@@ -66,7 +92,8 @@ async def recover_stale_tasks() -> int:
       阶段③ 新事务批量回退状态 + 双表联动
     幂等可重复执行（回退后不再命中进行中态条件）。返回回退条数。
     """
-    cutoff = _now() - timedelta(hours=settings.EPISODE_STATE_TIMEOUT_HOURS)
+    timeout_hours = await _load_timeout_hours()
+    cutoff = _now() - timedelta(hours=timeout_hours)
 
     # 阶段①：只读快照查询（NULL updated_at 显式覆盖，P5）
     async with async_session() as session:
@@ -112,7 +139,7 @@ async def recover_stale_tasks() -> int:
     # 阶段③：新事务批量回退状态 + 双表联动（bulk update——rows 为上一 session 快照，
     # detached 对象赋属性不落库，必须用 execute(update) 按 id 批量更新）
     now = _now()
-    error = f"超时回退（{settings.EPISODE_STATE_TIMEOUT_HOURS}h 无进展）"
+    error = f"超时回退（{timeout_hours}h 无进展）"
     async with async_session() as session:
         async with session.begin():
             await session.execute(

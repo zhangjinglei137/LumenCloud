@@ -10,7 +10,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from app.config import settings
 from app.database import engine, init_db
@@ -84,7 +84,13 @@ if STATIC_DIR.exists():
 
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
+        # P3-5：/api 未知路径返回 404 JSON（REST 语义），其余未知路径保持 SPA fallback。
+        # 文件存在优先（防御性：/api 下若有静态产物仍正常直出）。
         file_path = STATIC_DIR / full_path
         if file_path.exists() and file_path.is_file():
             return FileResponse(file_path)
+        if full_path == "api" or full_path.startswith("api/"):
+            # 与 FastAPI 默认错误结构一致（{"detail": "Not Found"}），
+            # 前端可直接按 REST 处理，不再收到 200 的 HTML。
+            return JSONResponse(status_code=404, content={"detail": "Not Found"})
         return FileResponse(STATIC_DIR / "index.html")
