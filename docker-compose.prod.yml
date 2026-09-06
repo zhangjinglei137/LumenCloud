@@ -1,36 +1,56 @@
 # ============================================
-# LumenCloud 生产部署（Docker Hub 镜像，单容器）—— 阶段 4 生产化 + Phase 8 零 env
+# LumenCloud 生产部署（Docker Hub 镜像 + PostgreSQL）—— 阶段 4 + Phase 8 零 env
 # 用法：
 #   IMAGE_TAG=1.0.0 docker compose -f docker-compose.prod.yml up -d
 #
 # ★ 无需 .env.prod / 任何环境变量（Phase 8）：
 #   1. 服务凭据（alist/cloudSaver/aria2/NasTools/Emby/TMDB/PushPlus/夸克）→
 #      设置页「服务凭据配置」保存到数据库，保存即生效、无需重启；
-#   2. JWT 签名密钥 → 首启自动生成落盘 ./data/.jwt_secret（chmod 600），
-#      重启不失效；
-#   3. admin 初始密码 → 首启自动生成并打印在服务日志（docker logs），登录后
-#      在设置页修改（POST /api/auth/change-password）；
-#   4. 数据库 → 内置 SQLite（./data/lumencloud.db），默认即用；
-#   5. 管理员用户名 → 默认 admin（如需覆盖在下方 environment 设
-#      INIT_ADMIN_USERNAME，非必需）。
+#   2. JWT 密钥 → 首启自动生成落盘 ./data/.jwt_secret（chmod 600）；
+#   3. admin 初始密码 → 首启自动生成并打印在服务日志（docker logs），
+#      登录后在设置页修改（POST /api/auth/change-password）；
+#   4. 数据库 → 内置 PostgreSQL 16（db 服务）数据在 ./pgdata 卷；
+#      应用启动时 alembic 自动迁移建表，无需手动初始化。
 #
 # 生产化要点：
-#   1. 健康检查：容器内 /api/health 探测（python:3.12-slim 自带 python）
-#   2. 日志轮转：json-file driver 按 10m/5 文件轮转（supervisord 直出 stdout；
-#      admin 初始密码也在 docker logs 中）
+#   1. 健康检查：/api/health（应用）与 pg_isready（数据库）
+#   2. 日志轮转：json-file driver 按 10m/5 文件轮转（admin 初始密码在 docker logs）
 #   3. 资源限制：deploy.resources.limits（cpus 1.0 / memory 512M，按宿主规格调）
 #   4. 数据备份：宿主 crontab 参考
-#      python scripts/backup_db.py            # 每日备份，保留最近 14 份
+#      python scripts/backup_db.py            # Postgres 用 pg_dump 指引
 #      （建议: 0 3 * * * docker exec lumencloud python scripts/backup_db.py）
+#   5. 数据库凭据在下方两处配置并保持一致，生产请改强密码
 # ============================================
 services:
+  db:
+    image: postgres:16-alpine
+    container_name: lumencloud-db
+    environment:
+      POSTGRES_USER: lumen
+      POSTGRES_PASSWORD: lumencloud
+      POSTGRES_DB: lumencloud
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lumen -d lumencloud"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
   lumencloud:
     image: thntime/lumencloud:${IMAGE_TAG:-latest}
     container_name: lumencloud
     ports:
       - "${PORT:-8000}:8000"
+    environment:
+      # 连接 db 服务（compose 内服务名解析；密码与 db.environment 保持一致）
+      DATABASE_URL: postgresql+asyncpg://lumen:lumencloud@db:5432/lumencloud
+    depends_on:
+      db:
+        condition: service_healthy
     volumes:
-      # 全部持久化状态（lumencloud.db + WAL/SHM + .jwt_secret 密钥文件）
+      # JWT 密钥文件（.jwt_secret）+ 备份目录等
       - ./data:/app/data
     restart: unless-stopped
 
@@ -42,15 +62,14 @@ services:
       timeout: 5s
       retries: 3
 
-    # 日志轮转：单文件 10M、最多保留 5 个文件（docker logs 仍可查）
+    # 日志轮转：单文件 10M、最多保留 5 个文件（admin 初始密码在其中）
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "5"
 
-    # 资源限制（可选建议）：docker compose（非 swarm）亦会应用 deploy.resources；
-    # 按宿主 CPU/内存规格调整，不要照抄。
+    # 资源限制（可选建议）：按宿主 CPU/内存规格调整，不要照抄。
     deploy:
       resources:
         limits:

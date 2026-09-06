@@ -1,26 +1,47 @@
 # ============================================
-# LumenCloud 开发/本地环境 —— 零 env 开箱即用（Phase 8）
+# LumenCloud 开发/本地环境 —— 零 .env 开箱即用（Phase 8）+ PostgreSQL 数据库
 #
 # 用法：
 #   docker compose up -d --build
 #   docker compose logs -f    # 首次启动 admin 初始密码打印在这里
-#   docker compose down       # 停止（数据保留在 ./data 卷）
+#   docker compose down       # 停止（数据保留在 ./data 与 ./pgdata 卷）
 #
-# ★ 无需任何环境变量 / .env 文件：
+# ★ 无需 .env 文件：
 #   1. 服务凭据（alist/cloudSaver/aria2/NasTools/Emby/TMDB/PushPlus/夸克）→
 #      设置页「服务凭据配置」保存到数据库，保存即生效、无需重启；
 #   2. JWT 签名密钥 → 首启自动生成落盘 ./data/.jwt_secret（chmod 600）；
 #   3. admin 初始密码 → 首启自动生成并打印在服务日志，登录后在设置页修改；
-#   4. 数据库 → 内置 SQLite（./data/lumencloud.db），默认即用；
-#   5. 管理员用户名 → 默认 admin（如需覆盖可在下方 environment 设
+#   4. 管理员用户名 → 默认 admin（如需覆盖在下方 environment 设
 #      INIT_ADMIN_USERNAME，非必需）。
 #
+# ★ 数据库：内置 PostgreSQL 16（db 服务），数据在 ./pgdata 卷。
+#   数据库账号/密码/库名在此文件内配置（基础设施连接串，非业务凭据）；
+#   如需更换凭据，改 db.environment 与 lumencloud.environment.DATABASE_URL
+#   两处并保持一致（生产建议改强密码）。
+#
 # 说明：
-#   - 本地从 Dockerfile 构建（多阶段：前端 vite → python:3.12-slim）
-#   - SQLite 数据 + WAL/SHM + .jwt_secret 全部在 ./data:/app/data
-#   - 健康检查 /api/health；日志 json-file 轮转（10m/5 文件）
+#   - lumencloud 从 Dockerfile 构建（多阶段：前端 vite → python:3.12-slim）
+#   - 应用启动时 alembic 自动迁移建表（init_db），无需手动初始化
+#   - 健康检查：/api/health（lumencloud）与 pg_isready（db）
 # ============================================
 services:
+  db:
+    image: postgres:16-alpine
+    container_name: lumencloud-db
+    environment:
+      POSTGRES_USER: lumen
+      POSTGRES_PASSWORD: lumencloud
+      POSTGRES_DB: lumencloud
+    volumes:
+      # PostgreSQL 数据目录
+      - ./pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lumen -d lumencloud"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
   lumencloud:
     build:
       context: .
@@ -29,8 +50,14 @@ services:
     container_name: lumencloud
     ports:
       - "${PORT:-8000}:8000"
+    environment:
+      # 连接 db 服务（compose 内服务名解析；密码与 db.environment 保持一致）
+      DATABASE_URL: postgresql+asyncpg://lumen:lumencloud@db:5432/lumencloud
+    depends_on:
+      db:
+        condition: service_healthy
     volumes:
-      # 全部持久化状态（lumencloud.db + WAL/SHM + .jwt_secret 密钥文件）
+      # JWT 密钥文件（.jwt_secret）+ 备份目录等
       - ./data:/app/data
     restart: unless-stopped
 
