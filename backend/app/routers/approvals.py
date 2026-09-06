@@ -136,6 +136,9 @@ async def approve_approval(
         title=wr.title,
         tmdb_id=wr.tmdb_id,
         media_type=wr.media_type,
+        # Q2 配套：访客「想看」携带的 poster_path 在批准入库时透传（此前丢失，
+        # 批准后影视无海报；与 MediaCreate 的 poster_path 契约一致）
+        poster_path=wr.poster_path,
         status="tracking",
         in_emby=False,
     )
