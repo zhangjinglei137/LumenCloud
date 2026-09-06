@@ -16,18 +16,19 @@ aria2/cloudsaver/alist/capacity/notifier/nastools_sync/async_session），
 """
 import asyncio
 import types
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from app.database import Base
 import app.models  # noqa: F401  注册全部 ORM 模型
+import app.routers.queue as queue_mod
 import app.tasks.transfer as transfer_mod
-from app.models import DownloadTask, EpisodeState, Media, TransferQueue
+from app.models import DownloadTask, EpisodeState, Media, TransferQueue, User
 from app.services.alist import AlistUnavailable as RealAlistUnavailable
 from app.services.capacity import CapacityUnavailable
 from app.services.cloudsaver import CloudSaverUnavailable
@@ -567,3 +568,198 @@ def test_link_timeout_clears_save_task_id_for_retry(db, env, monkeypatch):
     assert len(env["cloudsaver"].save_calls) == 2
     assert tq.save_task_id is None
     assert es.retry_count == 2
+
+
+# ---------------------------------------------------------------------------
+# P0-1（council）：save_task_id 全链路清理 + save_attempt_at 超时兜底（P0-1）
+# ---------------------------------------------------------------------------
+
+def _force_failed_with_stale_save(db, tq_id, es_id):
+    """把 pending 种子直接置为 failed + save_task_id 残留（模拟历史残留现场）。"""
+
+    async def _set():
+        async with db() as s:
+            await s.execute(
+                update(TransferQueue).where(TransferQueue.id == tq_id).values(
+                    status="failed",
+                    save_task_id="stale-t1",
+                    save_attempt_at=_now() - timedelta(minutes=30),
+                    error="转存失败: 分享已失效",
+                )
+            )
+            await s.execute(
+                update(EpisodeState).where(EpisodeState.id == es_id).values(
+                    state="failed", retry_count=3, error="转存失败: 分享已失效",
+                )
+            )
+            await s.commit()
+
+    run(_set())
+
+
+def test_manual_retry_clears_save_task_id_then_resaves(db, env, monkeypatch):
+    """改动 1a：人工 retry 回退 failed→pending 时同事务清空 save_task_id。
+
+    P0-1 关键断言：failed 任务残留的 save_task_id 在 retry 后为 NULL——下一轮
+    重新走完整转存链（重新 save），而非跳过 save 盲等。
+    """
+    patch_db(monkeypatch, db)
+    mid, es_id, tq_id = run(seed_pending(db))
+    _force_failed_with_stale_save(db, tq_id, es_id)
+
+    # 阻断 retry 成功后内部的 trigger_transfer（延迟导入会取到 patch 后的引用）
+    monkeypatch.setattr(transfer_mod, "trigger_transfer", AsyncMock(return_value=None))
+
+    async def do_retry():
+        async with db() as s:
+            return await queue_mod.retry_task(task_id=tq_id, admin=User(), session=s)
+
+    result = run(do_retry())
+    assert result == {"ok": True}
+
+    tq = run(read_row(db, TransferQueue, tq_id))
+    es = run(get_es_by_media(db, mid))
+    assert tq.status == "pending"
+    assert tq.save_task_id is None      # 关键：人工 retry 清空幂等标记
+    assert tq.save_attempt_at is None   # 受理时间一并清空（同生同灭）
+    assert tq.quota_reject_count == 0
+    assert es.state == "queued"
+    assert es.retry_count == 0
+
+    # 下一轮消费：重新走完整转存链 → 重新 save（而非跳过 save 盲等）
+    run(transfer_mod.process_transfer_queue())
+    assert len(env["cloudsaver"].save_calls) == 1
+    tq = run(read_row(db, TransferQueue, tq_id))
+    assert tq.status == "downloading"
+    assert tq.save_task_id == "t1"
+
+
+def test_stale_save_attempt_forces_resave(db, env, monkeypatch):
+    """改动 2g：save_task_id 存在但 save_attempt_at 超 10 分钟 → 强制重新 save。
+
+    P0-1 兜底断言：即使任一清空路径漏了，超时也会强制重 save（不盲等），
+    且 save_task_id / save_attempt_at 更新为新的受理结果。
+    """
+    patch_db(monkeypatch, db)
+    mid, es_id, tq_id = run(seed_pending(db))
+
+    async def set_stale():
+        async with db() as s:
+            await s.execute(
+                update(TransferQueue).where(TransferQueue.id == tq_id).values(
+                    save_task_id="stale-t1",
+                    save_attempt_at=_now() - timedelta(minutes=11),  # 超 600s
+                )
+            )
+            await s.commit()
+
+    run(set_stale())
+
+    run(transfer_mod.process_transfer_queue())
+
+    # 强制重新 save（不盲等），受理标记更新为新一轮结果
+    assert len(env["cloudsaver"].save_calls) == 1
+    tq = run(read_row(db, TransferQueue, tq_id))
+    assert tq.save_task_id == "t1"
+    assert tq.save_attempt_at is not None
+    assert (tq.save_attempt_at - _now()).total_seconds() > -60  # 刚更新（容差）
+    assert tq.status == "downloading"
+    assert run(get_es_by_media(db, mid)).state == "downloading"
+
+
+def test_fresh_save_attempt_keeps_idempotent_skip(db, env, monkeypatch):
+    """改动 2g 对照：save_task_id 存在且受理未超时 → 保持幂等跳过 save（不重复转存）。"""
+    patch_db(monkeypatch, db)
+    mid, es_id, tq_id = run(seed_pending(db))
+
+    async def set_fresh():
+        async with db() as s:
+            await s.execute(
+                update(TransferQueue).where(TransferQueue.id == tq_id).values(
+                    save_task_id="t1",
+                    save_attempt_at=_now(),
+                )
+            )
+            await s.commit()
+
+    run(set_fresh())
+
+    run(transfer_mod.process_transfer_queue())
+
+    assert len(env["cloudsaver"].save_calls) == 0  # 幂等：跳过 save 直接等落盘
+    tq = run(read_row(db, TransferQueue, tq_id))
+    assert tq.status == "downloading"
+    assert tq.save_task_id == "t1"
+
+
+def test_complete_double_table_lost_rolls_back_pending(db, env, monkeypatch):
+    """改动 3i：_complete_download 双表失联（tq 已被并发回退 pending）→ 显式回退。
+
+    P0-2 关键断言：tq 回退/保持 pending 且 save_task_id 被清空——下一轮重新走
+    完整转存链（重新 save），而非「只置 dl complete 就静默丢弃」。
+    """
+    patch_db(monkeypatch, db)
+    mid, es_id, tq_id, dl_id = run(seed_downloading(db))
+    # 模拟双表失联：tq 已被 recovery/人工回退为 pending，且 save_task_id 残留
+    async def desync():
+        async with db() as s:
+            await s.execute(
+                update(TransferQueue).where(TransferQueue.id == tq_id).values(
+                    status="pending", save_task_id="stale-t1",
+                )
+            )
+            await s.commit()
+
+    run(desync())
+    env["aria2"].statuses["gid1"] = "complete"
+
+    # 只跑阶段 A，便于断言回退中间态（阶段 B 会立即把回退任务重新转存）
+    run(transfer_mod._poll_downloading_tasks())
+
+    tq = run(read_row(db, TransferQueue, tq_id))
+    es = run(get_es_by_media(db, mid))
+    dl = run(read_row(db, DownloadTask, dl_id))
+    assert tq.status == "pending"       # 保持可重试
+    assert tq.save_task_id is None      # 关键：失联回退清空幂等标记
+    assert es.state == "queued"         # downloading → queued
+    assert dl.status == "complete"      # 中介终态（下载确已完成）
+    # 双表失联 → 不发完成通知、不触发 nasTools 同步
+    assert not [e for e in env["notifier"].events if e.event_type == "download_complete"]
+    assert env["spawn"] == []
+
+    # 下一轮消费：阶段 B 取到回退的 pending → 重新走完整转存链（重新 save）
+    run(transfer_mod.process_transfer_queue())
+    assert len(env["cloudsaver"].save_calls) == 1
+
+
+def test_complete_marks_done_before_removing_quark(db, env, monkeypatch):
+    """改动 3h：_complete_download 先双表 done（success task_run）再删夸克。
+
+    P0-2 顺序断言：记录顺序为 record:success → remove（先 done 后删夸克），
+    防止「先删后 done 校验失败 → 文件已删但状态未推进 → 重试时无文件可取」。
+    """
+    patch_db(monkeypatch, db)
+    mid, es_id, tq_id, dl_id = run(seed_downloading(db))
+    env["aria2"].statuses["gid1"] = "complete"
+
+    order: list = []
+    orig_remove = env["alist"].remove
+
+    async def spy_remove(names, dir):
+        order.append("remove")
+        return await orig_remove(names, dir)
+
+    env["alist"].remove = spy_remove
+    orig_record = transfer_mod.record_task_run
+
+    async def spy_record(s, task_type, status, message, media_id=None):
+        order.append(f"record:{status}")
+        return await orig_record(s, task_type, status, message, media_id)
+
+    monkeypatch.setattr(transfer_mod, "record_task_run", spy_record)
+
+    run(transfer_mod._poll_downloading_tasks())
+
+    # 双表 done 的 success task_run 必须先于 alist.remove（先 done 后删夸克）
+    assert order == ["record:success", "remove"]
+    assert (["ep.mkv"], "/quark/") in env["alist"].remove_calls

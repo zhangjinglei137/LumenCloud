@@ -87,10 +87,11 @@ async def recover_stale_tasks() -> int:
     """超时未完成 transferring/downloading → 回退 queued + retry_count++。
 
     两阶段法（避免事务内网络 IO 长事务，council P2）：
-      阶段① 事务内只查超时记录（快照），显式覆盖 NULL updated_at（council P5）
+      阶段① 事务内只查超时记录（快照，含 retry_count 快照），显式覆盖 NULL updated_at（council P5）
       阶段② 事务外逐条清理夸克残留（网络 IO，失败仅记录 task_run 不阻塞）
-      阶段③ 新事务批量回退状态 + 双表联动
-    幂等可重复执行（回退后不再命中进行中态条件）。返回回退条数。
+      阶段③ 新事务逐行 CAS 回退状态 + 双表联动（WHERE 含 retry_count=阶段①快照，
+             P0-3：与 transfer 的 P2-5 CAS 同一并发协议，冲突行跳过不覆盖）
+    幂等可重复执行（回退后不再命中进行中态条件）。返回实际回退条数（CAS 冲突行不计）。
     """
     timeout_hours = await _load_timeout_hours()
     cutoff = _now() - timedelta(hours=timeout_hours)
@@ -112,6 +113,10 @@ async def recover_stale_tasks() -> int:
             .scalars()
             .all()
         )
+        # P0-3（council）：记录每行当时的 retry_count 快照——阶段③ CAS 条件更新的
+        # 并发校验基准。ORM 对象 detached 后标量属性本就可读，但显式建快照表
+        # 让「回退基于哪个版本的 retry_count」一目了然，且不依赖对象生命周期。
+        retry_snapshots = {r.id: r.retry_count for r in rows}
 
     if not rows:
         logger.info("[recover] 无超时任务")
@@ -136,26 +141,46 @@ async def recover_stale_tasks() -> int:
             logger.warning("[recover] 清理夸克残留失败 %s: %s", row.quark_path, exc)
             cleanup_failures.append(f"{row.episode}: {exc}")
 
-    # 阶段③：新事务批量回退状态 + 双表联动（bulk update——rows 为上一 session 快照，
-    # detached 对象赋属性不落库，必须用 execute(update) 按 id 批量更新）
+    # 阶段③：新事务逐行 CAS 回退状态 + 双表联动（rows 为上一 session 快照，
+    # detached 对象赋属性不落库，必须用 execute(update) 按 id 更新）。
+    # P0-3（council）：retry_count 增量由「无条件批量自增」改为 CAS 条件更新——
+    # WHERE 含阶段①快照的 retry_count，与 transfer.py 失败回退（P2-5 CAS）同一套
+    # 并发协议：transfer 并发已推进 retry_count 的行 rowcount=0 → 跳过不覆盖
+    # （防 recovery 的无条件自增覆盖 transfer 的 CAS 写入，导致增量丢失/失败被吞）。
     now = _now()
     error = f"超时回退（{timeout_hours}h 无进展）"
+    reverted = 0
+    cas_conflicts = 0
     async with async_session() as session:
         async with session.begin():
-            await session.execute(
-                update(EpisodeState)
-                .where(
-                    EpisodeState.state.in_(_PROGRESS_STATES),
-                    EpisodeState.id.in_([r.id for r in rows]),
-                )
-                .values(
-                    state="queued",
-                    retry_count=EpisodeState.retry_count + 1,
-                    error=error,
-                    updated_at=now,
-                )
-            )
             for row in rows:
+                r_es = await session.execute(
+                    update(EpisodeState)
+                    .where(
+                        EpisodeState.id == row.id,
+                        EpisodeState.state.in_(_PROGRESS_STATES),
+                        # CAS：仅当 retry_count 仍等于阶段①快照值时才自增（DB 原子），
+                        # 即未被 transfer 的失败回退并发推进
+                        EpisodeState.retry_count == retry_snapshots[row.id],
+                    )
+                    .values(
+                        state="queued",
+                        retry_count=EpisodeState.retry_count + 1,
+                        error=error,
+                        updated_at=now,
+                    )
+                )
+                if r_es.rowcount == 0:
+                    # 并发已被 transfer 推进（retry_count 已变 / 状态已转移）→ 跳过
+                    # 不覆盖、不计数，交由并发方/下一轮 job 推进；与 transfer 的
+                    # P2-5 CAS 冲突处理对称
+                    cas_conflicts += 1
+                    logger.info(
+                        "[recover] episode_state %s 回退 CAS 冲突"
+                        "（retry_count 已被并发推进），跳过回退", row.id,
+                    )
+                    continue
+                reverted += 1
                 await session.execute(
                     update(TransferQueue)
                     .where(
@@ -163,7 +188,15 @@ async def recover_stale_tasks() -> int:
                         TransferQueue.episode == row.episode,
                         TransferQueue.status.in_(_TQ_PROGRESS_STATES),
                     )
-                    .values(status="pending", error=error, updated_at=now)
+                    .values(
+                        status="pending",
+                        error=error,
+                        updated_at=now,
+                        # P0-1（transfer 失败路径同款语义）：超时回退等同失败重试，
+                        # 清空 save_task_id——防「已受理未落盘」被当完成导致盲等死循环，
+                        # 下一轮强制重新 save
+                        save_task_id=None,
+                    )
                 )
                 # P0-3a（council）：同步终结进行中的 download_task（防阶段 A 轮询
                 # 重复计数/虚假完成）；DownloadTask 无 updated_at/error 列，仅置终态
@@ -177,16 +210,18 @@ async def recover_stale_tasks() -> int:
                     .values(status="failed")
                 )
 
-            message = f"恢复 {len(rows)} 条超时任务（回退 queued，清理残留 {cleaned}）"
+            message = f"恢复 {reverted} 条超时任务（回退 queued，清理残留 {cleaned}）"
+            if cas_conflicts:
+                message += f"；CAS 冲突跳过 {cas_conflicts} 条（retry_count 已被并发推进）"
             if cleanup_failures:
                 message += f"；清理失败 {len(cleanup_failures)} 条: {'; '.join(cleanup_failures)}"
             await record_task_run(session, "recover", "success", message, None)
 
     logger.info(
         "[recover] 恢复完成：回退 %d 条超时任务（清理残留 %d 条）",
-        len(rows), cleaned,
+        reverted, cleaned,
     )
-    return len(rows)
+    return reverted
 
 
 async def recover_on_boot() -> None:

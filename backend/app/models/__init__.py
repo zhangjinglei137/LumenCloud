@@ -130,6 +130,12 @@ class TransferQueue(Base):
     # 不再重复调用 cloudsaver.save（防重复转存占空间 / cloudSaver 端重复任务），
     # 只继续等落盘/取直链。迁移见 alembic/versions/0002_save_task_id.py。
     save_task_id = mapped_column(Text)
+    # P0-1（council）：最近一次 cloudSaver save 的受理时间（naive UTC）。
+    # 仅用于重试时判断 save 受理是否超时（tasks/transfer.py 的
+    # _SAVE_ATTEMPT_MAX_SECONDS 兜底）——save_task_id 存在但受理时间过久 → 强制
+    # 重新 save，任何清空路径漏清也会在超时后自动恢复，杜绝盲等死循环。
+    # 迁移见 alembic/versions/0005_save_attempt_at.py。
+    save_attempt_at = mapped_column(DateTime)
     enqueued_at = mapped_column(DateTime, server_default=text("CURRENT_TIMESTAMP"))
     updated_at = mapped_column(DateTime, onupdate=func.current_timestamp())
 

@@ -109,6 +109,11 @@ async def retry_task(
             status="pending",
             quota_reject_count=0,
             error=None,
+            # P0-1（council）：人工重试 = 完整重新走转存链——与状态回退同事务清空
+            # save_task_id，防「已受理未落盘」的幂等标记残留导致下一轮跳过 save
+            # 盲等死循环；save_attempt_at 与其同生同灭一并清空。
+            save_task_id=None,
+            save_attempt_at=None,
             updated_at=now,
         )
     )

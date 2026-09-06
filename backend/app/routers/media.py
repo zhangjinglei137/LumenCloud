@@ -350,14 +350,51 @@ async def delete_media(
     admin: User = Depends(get_current_admin),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """admin 删除影视：手动先删子表（episode_state/transfer_queue/download_task）再删 media。"""
+    """admin 删除影视：先做进行中任务前置检查（并发安全），再按外键依赖顺序删子表。
+
+    删除顺序：episode_state → download_task → transfer_queue → media。
+    download_task.transfer_id 外键指向 transfer_queue.id，必须先删 download_task
+    再删 transfer_queue，否则 SQLite(foreign_keys=ON)/PostgreSQL 会报外键冲突。
+    """
     media = await session.get(Media, media_id)
     if media is None:
         raise HTTPException(status_code=404, detail="影视不存在")
 
+    # 进行中任务前置检查（P0-4）：避免与 transfer/scan worker 并发删除竞态——
+    # 存在进行中（pending/queued/transferring/downloading）任务时拒绝删除。
+    # 检查范围：transfer_queue（pending/transferring/downloading）、
+    # episode_state（queued/transferring/downloading）、download_task（downloading）。
+    if (
+        await session.scalar(
+            select(TransferQueue.id)
+            .where(
+                TransferQueue.media_id == media_id,
+                TransferQueue.status.in_(("pending", "transferring", "downloading")),
+            )
+            .limit(1)
+        )
+        or await session.scalar(
+            select(EpisodeState.id)
+            .where(
+                EpisodeState.media_id == media_id,
+                EpisodeState.state.in_(("queued", "transferring", "downloading")),
+            )
+            .limit(1)
+        )
+        or await session.scalar(
+            select(DownloadTask.id)
+            .where(
+                DownloadTask.media_id == media_id,
+                DownloadTask.status == "downloading",
+            )
+            .limit(1)
+        )
+    ):
+        raise HTTPException(status_code=409, detail="存在进行中任务，无法删除")
+
     await session.execute(delete(EpisodeState).where(EpisodeState.media_id == media_id))
-    await session.execute(delete(TransferQueue).where(TransferQueue.media_id == media_id))
     await session.execute(delete(DownloadTask).where(DownloadTask.media_id == media_id))
+    await session.execute(delete(TransferQueue).where(TransferQueue.media_id == media_id))
     await session.delete(media)
     await session.commit()
     return {"ok": True}

@@ -75,15 +75,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# API 路由（由另一 lane 负责：app/routers/api.py → api_router）。
-# 文件尚未就绪时跳过注册，集成验证时统一接入。
-try:
-    from app.routers import api as api_router
+# API 路由：app/routers/api.py → api_router 统一注册。
+# 不再捕获 ImportError（骨架期遗留）：routers 已完整实现，import/注册失败必须
+# 在启动期 fail-fast 直接抛出，避免服务照常启动但 /api/* 全部 404（fail-open）。
+from app.routers import api as api_router
 
-    app.include_router(api_router.api_router)
-except ImportError:
-    # TODO(集成): routers 由 API lane 创建，集成验证时接入
-    pass
+app.include_router(api_router.api_router)
 
 
 @app.get("/api/health")

@@ -394,3 +394,75 @@ def test_scan_trigger_transfer_fire_and_forget(monkeypatch):
     assert len(created) == 1
     assert trigger.await_count == 1
     assert len(scan_mod._background) == 0  # done 回调已移除引用
+
+
+# ---------------------------------------------------------------------------
+# P0-3：recovery 回退 CAS 化——不覆盖 transfer 并发已推进的 retry_count
+# ---------------------------------------------------------------------------
+
+def test_recover_cas_conflict_skips_override(db, monkeypatch):
+    """阶段②网络 IO 期间 transfer 并发已推进 retry_count → 阶段③ CAS 冲突：
+    recovery 不覆盖（es 保持 downloading / 新 retry_count 被保留 / 双表不动），返回 0。"""
+    from app.tasks import recovery as recovery_mod
+
+    monkeypatch.setattr(recovery_mod, "async_session", db)
+    mid, es_id, tq_id, dl_id = run(seed_downloading(
+        db, gid="gid-x", updated_at=_now() - timedelta(hours=3)))  # 超时（timeout=2h）
+    monkeypatch.setattr(recovery_mod, "aria2",
+                        types.SimpleNamespace(client=types.SimpleNamespace(remove=AsyncMock(return_value=None))))
+
+    # 模拟 transfer 的 P2-5 CAS 写入抢在 recovery 阶段③之前推进 retry_count（0→1）
+    async def fake_cleanup(path):
+        async with db() as s:
+            await s.execute(
+                update(EpisodeState).where(EpisodeState.id == es_id)
+                .values(retry_count=1, updated_at=_now())
+            )
+            await s.commit()
+    monkeypatch.setattr(recovery_mod, "_cleanup_quark", fake_cleanup)
+
+    count = run(recovery_mod.recover_stale_tasks())
+
+    assert count == 0  # CAS 全部冲突 → 无实际回退
+    es = run(read_row(db, EpisodeState, es_id))
+    assert es.state == "downloading"   # 未被 recovery 覆盖回 queued
+    assert es.retry_count == 1         # 并发增量被保留，recovery 不再 +1（防增量丢失）
+    assert run(read_row(db, TransferQueue, tq_id)).status == "downloading"  # 双表联动未执行
+    assert run(read_row(db, DownloadTask, dl_id)).status == "downloading"   # dl 未终结
+
+
+def test_recover_partial_cas_conflict(db, monkeypatch):
+    """两行一行冲突一行正常：冲突行跳过不覆盖，正常行仍完整回退（count=1）。"""
+    from app.tasks import recovery as recovery_mod
+
+    monkeypatch.setattr(recovery_mod, "async_session", db)
+    ts = _now() - timedelta(hours=3)
+    mid1, es1_id, tq1_id, dl1_id = run(seed_downloading(
+        db, episode="S01E01", file_name="a.mkv", gid="g1", updated_at=ts))
+    mid2, es2_id, tq2_id, dl2_id = run(seed_downloading(
+        db, episode="S01E02", file_name="b.mkv", gid="g2", updated_at=ts))
+    monkeypatch.setattr(recovery_mod, "aria2",
+                        types.SimpleNamespace(client=types.SimpleNamespace(remove=AsyncMock(return_value=None))))
+
+    # 仅对 S01E01（quark_path=/quark/a.mkv）模拟 transfer 并发推进 retry_count
+    async def fake_cleanup(path):
+        if path == "/quark/a.mkv":
+            async with db() as s:
+                await s.execute(
+                    update(EpisodeState).where(EpisodeState.id == es1_id)
+                    .values(retry_count=1, updated_at=_now())
+                )
+                await s.commit()
+    monkeypatch.setattr(recovery_mod, "_cleanup_quark", fake_cleanup)
+
+    count = run(recovery_mod.recover_stale_tasks())
+
+    assert count == 1  # 仅 S01E02 回退
+    es1 = run(read_row(db, EpisodeState, es1_id))
+    es2 = run(read_row(db, EpisodeState, es2_id))
+    assert es1.state == "downloading" and es1.retry_count == 1  # 冲突行不被覆盖
+    assert es2.state == "queued" and es2.retry_count == 1       # 正常行 0→1 回退
+    assert run(read_row(db, TransferQueue, tq1_id)).status == "downloading"
+    assert run(read_row(db, TransferQueue, tq2_id)).status == "pending"
+    assert run(read_row(db, DownloadTask, dl1_id)).status == "downloading"
+    assert run(read_row(db, DownloadTask, dl2_id)).status == "failed"

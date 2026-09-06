@@ -58,6 +58,10 @@ _RETRY_LIMIT = 3
 # 180s 上限偏紧（个别超时）；放宽至 300s 作兜底。超时抛 AlistUnavailable 走外层
 # 重试路径（retry_count++，≥3 → failed），故上限放宽不造成「无限等」，只是多给一轮。
 _LINK_WAIT_TIMEOUT = 300.0
+# P0-1（council 兜底）：save 受理时间超时上限（秒）。save_task_id 存在但
+# save_attempt_at 距今超过该值（或该列为空——旧数据/某清空路径漏写）→ 视为 stale，
+# 强制重新 save。即使任何清空路径漏了，超 10 分钟也会强制重 save，杜绝盲等死循环。
+_SAVE_ATTEMPT_MAX_SECONDS = 600
 # P3-2（council）：quota 拒绝累计告警阈值——容量不足连续累计 ≥5 次触发
 # flow_error 告警（复用 P2-2 的 capacity 类别节流，防每分钟 job 刷屏）。
 # quota 拒绝只走 quota_reject_count，绝不消耗 retry_count（§4.5）。
@@ -238,23 +242,19 @@ async def _poll_downloading_tasks() -> None:
 
 
 async def _complete_download(dt_id, media_id, tq_id, episode, file_name, quark_path) -> None:
-    """下载完成释放链：删夸克 → 双表 done → 通知 → 触发 nasTools 同步（不阻塞）。"""
-    # a) 删除夸克文件（失败仅告警，不阻断 done）
-    try:
-        if quark_path:
-            dir_part, names = _split_quark_path(quark_path)
-            if names:
-                await alist.remove(names, dir_part)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[transfer] 下载完成清理夸克失败（不阻断）%s: %s", quark_path, exc)
+    """下载完成释放链：双表 done → 删夸克 → 通知 → 触发 nasTools 同步（不阻塞）。
 
-    # b) 双表联动 done + 中介 download_task complete（条件更新，幂等防重复处理）
-    #    P0-3b（council）：校验 rowcount——若 tq/es 已非 downloading（被 recovery 超时
-    #    回退 / 人工 retry，双表失联），则置 download_task complete 但**不发完成通知、
-    #    不触发 nastools_sync**，防「重复下载链的虚假完成通知」。
+    P0-2（council）顺序修复：**先双表 done、后删夸克文件**——若先删后双表
+    done 校验失败（双表失联/重复处理），文件已删但状态未推进，下一轮重试时
+    落盘文件已不存在（无法 get_link），等于彻底毁掉重试机会；先 done 则删夸克
+    失败仅告警不阻断，已落 done 的任务无需再依赖夸克中转文件。
+    """
     now = _now()
     async with async_session() as s:
         async with s.begin():
+            # a) 双表联动 done + 中介 download_task complete（条件更新，幂等防重复处理）
+            #    P0-3b（council）：校验 rowcount——若 tq/es 已非 downloading（被 recovery
+            #    超时回退 / 人工 retry，双表失联），走下方回退分支。
             r_dl = await s.execute(
                 update(DownloadTask)
                 .where(DownloadTask.id == dt_id, DownloadTask.status == "downloading")
@@ -275,16 +275,51 @@ async def _complete_download(dt_id, media_id, tq_id, episode, file_name, quark_p
                 .values(state="done", updated_at=now)
             )
             if r_tq.rowcount == 0 or r_es.rowcount == 0 or r_dl.rowcount == 0:
-                # 双表失联 / 重复处理：仅落中介终态，不广播完成事件
+                # P0-2（council）双表失联 / 重复处理：不再「仅置 dl complete 就返回」——
+                # 显式回退 tq→pending、es→queued 并清空 save_task_id，让下一轮重新
+                # 走完整转存链（重新 save → 转存 → 下载）。download_task 由上方条件
+                # 更新尽力置 complete（未命中说明已被 _fail_download 置 failed / 已
+                # complete，尊重并发方现状，不再覆盖）；**不广播完成事件**。
+                # 回退按 rowcount 精确区分（避免覆盖并发方/历史状态）：
+                #   rowcount==1 → 本事务刚把它置 done（半边失联竞态：对方已回退而
+                #                  本方还是 downloading）→ 从 done 回退 pending/queued，
+                #                  保持双表一致；
+                #   rowcount==0 → 未被本事务 done（已被并发方回退为 pending/queued，
+                #                  或本就 done 的重复轮询）→ 保持现状不覆盖。
+                await s.execute(
+                    update(TransferQueue)
+                    .where(TransferQueue.id == tq_id)
+                    .values(
+                        save_task_id=None,  # 无条件清空，防幂等标记残留致盲等
+                        save_attempt_at=None,
+                    )
+                )
+                if r_tq.rowcount == 1:
+                    await s.execute(
+                        update(TransferQueue)
+                        .where(TransferQueue.id == tq_id, TransferQueue.status == "done")
+                        .values(status="pending", error="双表失联已回退待重试", updated_at=now)
+                    )
+                if r_es.rowcount == 1:
+                    await s.execute(
+                        update(EpisodeState)
+                        .where(
+                            EpisodeState.media_id == media_id,
+                            EpisodeState.episode == episode,
+                            EpisodeState.state == "done",
+                        )
+                        .values(state="queued", error="双表失联已回退待重试", updated_at=now)
+                    )
                 await record_task_run(
                     s, "transfer", "error",
                     f"下载完成但双表失联（tq={r_tq.rowcount}/es={r_es.rowcount}/"
-                    f"dl={r_dl.rowcount}），已置 download_task complete，不发送完成通知",
+                    f"dl={r_dl.rowcount}），已回退 tq→pending/es→queued 并清空 "
+                    f"save_task_id，待下一轮重新转存",
                     media_id,
                 )
                 logger.warning(
-                    "[transfer] 下载完成但 tq/es 已非 downloading（可能被 recovery 回退/人工 retry），"
-                    "跳过完成通知与 nasTools 同步（media=%s %s）", media_id, episode,
+                    "[transfer] 下载完成但 tq/es 已非 downloading（可能被 recovery 回退/"
+                    "人工 retry），已回退待重试（media=%s %s）", media_id, episode,
                 )
                 return
             await record_task_run(
@@ -293,6 +328,16 @@ async def _complete_download(dt_id, media_id, tq_id, episode, file_name, quark_p
             # P3-6（council）：es 转 done 后检查该 media 是否还有其他进行中 es，
             # 无则回 tracking（条件更新不覆盖 paused）。与 tq/es/dl 同一事务。
             await _sync_media_status(media_id, s)
+
+    # b) 双表 done 已成功 → 删夸克文件（网络 IO，事务外；失败仅告警，不阻断 done）
+    #    P0-2：置于双表 done 之后——删失败不影响已落 done 的状态推进。
+    try:
+        if quark_path:
+            dir_part, names = _split_quark_path(quark_path)
+            if names:
+                await alist.remove(names, dir_part)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[transfer] 下载完成清理夸克失败（不阻断）%s: %s", quark_path, exc)
 
     # c) 通知（§7 download_complete，全体）
     await notifier.notify(NotifyEvent(
@@ -377,6 +422,12 @@ async def _fail_download(dt_id, media_id, tq_id, episode, reason) -> None:
                 .values(
                     status="failed" if terminal else "pending",
                     error=err,
+                    # P0-1（council）：下载确定性失败同样清空 save_task_id——非终态
+                    # 回退 pending 后下一轮会立即重新走转存链，残留的幂等标记会让
+                    # 下一轮跳过 save 盲等（与转存失败路径同一清理语义）；
+                    # save_attempt_at 与其同生同灭一并清空。
+                    save_task_id=None,
+                    save_attempt_at=None,
                     updated_at=now,
                 )
             )
@@ -551,6 +602,9 @@ async def _process_one_pending() -> None:
         fids, fid_tokens, folder_id = tq.fids, tq.fid_tokens, tq.folder_id
         # P2-10（council）：快照 cloudSaver save 幂等标记（步骤 5 据此跳过重复 save）
         tq_save_task_id = tq.save_task_id
+        # P0-1（council）：快照 save 受理时间（步骤 5 超时兜底判断用——
+        # save_task_id 存在但受理时间过久 → 强制重新 save）
+        tq_save_attempt_at = tq.save_attempt_at
         es = (
             await s.execute(
                 select(EpisodeState).where(
@@ -677,6 +731,28 @@ async def _process_one_pending() -> None:
     #    save_task_id，下一轮强制重新 save（防「已受理未落盘」被当完成导致盲等死循环）。
     save_task_id = None
     try:
+        # P0-1（council 兜底）：save_task_id 存在但 save_attempt_at 距今超过
+        # _SAVE_ATTEMPT_MAX_SECONDS（或该列为空——旧数据/某清空路径漏写）→ 视为
+        # stale，先清 save_task_id 再走 save 分支，强制重新 save。任何清空路径漏清
+        # 时，超 10 分钟也会自动恢复，杜绝「已受理未落盘」的盲等死循环。
+        if tq_save_task_id and (
+            tq_save_attempt_at is None
+            or (_now() - tq_save_attempt_at).total_seconds() > _SAVE_ATTEMPT_MAX_SECONDS
+        ):
+            now_stale = _now()
+            async with async_session() as s:
+                async with s.begin():
+                    await s.execute(
+                        update(TransferQueue)
+                        .where(TransferQueue.id == tq_id, TransferQueue.status == "transferring")
+                        .values(save_task_id=None, save_attempt_at=None, updated_at=now_stale)
+                    )
+            tq_save_task_id = None
+            tq_save_attempt_at = None
+            logger.warning(
+                "[transfer] save_task_id 受理已超 %ds 或时间缺失，强制重新 save 防盲等",
+                _SAVE_ATTEMPT_MAX_SECONDS,
+            )
         if not tq_save_task_id:
             # P0-1（线上反馈「转存多次失败」）：save 诊断日志——记录 file_name /
             # folderId / shareCode 关键参数，便于核对 folderId 是否与 alist Quark
@@ -703,14 +779,19 @@ async def _process_one_pending() -> None:
             save_task_id = _extract_save_task_id(save_res)
             if save_task_id:
                 # save 一受理即落库（条件更新 WHERE status='transferring'，行数未中
-                # 则忽略），保证在 get_link / add_uri 之前 task_id 已可被重试读取
+                # 则忽略），保证在 get_link / add_uri 之前 task_id 已可被重试读取。
+                # P0-1：save_attempt_at 同时落库（=受理时间），供步骤 5 超时兜底判断。
                 now_save = _now()
                 async with async_session() as s:
                     async with s.begin():
                         await s.execute(
                             update(TransferQueue)
                             .where(TransferQueue.id == tq_id, TransferQueue.status == "transferring")
-                            .values(save_task_id=save_task_id, updated_at=now_save)
+                            .values(
+                                save_task_id=save_task_id,
+                                save_attempt_at=now_save,
+                                updated_at=now_save,
+                            )
                         )
         else:
             save_task_id = tq_save_task_id
@@ -765,6 +846,14 @@ async def _process_one_pending() -> None:
                         s, "transfer", "error",
                         f"{episode} 转存失败但 retry_count CAS 冲突（并发回退?），本轮跳过不计数: {exc}",
                         media_id,
+                    )
+                    # P0-1（council）：CAS 冲突分支（此前直接 return）也无条件清空
+                    # save_task_id / save_attempt_at（WHERE id=tq_id，不依赖 CAS 结果）
+                    # ——不在此处清空，残留的幂等标记会让下一轮跳过 save 盲等死循环。
+                    await s.execute(
+                        update(TransferQueue)
+                        .where(TransferQueue.id == tq_id)
+                        .values(save_task_id=None, save_attempt_at=None)
                     )
                     return
                 await s.execute(
