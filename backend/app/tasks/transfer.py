@@ -54,6 +54,38 @@ _IMPLEMENTED = True
 
 # aria2 任务 comment 来源标记前缀（§12.2 GID 来源校验：陌生任务即本轮跳过并告警）
 _COMMENT_PREFIX = "lumencloud:"
+# P2（影视下载两队列重设计 §7）：aria2 落盘名格式化正则（对齐 n8n formatFileName，
+# SxxExx 命中 → 「剧名 - SxxExx - 第 N 集.ext」；SxxExxx 三位集数保留）
+_RE_FORMAT_SE = re.compile(r"(S\d+)E(\d+).*\.([^.]+)$", re.IGNORECASE)
+
+
+def _format_download_name(file_name: str, title: str, media_type: str | None) -> str:
+    """aria2 落盘名（out 参数）格式化（影视下载两队列重设计 §7，对齐 n8n formatFileName）。
+
+    规则：
+    - 剧集（media_type != movie，文件名含 SxxExx）→ `{title} - {SxxExx} - 第 {N} 集.{ext}`
+    - 电影/全量模式（media_type == movie）→ `{title}.{ext}`（用户确认统一格式化，
+      去掉夸克杂乱分享名前缀/后缀）
+    - 其余（剧集但匹配不到 SxxExx / 标题缺失）→ 保持原名（n8n fallback，不误改）
+
+    注意：只影响 aria2 本地落盘名，quark 网盘原文件与 episode 防重键均不动
+    （§7「防重键与落盘名分离」，改名永不回写防重键）。
+    """
+    if not file_name:
+        return file_name
+    if (media_type or "").strip().lower() == "movie":
+        if not title:
+            return file_name
+        ext = file_name.rsplit(".", 1)[-1] if "." in file_name else ""
+        return f"{title}.{ext}" if ext else title
+    m = _RE_FORMAT_SE.search(file_name)
+    if m and title:
+        full_se = m.group(1) + "E" + m.group(2)
+        episode_num = int(m.group(2))
+        return f"{title} - {full_se} - 第 {episode_num} 集.{m.group(3)}"
+    return file_name
+
+
 # 确定性失败 / 超时回退消耗 retry_count 的上限：≥3 转 failed，需人工 retry（§4.5）
 _RETRY_LIMIT = 3
 # save 受理后等待转存文件在 alist 可见的超时上限（秒）。
@@ -1102,9 +1134,22 @@ async def _process_one_pending() -> None:
         else:
             save_task_id = tq_save_task_id
         link = await _get_link_wait_visible(file_name, timeout=_LINK_WAIT_TIMEOUT)
+        # P2（影视下载两队列重设计 §7）：aria2 落盘名格式化——out 传格式化名，
+        # quark 原文件与 episode 防重键均不动；media 查询失败回退原名不阻断转存。
+        try:
+            async with async_session() as s:
+                media = (
+                    await s.execute(select(Media).where(Media.id == media_id))
+                ).scalars().first()
+            out_name = _format_download_name(
+                file_name, media.title if media else "", media.media_type if media else None
+            )
+        except Exception:  # noqa: BLE001  media 查询失败 → 回退原名
+            logger.warning("[transfer] 查询 media=%s 失败，aria2 落盘名回退原名", media_id)
+            out_name = file_name
         gid = await aria2.client.add_uri(
             link,
-            out=file_name,
+            out=out_name,
             comment=f"{_COMMENT_PREFIX}{media_id}:{episode}",
         )
     except Exception as exc:  # noqa: BLE001

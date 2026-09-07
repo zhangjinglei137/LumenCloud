@@ -780,3 +780,56 @@ def test_complete_enters_scrape_without_removing_quark(db, env, monkeypatch):
     # 下载完成阶段不删夸克（G6：入库确认后才释放）
     assert env["alist"].remove_calls == []
     assert (["ep.mkv"], "/quark/") not in env["alist"].remove_calls
+
+
+# ---------------------------------------------------------------------------
+# P2：aria2 落盘名格式化（影视下载两队列重设计 §7，对齐 n8n formatFileName）
+# ---------------------------------------------------------------------------
+
+def test_format_download_name_tv_sxxexx():
+    """剧集 + SxxExx → 「剧名 - SxxExx - 第 N 集.ext」（n8n 格式）。"""
+    assert transfer_mod._format_download_name(
+        "Show.S01E02.1080p.mkv", "测试剧", "tv"
+    ) == "测试剧 - S01E02 - 第 2 集.mkv"
+
+
+def test_format_download_name_tv_three_digit_episode():
+    """三位集数（E100）保留三位。"""
+    assert transfer_mod._format_download_name(
+        "Show.S01E100.mkv", "测试剧", "tv"
+    ) == "测试剧 - S01E100 - 第 100 集.mkv"
+
+
+def test_format_download_name_movie_title_ext():
+    """电影 → 「剧名.ext」（统一格式化，去掉夸克杂乱分享名）。"""
+    assert transfer_mod._format_download_name(
+        "某某.2024.1080p.BluRay.mkv", "某某", "movie"
+    ) == "某某.mkv"
+
+
+def test_format_download_name_tv_no_sxxexx_keeps_original():
+    """剧集但匹配不到 SxxExx → 保持原名（n8n fallback，不误改）。"""
+    assert transfer_mod._format_download_name("ep.mkv", "测试剧", "tv") == "ep.mkv"
+
+
+def test_format_download_name_no_title_keeps_original():
+    """标题缺失 → 保持原名（避免产生残缺名）。"""
+    assert transfer_mod._format_download_name(
+        "Show.S01E02.mkv", "", "tv"
+    ) == "Show.S01E02.mkv"
+
+
+def test_transfer_out_uses_formatted_download_name(db, env, monkeypatch):
+    """P2 集成：addUri 的 out 传格式化落盘名；quark_path 仍用原始名（quark 侧不动）。"""
+    patch_db(monkeypatch, db)
+    mid, es_id, tq_id = run(seed_pending(db, file_name="Show.S01E02.1080p.mkv"))
+    env["aria2"].actives = [{"gid": "own", "status": "active", "comment": "lumencloud:1:S01E01"}]
+
+    run(transfer_mod.process_transfer_queue())
+
+    assert len(env["aria2"].add_uri_calls) == 1
+    _, kwargs = env["aria2"].add_uri_calls[0]
+    assert kwargs["out"] == "测试剧 - S01E02 - 第 2 集.mkv"
+    assert kwargs["comment"] == "lumencloud:1:S01E01"
+    es = run(get_es_by_media(db, mid))
+    assert es.quark_path == "/quark/Show.S01E02.1080p.mkv"  # 夸克侧原始名，防重键不受影响
