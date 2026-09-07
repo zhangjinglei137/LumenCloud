@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import EpisodeState, Media, TransferQueue, User
+from app.models import EpisodeState, Media, TaskRun, TransferQueue, User
 from app.routers.deps import get_current_admin, get_current_user, get_session
 
 router = APIRouter()
@@ -67,6 +67,17 @@ def _child_dto(es: EpisodeState) -> dict:
         "updated_at": _iso(es.updated_at),
         "node_started_at": _iso(es.node_started_at),
         "node_finished_at": _iso(es.node_finished_at),
+    }
+
+
+def _scan_task_dto(run: TaskRun) -> dict:
+    """父级挂载的最近巡检摘要（scan_tasks 元素，非敏感字段）。"""
+    return {
+        "id": run.id,
+        "status": run.status,
+        "message": run.message,
+        "started_at": _iso(run.started_at),
+        "duration_seconds": run.duration_seconds,
     }
 
 
@@ -119,6 +130,10 @@ async def list_queue(
     media_id 分组为父级；孤儿 es（media 记录已不存在，FK 保护下少见）归入合成
     父级 media_id=null，title 取首个子任务 file_name（缺省「未关联影视」）。
     父级按子任务最近 updated_at 倒序，子任务内按 updated_at 倒序。
+
+    巡检可见性改造：每个真实 media 父级附加 scan_tasks（该 media 最近巡检记录
+    摘要，task_type='scan_media'）。一次批量查询（media_ids IN）取最近 1 条/影视，
+    避免 N+1；孤儿父级（media 不存在）scan_tasks=[]。
     """
     rows = (
         await session.execute(
@@ -156,9 +171,38 @@ async def list_queue(
             g["latest"] = es.updated_at
         g["children"].append(_child_dto(es))
 
+    # 巡检可见性：批量取各真实 media 最近 1 条巡检记录（task_type='scan_media'），
+    # 一次 IN 查询 + 按 (media_id, started_at) 分组取每组第一条（started_at 倒序），
+    # 避免每父级一次查询的 N+1；孤儿父级（media 不存在）不在 media_ids 中 → 空列表。
+    real_ids = [g["media_id"] for g in groups.values()
+                if g["media_id"] is not None]  # 真实 media 父级（孤儿哨兵键无 media_id）
+    scan_by_media: dict[int, list[dict]] = {}
+    if real_ids:
+        scan_rows = (
+            await session.execute(
+                select(TaskRun)
+                .where(
+                    TaskRun.task_type == "scan_media",
+                    TaskRun.media_id.in_(real_ids),
+                )
+                .order_by(TaskRun.media_id.asc(), TaskRun.started_at.desc(), TaskRun.id.desc())
+            )
+        ).scalars().all()
+        for run in scan_rows:
+            if run.media_id is not None and run.media_id not in scan_by_media:
+                scan_by_media[run.media_id] = [_scan_task_dto(run)]
+
     # 父级按子任务最近 updated_at 倒序
     ordered = sorted(groups.values(), key=lambda g: g["latest"], reverse=True)
-    return [_parent_dto(g) for g in ordered]
+    result: list[dict] = []
+    for g in ordered:
+        dto = _parent_dto(g)
+        if isinstance(g["media_id"], int):
+            dto["scan_tasks"] = scan_by_media.get(g["media_id"], [])
+        else:
+            dto["scan_tasks"] = []
+        result.append(dto)
+    return result
 
 
 @router.post("/queue/{task_id}/retry")

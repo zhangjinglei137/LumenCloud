@@ -138,6 +138,8 @@ const TASK_STATUS_MAP: Record<string, [string, string]> = {
   failed: ['失败', 'danger'],
   running: ['运行中', 'primary'],
   pending: ['待执行', 'info'],
+  skipped: ['跳过', 'warning'],
+  error: ['异常', 'danger'],
 }
 
 export function taskStatusLabel(status: string | null | undefined): string {
@@ -213,4 +215,52 @@ export function seriesStatusLabel(status: string | null | undefined, mediaType?:
 export function seriesStatusType(status: string | null | undefined, mediaType?: string | null): string {
   if (!status) return mediaType === 'movie' ? 'success' : 'info'
   return SERIES_STATUS_MAP[normalizeSeriesStatus(status)]?.[1] ?? 'info'
+}
+
+// ---------- 巡检任务（5 阶段流程链 + 缺集结果） ----------
+
+/** 巡检五阶段线性流程（对齐转存链 QUEUE_FLOW_NODES 的展示模式）：查缺 → 搜索源站 → 匹配文件 → 写入队列 → 完成 */
+export const SCAN_PHASE_NODES: readonly string[] = [
+  'check',
+  'search',
+  'match',
+  'enqueue',
+  'finish',
+]
+
+/** 巡检阶段值 → [中文标签, Element Plus tag type]；未知值回退原值 / info */
+const SCAN_PHASE_MAP: Record<string, [string, string]> = {
+  check: ['查缺', 'info'],
+  search: ['搜索源站', 'primary'],
+  match: ['匹配文件', 'warning'],
+  enqueue: ['写入队列', 'primary'],
+  finish: ['完成', 'success'],
+}
+
+export function scanPhaseLabel(phase: string | null | undefined): string {
+  if (!phase) return '—'
+  return SCAN_PHASE_MAP[phase]?.[0] ?? phase
+}
+
+export function scanPhaseType(phase: string | null | undefined): string {
+  if (!phase) return 'info'
+  return SCAN_PHASE_MAP[phase]?.[1] ?? 'info'
+}
+
+/** 缺集明细结果 → [中文标签, Element Plus tag type]；未知值回退原值 / info */
+const SCAN_RESULT_MAP: Record<string, [string, string]> = {
+  enqueued: ['已入队', 'success'],
+  not_found: ['未找到源', 'danger'],
+  unaired: ['未播出跳过', 'warning'],
+  already: ['已收录', 'info'],
+}
+
+export function scanResultLabel(result: string | null | undefined): string {
+  if (!result) return '—'
+  return SCAN_RESULT_MAP[result]?.[0] ?? result
+}
+
+export function scanResultType(result: string | null | undefined): string {
+  if (!result) return 'info'
+  return SCAN_RESULT_MAP[result]?.[1] ?? 'info'
 }

@@ -162,6 +162,79 @@ export interface QueueChildTask {
 /** 队列父级（影视任务）聚合状态 */
 export type QueueAggregateStatus = 'all_done' | 'partial_failed' | 'running' | 'waiting' | string
 
+// ---------- 巡检任务（影视级一次性任务，挂队列影视父级下） ----------
+
+/** 巡检任务摘要（GET /api/queue 影视父级 scan_tasks 元素；后端取最近 1 条） */
+export interface ScanTaskSummary {
+  id: number
+  /** running → success / skipped / error */
+  status?: string | null
+  /** 人话结果文案（如「已入队 2 集」「未找到源」） */
+  message?: string | null
+  started_at?: string | null
+  duration_seconds?: number | null
+}
+
+/** 巡检阶段状态：wait 待执行 / process 进行中 / done 完成 / skipped 跳过 / error 异常 */
+export type ScanPhaseStatus = 'wait' | 'process' | 'done' | 'skipped' | 'error' | string
+
+/** 单个巡检阶段 */
+export interface ScanPhase {
+  status?: ScanPhaseStatus | null
+  started_at?: string | null
+  finished_at?: string | null
+  [key: string]: unknown
+}
+
+/** 巡检 5 阶段（check→查缺 / search→搜索源站 / match→匹配文件 / enqueue→写入队列 / finish→完成） */
+export interface ScanPhases {
+  check?: ScanPhase | null
+  search?: ScanPhase | null
+  match?: ScanPhase | null
+  enqueue?: ScanPhase | null
+  finish?: ScanPhase | null
+  [key: string]: ScanPhase | null | undefined
+}
+
+/** 缺集明细结果：enqueued 已入队 / not_found 未找到源 / unaired 未播出跳过 / already 已收录 */
+export interface ScanMissingItem {
+  episode?: string | null
+  result?: 'enqueued' | 'not_found' | 'unaired' | 'already' | string | null
+  [key: string]: unknown
+}
+
+/** 巡检结果明细（GET /api/logs/{id} 的 scan_detail 字段） */
+export interface ScanDetail {
+  /** 缺失集总数 */
+  missing_total?: number | null
+  /** 入队集数 */
+  enqueued?: number | null
+  /** 已在库跳过数 */
+  existing_skipped?: number | null
+  /** 大小过滤数 */
+  size_filtered?: number | null
+  /** 未匹配文件数 */
+  unmatched?: number | null
+  /** 非视频文件数 */
+  non_video?: number | null
+  /** 失败/跳过定位到的阶段 key（check/search/match/enqueue/finish），无则 null */
+  failed_phase?: string | null
+  /** 缺集明细列表 */
+  missing_items?: ScanMissingItem[] | null
+  [key: string]: unknown
+}
+
+/** 巡检任务详情（GET /api/logs/{id}） */
+export interface ScanTaskDetail extends ScanTaskSummary {
+  task_type?: string | null
+  media_id?: number | null
+  media_title?: string | null
+  finished_at?: string | null
+  phases?: ScanPhases | null
+  scan_detail?: ScanDetail | null
+  [key: string]: unknown
+}
+
 /** 队列父级（影视任务树节点） */
 export interface QueueMediaTask {
   media_id?: number | null
@@ -175,6 +248,8 @@ export interface QueueMediaTask {
   done_count?: number | null
   /** 分集子任务列表 */
   children?: QueueChildTask[]
+  /** 最近巡检记录（后端取最近 1 条；无记录时缺省/空数组） */
+  scan_tasks?: ScanTaskSummary[]
   /** 前端内部表格行 key */
   __key?: string
   [key: string]: unknown

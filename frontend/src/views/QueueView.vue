@@ -3,11 +3,13 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import type { AxiosError } from 'axios'
+import { getScanTaskDetailApi, scanMediaApi } from '../api'
 import { useQueueStore } from '../stores/queue'
 import { useAuthStore } from '../stores/auth'
-import type { QueueChildTask, QueueMediaTask } from '../types'
+import type { QueueChildTask, QueueMediaTask, ScanTaskDetail, ScanTaskSummary } from '../types'
 import {
   QUEUE_FLOW_NODES,
+  SCAN_PHASE_NODES,
   formatBytes,
   formatGb,
   formatTime,
@@ -16,6 +18,12 @@ import {
   queueAggregateType,
   queueNodeLabel,
   queueNodeType,
+  scanPhaseLabel,
+  scanResultLabel,
+  scanResultType,
+  taskStatusLabel,
+  taskStatusType,
+  timeAgo,
 } from '../utils/format'
 
 const router = useRouter()
@@ -27,9 +35,33 @@ const refreshingCapacity = ref(false)
 
 // ---------- 行类型与展示辅助 ----------
 
+/** 巡检记录伪子行（挂影视父级 children 尾部，与分集子任务并列展示） */
+interface ScanRow {
+  __scan: true
+  __key: string
+  task: ScanTaskSummary
+  parent: QueueMediaTask
+}
+
 function isParent(row: unknown): row is QueueMediaTask {
   return Array.isArray((row as QueueMediaTask).children)
 }
+
+function isScanRow(row: unknown): row is ScanRow {
+  return (row as ScanRow).__scan === true
+}
+
+/** 表格数据：影视父级 children 尾部注入巡检记录行（仅展示层，store 数据不变） */
+const tableData = computed<QueueMediaTask[]>(() =>
+  store.items.map((p) => {
+    const scans = p.scan_tasks ?? []
+    if (!scans.length) return p
+    const scanRows = scans.map(
+      (t, i): ScanRow => ({ __scan: true, __key: `s-${t.id ?? i}`, task: t, parent: p }),
+    )
+    return { ...p, children: [...(p.children ?? []), ...(scanRows as unknown as QueueChildTask[])] }
+  }),
+)
 
 /** 子任务节点值；缺失兜底 idle，保证标签恒有合理展示 */
 function childNodeOf(c: QueueChildTask): string {
@@ -53,13 +85,27 @@ function parentCounts(p: QueueMediaTask): string {
 }
 
 function failedCount(p: QueueMediaTask): number {
-  return p.children?.filter((c) => childNodeOf(c) === 'failed').length ?? 0
+  return (
+    p.children?.filter((c) => !isScanRow(c) && childNodeOf(c) === 'failed').length ?? 0
+  )
 }
 
-/** 父级更新时间取子任务最新一次 */
+/** 父级更新时间取子任务最新一次（巡检行不参与） */
 function latestUpdate(p: QueueMediaTask): string {
-  const times = (p.children ?? []).map((c) => c.updated_at).filter((t): t is string => !!t)
+  const times = (p.children ?? [])
+    .filter((c) => !isScanRow(c))
+    .map((c) => c.updated_at)
+    .filter((t): t is string => !!t)
   return formatTime(times.length ? times.reduce((a, b) => (a > b ? a : b)) : null)
+}
+
+/** 父级行巡检摘要：运行中→「巡检中…」，否则「上次巡检：xx 前 · message」；无记录返回 null 不显示 */
+function scanSummary(p: QueueMediaTask): string | null {
+  const t = p.scan_tasks?.[0]
+  if (!t) return null
+  if (t.status === 'running') return '巡检中…'
+  const base = `上次巡检：${timeAgo(t.started_at)}`
+  return t.message ? `${base} · ${t.message}` : base
 }
 
 // ---------- 任务详情 Drawer ----------
@@ -113,6 +159,98 @@ const childStepActive = computed(() => {
   if (idx < 0) return -1
   return node === 'done' ? QUEUE_FLOW_NODES.length : idx
 })
+
+// ---------- 巡检详情 Drawer（与分集详情 drawer 状态独立，互不干扰） ----------
+
+const scanVisible = ref(false)
+const scanLoading = ref(false)
+const rescanning = ref(false)
+/** 巡检详情（打开时先用摘要兜底渲染，接口返回后替换为完整详情） */
+const scanDetail = ref<ScanTaskDetail | null>(null)
+/** 所属影视标题 / media_id（摘要 ScanTaskSummary 不含 media_id，由父级带入） */
+const scanParentTitle = ref('')
+const scanMediaId = ref<number | null>(null)
+
+async function openScanDetail(parent: QueueMediaTask, task: ScanTaskSummary) {
+  scanParentTitle.value = parent.title || '—'
+  scanMediaId.value = parent.media_id ?? null
+  scanDetail.value = { ...task }
+  scanVisible.value = true
+  scanLoading.value = true
+  try {
+    const detail = await getScanTaskDetailApi(task.id)
+    // 媒体名以后端返回为准（media_title 为空时保留父级标题）
+    if (detail.media_title) scanParentTitle.value = detail.media_title
+    if (detail.media_id) scanMediaId.value = detail.media_id
+    scanDetail.value = detail
+  } catch {
+    // 详情接口失败（如后端未实现 /api/logs/{id}）：保留摘要展示，拦截器已提示
+  } finally {
+    scanLoading.value = false
+  }
+}
+
+/** 单个阶段的 el-step 状态：done→finish、process→process、error→error、skipped/wait→wait（跳过黄色由 is-skipped 类呈现） */
+function scanStepStatus(node: string): 'wait' | 'process' | 'finish' | 'error' {
+  const d = scanDetail.value
+  let st = d?.phases?.[node]?.status
+  // 阶段状态缺失时用 failed_phase 兜底定位异常节点
+  if (!st && d?.scan_detail?.failed_phase === node) st = 'error'
+  switch (st) {
+    case 'done':
+      return 'finish'
+    case 'process':
+      return 'process'
+    case 'error':
+      return 'error'
+    default:
+      return 'wait'
+  }
+}
+
+function scanStepSkipped(node: string): boolean {
+  return scanDetail.value?.phases?.[node]?.status === 'skipped'
+}
+
+/** el-steps active：首个未完成阶段的下标；全部完成 → 超末位（全对勾）；无 phases → 按整体状态兜底 */
+const scanStepActive = computed(() => {
+  const d = scanDetail.value
+  const phases = d?.phases
+  if (!phases) return d?.status === 'success' ? SCAN_PHASE_NODES.length : 0
+  const idx = SCAN_PHASE_NODES.findIndex((n) => phases[n]?.status !== 'done')
+  return idx < 0 ? SCAN_PHASE_NODES.length : idx
+})
+
+/** 结果摘要统计行（只显示有值的项；缺 N 集 / 已入队恒显示，来自 scan_detail） */
+const scanStats = computed(() => {
+  const d = scanDetail.value?.scan_detail
+  if (!d) return [] as { label: string; value: number }[]
+  const items: { label: string; value: number }[] = [
+    { label: '缺失集', value: d.missing_total ?? 0 },
+    { label: '已入队', value: d.enqueued ?? 0 },
+  ]
+  if (d.existing_skipped) items.push({ label: '已收录跳过', value: d.existing_skipped })
+  if (d.unmatched) items.push({ label: '未匹配文件', value: d.unmatched })
+  if (d.size_filtered) items.push({ label: '大小过滤', value: d.size_filtered })
+  if (d.non_video) items.push({ label: '非视频', value: d.non_video })
+  return items
+})
+
+const scanMissingItems = computed(() => scanDetail.value?.scan_detail?.missing_items ?? [])
+
+/** 重新巡检：复用 POST /media/{id}/scan，成功后刷新队列 */
+async function onRescan() {
+  if (!scanMediaId.value) return
+  rescanning.value = true
+  try {
+    await scanMediaApi(scanMediaId.value)
+    ElMessage.success('已触发重新巡检，结果稍后刷新可见')
+    scanVisible.value = false
+    await store.fetchPage()
+  } finally {
+    rescanning.value = false
+  }
+}
 
 /** 手动刷新容量：带 force 语义（后端暂忽略，拿到的是最近一次统计），按钮 loading + 诚实提示缓存语义 */
 async function onRefreshCapacity() {
@@ -235,7 +373,7 @@ async function loadMore() {
       <template v-else>
         <el-table
           v-loading="store.loading && store.items.length === 0"
-          :data="store.items"
+          :data="tableData"
           row-key="__key"
           :tree-props="{ children: 'children' }"
           style="width: 100%"
@@ -246,6 +384,22 @@ async function loadMore() {
                 <div style="font-weight: 600">{{ row.title || '—' }}</div>
                 <div class="lc-muted" style="font-size: 12px; margin-top: 2px">
                   {{ mediaTypeLabel(row.media_type) }}
+                </div>
+                <div
+                  v-if="scanSummary(row)"
+                  class="lc-muted"
+                  style="font-size: 12px; margin-top: 2px"
+                >
+                  {{ scanSummary(row) }}
+                </div>
+              </template>
+              <template v-else-if="isScanRow(row)">
+                <div style="font-weight: 600; font-size: 13px">巡检</div>
+                <div
+                  class="lc-muted"
+                  style="font-size: 12px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap"
+                >
+                  {{ row.task.message || '—' }}
                 </div>
               </template>
               <template v-else>
@@ -266,6 +420,14 @@ async function loadMore() {
               >
                 {{ queueAggregateLabel(row.aggregate_status) }}
               </el-tag>
+              <el-tag
+                v-else-if="isScanRow(row)"
+                size="small"
+                :type="taskStatusType(row.task.status)"
+                effect="plain"
+              >
+                {{ taskStatusLabel(row.task.status) }}
+              </el-tag>
               <el-tag v-else size="small" :type="queueNodeType(childNodeOf(row))" effect="plain">
                 {{ queueNodeLabel(childNodeOf(row)) }}
               </el-tag>
@@ -277,6 +439,13 @@ async function loadMore() {
                 <el-progress :percentage="parentPercent(row)" :stroke-width="8" style="flex: 1" />
                 <span style="font-size: 12px">{{ parentCounts(row) }}</span>
               </div>
+              <span v-else-if="isScanRow(row)" class="lc-muted" style="font-size: 12px">
+                {{
+                  row.task.duration_seconds != null
+                    ? `耗时 ${Math.round(row.task.duration_seconds)} 秒`
+                    : '—'
+                }}
+              </span>
               <span v-else style="font-size: 13px">{{ formatBytes(row.file_size) }}</span>
             </template>
           </el-table-column>
@@ -286,6 +455,19 @@ async function loadMore() {
                 <span v-if="failedCount(row) > 0" style="color: var(--el-color-danger); font-size: 12px">
                   {{ failedCount(row) }} 集失败
                 </span>
+                <span v-else class="lc-muted">—</span>
+              </template>
+              <template v-else-if="isScanRow(row)">
+                <el-tooltip
+                  v-if="row.task.message"
+                  :content="row.task.message"
+                  placement="top"
+                  effect="dark"
+                >
+                  <span class="lc-muted" style="font-size: 12px">
+                    {{ row.task.message.slice(0, 40) }}{{ row.task.message.length > 40 ? '…' : '' }}
+                  </span>
+                </el-tooltip>
                 <span v-else class="lc-muted">—</span>
               </template>
               <template v-else>
@@ -303,7 +485,9 @@ async function loadMore() {
           </el-table-column>
           <el-table-column label="更新时间" width="150">
             <template #default="{ row }">
-              {{ isParent(row) ? latestUpdate(row) : formatTime(row.updated_at) }}
+              <template v-if="isParent(row)">{{ latestUpdate(row) }}</template>
+              <template v-else-if="isScanRow(row)">{{ formatTime(row.task.started_at) }}</template>
+              <template v-else>{{ formatTime(row.updated_at) }}</template>
             </template>
           </el-table-column>
           <el-table-column label="操作" width="170" align="right">
@@ -319,6 +503,11 @@ async function loadMore() {
                   影视详情
                 </el-button>
                 <el-button link type="primary" size="small" @click="openDetail(row)">查看详情</el-button>
+              </template>
+              <template v-else-if="isScanRow(row)">
+                <el-button link type="primary" size="small" @click="openScanDetail(row.parent, row.task)">
+                  查看详情
+                </el-button>
               </template>
               <template v-else>
                 <el-button
@@ -433,6 +622,93 @@ async function loadMore() {
         </div>
       </template>
     </el-drawer>
+
+    <!-- 巡检详情 Drawer：结果摘要为主角 + 5 阶段流程链辅助 -->
+    <el-drawer v-model="scanVisible" title="巡检详情" size="520px">
+      <div v-if="scanDetail" v-loading="scanLoading">
+        <div class="qd-head">
+          <div style="min-width: 0">
+            <div class="qd-title">{{ scanParentTitle }}</div>
+            <div class="lc-muted" style="font-size: 12px; margin-top: 4px">
+              {{ formatTime(scanDetail.started_at) }}
+              <template v-if="scanDetail.duration_seconds != null">
+                · 耗时 {{ Math.round(scanDetail.duration_seconds) }} 秒
+              </template>
+            </div>
+          </div>
+          <el-tag size="small" :type="taskStatusType(scanDetail.status)" effect="plain">
+            {{ taskStatusLabel(scanDetail.status) }}
+          </el-tag>
+        </div>
+
+        <!-- 5 阶段流程链（辅助）：失败红、跳过黄定位到具体节点 -->
+        <template v-if="scanDetail.phases">
+          <el-divider content-position="left">流程</el-divider>
+          <el-steps :active="scanStepActive" align-center finish-status="success" class="qd-steps">
+            <el-step
+              v-for="n in SCAN_PHASE_NODES"
+              :key="n"
+              :title="scanPhaseLabel(n)"
+              :status="scanStepStatus(n)"
+              :class="{ 'is-skipped': scanStepSkipped(n) }"
+            />
+          </el-steps>
+        </template>
+
+        <!-- 结果摘要统计行 -->
+        <template v-if="scanStats.length">
+          <el-divider content-position="left">结果摘要</el-divider>
+          <div class="qd-meta" style="margin-top: 0">
+            <div v-for="s in scanStats" :key="s.label" class="qd-meta-item">
+              <span class="label">{{ s.label }}</span>
+              <span class="value">{{ s.value }}</span>
+            </div>
+          </div>
+        </template>
+
+        <!-- 缺集明细列表 -->
+        <template v-if="scanMissingItems.length">
+          <el-divider content-position="left">缺集明细（{{ scanMissingItems.length }}）</el-divider>
+          <div class="qd-children">
+            <div v-for="(m, i) in scanMissingItems" :key="m.episode ?? i" class="qd-child static">
+              <span class="ep">{{ m.episode || '—' }}</span>
+              <el-tag size="small" :type="scanResultType(m.result)" effect="plain">
+                {{ scanResultLabel(m.result) }}
+              </el-tag>
+            </div>
+          </div>
+        </template>
+
+        <!-- 失败 / 跳过诊断 -->
+        <el-alert
+          v-if="scanDetail.status === 'error' && scanDetail.message"
+          type="error"
+          :closable="false"
+          show-icon
+          :title="`失败诊断：${scanDetail.message}`"
+          style="margin-top: 12px"
+        />
+        <el-alert
+          v-else-if="scanDetail.status === 'skipped' && scanDetail.message"
+          type="warning"
+          :closable="false"
+          show-icon
+          :title="scanDetail.message"
+          style="margin-top: 12px"
+        />
+
+        <div style="margin-top: 16px; text-align: right">
+          <el-button
+            type="primary"
+            :loading="rescanning"
+            :disabled="!scanMediaId"
+            @click="onRescan"
+          >
+            重新巡检
+          </el-button>
+        </div>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
@@ -456,6 +732,16 @@ async function loadMore() {
 
 .qd-steps :deep(.el-step__title) {
   font-size: 12px;
+}
+
+/* 巡检链：skipped 阶段节点黄色呈现（对齐「跳过=warning」语义） */
+.qd-steps :deep(.el-step.is-skipped .el-step__icon) {
+  color: var(--el-color-warning);
+  border-color: var(--el-color-warning);
+}
+
+.qd-steps :deep(.el-step.is-skipped .el-step__title) {
+  color: var(--el-color-warning);
 }
 
 .qd-meta {
@@ -507,6 +793,15 @@ async function loadMore() {
 
 .qd-child.active {
   background: var(--lc-accent-soft, var(--el-color-primary-light-9));
+}
+
+/* 静态明细行（巡检缺集列表）：不可点击，无 hover 反馈 */
+.qd-child.static {
+  cursor: default;
+}
+
+.qd-child.static:hover {
+  background: transparent;
 }
 
 .qd-child .ep {

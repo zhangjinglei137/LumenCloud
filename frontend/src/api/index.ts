@@ -18,6 +18,7 @@ import type {
   NotificationList,
   QueueMediaTask,
   QuarkVerifyResult,
+  ScanTaskDetail,
   SettingsResponse,
   TmdbSearchResult,
   User,
@@ -231,6 +232,15 @@ export function listLogsApi(params: {
     Object.entries(params).filter(([, value]) => value !== undefined && value !== null && value !== ''),
   )
   return http.get<LogItem[]>('/logs', { params: query }).then((r) => r.data)
+}
+
+/**
+ * 巡检任务详情（GET /api/logs/{id}）。
+ * 返回 ScanTaskDetail：含 5 阶段 phases 与结果明细 scan_detail。
+ * 后端未完成改造时可能返回 404/缺字段，由调用方兜底展示。
+ */
+export function getScanTaskDetailApi(id: number) {
+  return http.get<ScanTaskDetail>(`/logs/${id}`).then((r) => r.data)
 }
 
 // ---------- 通知 ----------

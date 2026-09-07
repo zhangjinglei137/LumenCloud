@@ -188,6 +188,11 @@ class TaskRun(Base):
     finished_at = mapped_column(DateTime)
     # Q8①：真实耗时（秒，由 job 入口 time.monotonic() 传入；历史记录为 None）
     duration_seconds = mapped_column(Float)
+    # 巡检可见性改造：phases（巡检 5 阶段进度 JSON）+ scan_detail（结果摘要 JSON）。
+    # 文本列存 JSON（scan.py 序列化，日志路由解析为 dict）；nullable，历史记录为 None。
+    # 迁移见 alembic/versions/0011_task_run_scan_fields.py。
+    phases = mapped_column(Text)
+    scan_detail = mapped_column(Text)
 
 
 class QuarkCapacityLog(Base):

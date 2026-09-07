@@ -28,7 +28,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
 from app.database import async_session
-from app.models import DownloadTask, EpisodeState, Media, TransferQueue
+from app.models import DownloadTask, EpisodeState, Media, TaskRun, TransferQueue
 from app.services import cloudsaver, config_store, emby, tmdb
 from app.tasks import as_bool, get_config_value, record_task_run
 
@@ -57,6 +57,146 @@ _RE_CN_EP = re.compile(r"第\s*(\d{1,3})\s*[集话]")
 # 入队防重态：queued/transferring/downloading 视为已处理；done 在 Emby 二次确认前仍参与防重（§4.5）；
 # failed 需人工 retry（§4.5 retry≥3→failed），不可被 scan 自动重新入队（否则撞 UNIQUE 且绕过人工确认）
 _ACTIVE_STATES = ("queued", "transferring", "downloading", "done", "failed")
+
+# 巡检 5 阶段键（契约固定，前端按此渲染进度）：
+#   check → Emby 基线（查缺/Emby 基线）；search → cloudSaver 搜索；
+#   match → 遍历分享 + 文件名匹配 + 大小过滤 + 入队；enqueue → 入队阶段（并入 match 流程内标记）；
+#   finish → 完成收尾（消息/耗时落库）。stage status 枚举：
+#   wait（待办）/ process（进行中）/ done（完成）/ skipped（跳过）/ error（此阶段失败，供前端定位展示）。
+# 巡检是快任务：内存打点，结束时一次性落库（运行中不实时写 DB）。
+_PHASE_KEYS = ("check", "search", "match", "enqueue", "finish")
+
+
+def _new_phases() -> dict:
+    """初始 5 阶段骨架：全部 wait，时间戳 None。"""
+    return {
+        key: {"status": "wait", "started_at": None, "finished_at": None}
+        for key in _PHASE_KEYS
+    }
+
+
+def _ts_iso() -> str:
+    """阶段打点时间：naive UTC ISO 字符串（可 null；快任务内存打点，结束一次性落库）。"""
+    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+
+
+def _phase_start(phases: dict, key: str) -> None:
+    """阶段开始（wait → process，记 started_at）。"""
+    phases[key].update(status="process", started_at=_ts_iso())
+
+
+def _phase_done(phases: dict, key: str) -> None:
+    """阶段完成（process/wait → done，记 finished_at；started_at 缺失时补同刻）。"""
+    ts = _ts_iso()
+    ph = phases[key]
+    ph.update(status="done", finished_at=ts)
+    if not ph.get("started_at"):
+        ph["started_at"] = ts
+
+
+def _phase_error(phases: dict, key: str) -> None:
+    """阶段失败（→ error，记 finished_at；started_at 缺失时补同刻）。"""
+    ts = _ts_iso()
+    ph = phases[key]
+    ph.update(status="error", finished_at=ts)
+    if not ph.get("started_at"):
+        ph["started_at"] = ts
+
+
+def _phase_skip(phases: dict, key: str) -> None:
+    """阶段跳过（仅 wait → skipped；正常短路径语义，如 downloading 本轮不入队）。"""
+    if phases[key]["status"] == "wait":
+        phases[key]["status"] = "skipped"
+
+
+def _phase_skip_remaining(phases: dict, from_key: str) -> None:
+    """从 from_key（含）起把尚未开始的阶段标记为 skipped（正常跳过收尾语义）。
+
+    用于 paused/error 跳过、防重基线缺失跳过、无遗漏跳过等正常短路径：
+    未执行到的阶段标 skipped（区别于 wait——运行结束后不应残留「待办」观感），
+    出错路径的未达阶段保持 wait（由故障中止，非主动跳过）。
+    """
+    for key in _PHASE_KEYS:
+        if key == from_key or _phase_index(key) >= _phase_index(from_key):
+            _phase_skip(phases, key)
+
+
+def _phase_index(key: str) -> int:
+    return _PHASE_KEYS.index(key)
+
+
+def _fail_phase(phases: dict) -> str | None:
+    """意外异常时定位失败阶段：取最后一个 status='process' 的阶段键（倒序，finish 除外）。
+
+    巡检大流程按 _PHASE_KEYS 顺序推进，同时只有一个阶段处于 process；
+    异常发生在哪一段，该段必然仍为 process（前序已完成阶段均 done）。
+    """
+    for key in reversed(_PHASE_KEYS):
+        if phases[key]["status"] == "process":
+            return key
+    return None
+
+
+def _result_detail_skeleton(failed_phase: str | None = None) -> dict:
+    """scan_detail 最小骨架（装配前失败时的 fallback，保证前端可解析 failed_phase）。"""
+    return {
+        "missing_total": 0,
+        "enqueued": 0,
+        "existing_skipped": 0,
+        "size_filtered": 0,
+        "unmatched": 0,
+        "non_video": 0,
+        "failed_phase": failed_phase,
+        "missing_items": [],
+    }
+
+
+def _result_message(*, enqueued: int, unmatched: int, size_filtered: int,
+                    non_video: int, existing_skipped: int) -> str:
+    """巡检结果「人话」消息（信息列改造）：保留计数 + 引导性结论。
+
+    规则：
+    - enqueued>0         → 「已入队 N 个资源」开头，后接存在的
+                          M 个文件未匹配 / K 个超大小限制跳过 / J 个非视频 / 已有跳过
+    - enqueued=0 & unmatched>0 → 未找到缺失集资源（搜索文件均不匹配：多为已收录旧集或其它版本，
+                          可能尚未更新），括号补充其余过滤计数
+    - enqueued=0 & unmatched=0 & 有过滤 → 未找到可入队资源 + 计数
+    - 全部 0 → 无候选命中
+    """
+    if enqueued > 0:
+        parts = [f"已入队 {enqueued} 个资源"]
+        if unmatched:
+            parts.append(f"{unmatched} 个文件未匹配")
+        if size_filtered:
+            parts.append(f"{size_filtered} 个超大小限制跳过")
+        if non_video:
+            parts.append(f"{non_video} 个非视频")
+        if existing_skipped:
+            parts.append(f"{existing_skipped} 个已有任务跳过")
+        return "；".join(parts) + "。"
+    if unmatched > 0:
+        msg = (
+            f"未找到缺失集资源（搜索到 {unmatched} 个文件均不匹配，"
+            "多为已收录旧集或其它版本，可能尚未更新）"
+        )
+        extra = []
+        if size_filtered:
+            extra.append(f"{size_filtered} 个超大小限制跳过")
+        if non_video:
+            extra.append(f"{non_video} 个非视频")
+        if extra:
+            msg += "（另有 " + "、".join(extra) + "）"
+        return msg
+    if size_filtered or non_video or existing_skipped:
+        parts = []
+        if size_filtered:
+            parts.append(f"{size_filtered} 个超大小限制跳过")
+        if non_video:
+            parts.append(f"{non_video} 个非视频")
+        if existing_skipped:
+            parts.append(f"{existing_skipped} 个已有任务跳过")
+        return "未找到可入队资源：" + "、".join(parts) + "。"
+    return "无候选命中"
 
 # P3-1 done→failed 循环上限——对齐 transfer._RETRY_LIMIT（3 次）。
 # _resolve_done_states 中 done→failed 算一次循环（retry_count +1），达到上限后
@@ -795,36 +935,81 @@ async def scan_all_media(force: bool = False) -> None:
             logger.exception("[scan] media=%s 巡检异常", media.id)
 
 
-async def _record_scan_result(media_id: int, status: str, message: str,
-                              *, duration_seconds: float,
-                              touch_last_scan_at: bool = False) -> int | None:
-    """短事务写一条 scan task_run（可选同步更新 media.last_scan_at）并 commit，返回 task_run id。
+async def _create_scan_run(media_id: int) -> int | None:
+    """巡检可见性改造（第一段）：插入一条 status='running' 的 task_run 并 commit，返回 id。
 
-    P1-1（延后项）：各短路/结束分支的独立短 session，避免借用外层长事务——
-    session 仅存在于此调用窗口，写完即释放；task_run 表记录（record_task_run 仅
-    flush）与本调用内的一次 commit 一并落库。
+    触发巡检即落 running 中间态——HTTP 触发到巡检结束（数十秒）期间前端队列即可
+    看到「正在巡检」记录。running 记录不含 phases/scan_detail（跑完才一次性落库）。
 
-    Q8①：duration_seconds 必填——调用方（_scan_one 入口 t0 计时）透传真实耗时。
+    media 不存在时调用方（_scan_one）在预检前即 return None，不建立记录（保持现状）。
+    """
+    async with async_session() as s:
+        run = TaskRun(
+            task_type="scan_media",
+            media_id=media_id,
+            status="running",
+            message="正在巡检",
+            started_at=_now(),
+            finished_at=None,
+            duration_seconds=None,
+        )
+        s.add(run)
+        await s.commit()
+        return run.id
+
+
+async def _finish_scan_run(
+    run_id: int,
+    media_id: int,
+    status: str,
+    message: str,
+    *,
+    phases: dict | None,
+    scan_detail: dict | None,
+    touch_last_scan_at: bool = False,
+    duration_seconds: float,
+) -> int:
+    """巡检可见性改造（第二段）：按 id UPDATE 同一条 task_run 为终态并 commit。
+
+    - 状态/消息/耗时：running → status（success/skipped/error）+ 人话 message + 真实耗时
+    - phases / scan_detail：5 阶段进度 JSON 与结果摘要 JSON 序列化落库（巡检为快任务，
+      内存打点结束一次性写入，运行中不实时写 DB）
+    - 可选同步更新 media.last_scan_at（touch_last_scan_at=True）
+
+    短事务：不借用外层长事务，写完即释放（沿用旧实现的 P1-1 约定）。
     """
     async with async_session() as s:
         if touch_last_scan_at:
             await s.execute(
                 update(Media).where(Media.id == media_id).values(last_scan_at=_now())
             )
-        rid = await record_task_run(
-            s, "scan_media", status, message, media_id,
-            duration_seconds=duration_seconds,
+        await s.execute(
+            update(TaskRun)
+            .where(TaskRun.id == run_id)
+            .values(
+                status=status,
+                message=message,
+                finished_at=_now(),
+                duration_seconds=duration_seconds,
+                phases=_json_dumps(phases),
+                scan_detail=_json_dumps(scan_detail),
+            )
         )
         await s.commit()
-        return rid
+        return run_id
 
 
 async def _scan_one(media_id: int) -> int | None:
     """严格按设计文档 §4.3 巡检主流程，阶段2 只到入队为止（不转存）。
 
+    巡检可见性改造：入口先建 status='running' 的 task_run（_create_scan_run），
+    全部返回分支改走 _finish_scan_run 原地 UPDATE 同一条为终态，附 5 阶段进度
+    （phases JSON）与结果摘要（scan_detail JSON）。巡检是快任务——阶段打点全部
+    在内存进行（_phase_start/_phase_done），结束时一次性落库，运行中不实时写 DB。
+
     P1-1（延后项）：长事务拆分——Emby 基线 / 搜索 / share-info / share-list 递归
     等网络 IO 全程**不持有 DB session**（SQLite 单连接被长事务占住会阻塞其他写）；
-    仅 DB 读写使用短事务（读 media、record_task_run、media.last_scan_at、
+    仅 DB 读写使用短事务（读 media、task_run 写入、media.last_scan_at、
     _read_size_limits、_enqueue 均各自开启/关闭 session）。database.async_session
     expire_on_commit=False，开头短会话读出的 media 为 detached 对象，已加载属性
     （id/status/title/tmdb_id/media_type 等）可安全继续使用。
@@ -835,43 +1020,65 @@ async def _scan_one(media_id: int) -> int | None:
     async with async_session() as s:
         media = await s.get(Media, media_id)
     if media is None:
+        # 不存在 → 不建 running 记录，直接 return None（保持现状契约）
         logger.warning("[scan] media=%s 不存在", media_id)
         return None
 
-    # 1. 状态预检：paused/error 跳过；downloading 不跳过（防卡死），仅本轮不入队
-    if media.status in ("paused", "error"):
-        rid = await _record_scan_result(
-            media_id, "skipped", f"media.status={media.status}，跳过巡检",
+    # 0b. 巡检可见性：触发即落 running 中间态（前端可立即看到「正在巡检」）。
+    #     此后所有分支（含异常）都以 _finish_scan_run 原地 UPDATE 同一记录为终态。
+    run_id = await _create_scan_run(media_id)
+    if run_id is None:
+        # running 记录建立失败（极小概率）→ 保持旧行为，不阻断巡检主流程
+        return None
+    phases = _new_phases()
+    scan_detail = None  # 无遗漏/被跳过等短路分支无结果摘要；正常流程开始后才装配
+
+    async def _finish(status: str, message: str, *,
+                      touch_last_scan_at: bool = False) -> int:
+        """原地收尾同一条 task_run（当前 phases / scan_detail 快照随调用一并落库）。"""
+        return await _finish_scan_run(
+            run_id, media_id, status, message,
+            phases=phases,
+            scan_detail=scan_detail,
+            touch_last_scan_at=touch_last_scan_at,
             duration_seconds=time.monotonic() - t0,
         )
-        return rid
 
-    # 2. Emby 防重基线（网络 IO，无 DB session）
+    # 1. 状态预检：paused/error 跳过；downloading 不跳过（防卡死），仅本轮不入队
+    if media.status in ("paused", "error"):
+        _phase_skip_remaining(phases, "check")  # 尚未开始的阶段标记 skipped（未达完成态）
+        return await _finish(
+            "skipped", f"media.status={media.status}，跳过巡检",
+        )
+
+    # 2. Emby 防重基线（网络 IO，无 DB session）——phase: check
+    _phase_start(phases, "check")
     try:
         missing = await _emby_missing_codes(media)
     except Exception as exc:
         # fail-safe（§4.3）：Emby 故障暂停新缺集发现，防止故障期重复转存/误占空间；
         # 既有 queued/failed 任务保留原样（阶段2 无转存逻辑，无需额外处理）
-        rid = await _record_scan_result(
-            media_id, "error",
+        _phase_error(phases, "check")  # 阶段定位 error
+        # 基线失败发生在 scan_detail 装配前 → 落最小骨架，failed_phase 供前端定位
+        scan_detail = _result_detail_skeleton("check")
+        return await _finish(
+            "error",
             f"Emby 故障，fail-safe 暂停新缺集发现: {exc}",
             touch_last_scan_at=True,
-            duration_seconds=time.monotonic() - t0,
         )
-        return rid
+    _phase_done(phases, "check")
 
     if missing is None:
         # 基线不可用：Emby 未收录该剧集，无法探明遗漏。
         # _emby_missing_codes 已按开关分流——仅当 scan_baseline_required=True（强防重，
         # 旧行为）才返回 None；False（默认）返回全量模式 [None]，走下方搜索入队路径。
         # 此处保留旧行为（本轮跳过），并区分文案以与全量模式日志区分。
-        rid = await _record_scan_result(
-            media_id, "skipped",
+        _phase_skip_remaining(phases, "search")  # search/match/enqueue/finish 未执行 → skipped
+        return await _finish(
+            "skipped",
             "Emby 未收录该剧集，防重基线强制（scan_baseline_required=True），本轮跳过",
             touch_last_scan_at=True,
-            duration_seconds=time.monotonic() - t0,
         )
-        return rid
 
     missing_keys = {m for m in missing if m is not None}
     movie_missing = any(m is None for m in missing)
@@ -884,26 +1091,66 @@ async def _scan_one(media_id: int) -> int | None:
     except Exception as exc:  # noqa: BLE001
         logger.warning("[scan] media=%s done 防重解除失败（不阻断巡检）: %s", media_id, exc)
 
+    # scan_detail 装配：拿到 aired-only 后的 Emby 基线即可填充 missing_items
+    # （每个缺失集 episode → result 初始 not_found；入队成功后改 enqueued）。
+    # 全量模式（movie_missing / tv 未收录软处理）：episode 用文件名；搜索结果在
+    # 主循环里实时补入（缺失集实体不预知，missing_total 以基线长度表达 + 动态追加）。
+    missing_total = len(missing)
+    missing_items: list[dict] = []
+    missing_items_by_key: dict[str, dict] = {}
+    if not movie_missing:
+        for m in missing:
+            if m is None:
+                continue
+            item = {"episode": m, "result": "not_found"}
+            missing_items.append(item)
+            missing_items_by_key[m] = item
+    scan_detail = _result_detail_skeleton()
+    scan_detail["missing_total"] = missing_total
+    scan_detail["missing_items"] = missing_items
+
     if not missing_keys and not movie_missing:
         # 无遗漏 → 短路结束（消灭 P3 空跑）
-        rid = await _record_scan_result(
-            media_id, "skipped", "无遗漏集（Emby 基线已覆盖），跳过",
+        _phase_skip_remaining(phases, "search")  # 后续阶段未执行 → skipped
+        return await _finish(
+            "skipped", "无遗漏集（Emby 基线已覆盖），跳过",
             touch_last_scan_at=True,
-            duration_seconds=time.monotonic() - t0,
         )
-        return rid
 
     # 3. cloudSaver 搜索 → 展开分享码 → 加分匹配 → 限数 20（网络 IO，无 DB session）
-    candidates = await _search_and_rank(media, missing_keys)
+    #                                                        —— phase: search
+    _phase_start(phases, "search")
+    try:
+        candidates = await _search_and_rank(media, missing_keys)
+    except Exception as exc:  # noqa: BLE001
+        # 搜索异常（含 _search_and_rank 内部年份回源意外失败）→ failed_phase=search
+        _phase_error(phases, "search")
+        scan_detail["failed_phase"] = "search"
+        return await _finish(
+            "error", f"cloudSaver 搜索异常，本轮中止: {exc}",
+            touch_last_scan_at=True,
+        )
+    _phase_done(phases, "search")
 
     # 4-6. share-info(500ms 串行) → share-list 递归遍历文件 → 大小过滤 → 三重匹配 → 入队
     #      （大小上限经独立短 session _read_size_limits 读取，网络 IO 阶段不持 DB session）
-    ep_limit, movie_limit = await _read_size_limits(media)
+    #                                                 —— phase: match + enqueue
+    try:
+        ep_limit, movie_limit = await _read_size_limits(media)
+    except Exception as exc:  # noqa: BLE001  大小上限读取失败，fail-closed 中止
+        _phase_error(phases, "match")
+        scan_detail["failed_phase"] = "match"
+        return await _finish(
+            "error", f"巡检中止: 大小过滤上限读取失败: {exc}",
+            touch_last_scan_at=True,
+        )
     limit_gb = _size_limit_gb(media, ep_limit, movie_limit)
     skip_enqueue = media.status == "downloading"  # 有进行中任务本轮不入队，但仍检查遗漏
 
     enqueued = existing_skipped = size_filtered = unmatched = non_video = 0
     unmatched_files: list[str] = []  # 未匹配文件名样例（至多收集 3 个，供 message 定位）
+    _phase_start(phases, "match")
+    _phase_start(phases, "enqueue")  # 匹配+入队同循环内推进；先统一标 process
     for cand in candidates:
         share_code = cand["share_code"]
         try:
@@ -936,6 +1183,9 @@ async def _scan_one(media_id: int) -> int | None:
             # 三重匹配缺失集
             if movie_missing:
                 matched_key = file_name  # 全量模式：episode=文件名（P9 已知权衡）
+                item = {"episode": file_name, "result": "not_found"}
+                missing_items.append(item)
+                missing_items_by_key[file_name] = item
             else:
                 matched_key = match_missing(file_name, missing_keys)
                 if not matched_key:
@@ -969,27 +1219,36 @@ async def _scan_one(media_id: int) -> int | None:
             res = await _enqueue(media_id, matched_key, file_name, file_size, share_code, payload)
             if res == "enqueued":
                 enqueued += 1
+                item = missing_items_by_key.get(matched_key)
+                if item is not None:
+                    item["result"] = "enqueued"
             else:
                 existing_skipped += 1  # existing（防重命中）/ conflict（行级冲突）均视为跳过
 
-    # 7. 记录 task_run + 更新 last_scan_at（独立短事务）
-    parts = []
-    if enqueued:
-        parts.append(f"入队{enqueued}")
-    if existing_skipped:
-        parts.append(f"已有/跳过{existing_skipped}")
-    if size_filtered:
-        parts.append(f"大小过滤{size_filtered}")  # 含未知大小保守跳过与超限排除
-    if unmatched:
-        sample = f"，如 {', '.join(unmatched_files)}" if unmatched_files else ""
-        parts.append(f"未匹配{unmatched}{sample}")
-    if non_video:
-        parts.append(f"非视频{non_video}")
-    message = "，".join(parts) or "无候选命中"
-    rid = await _record_scan_result(
-        media_id, "success" if enqueued else "skipped", message,
+    _phase_done(phases, "match")
+    _phase_done(phases, "enqueue")
+
+    # 7. 原地 UPDATE 同一条 task_run 终态 + 更新 last_scan_at（独立短事务）——phase: finish
+    message = _result_message(
+        enqueued=enqueued, unmatched=unmatched,
+        size_filtered=size_filtered, non_video=non_video,
+        existing_skipped=existing_skipped,
+    )
+    scan_detail.update({
+        # 全量模式：基线表达为 missing（[None]），实际缺失实体是搜索到的具体文件，
+        # 此处以实际收集到的缺失集条目数兜底（缺失集实体不预知，契约允许宽松填充）。
+        "missing_total": len(missing_items) if movie_missing else missing_total,
+        "enqueued": enqueued,
+        "existing_skipped": existing_skipped,
+        "size_filtered": size_filtered,
+        "unmatched": unmatched,
+        "non_video": non_video,
+    })
+    _phase_start(phases, "finish")
+    _phase_done(phases, "finish")
+    rid = await _finish(
+        "success" if enqueued else "skipped", message,
         touch_last_scan_at=True,
-        duration_seconds=time.monotonic() - t0,
     )
     # 6b. 入队成功后触发转存消费（§4.4 事件触发；transfer lane 未就绪时静默跳过）
     #     fire-and-forget 在 DB session 外触发（_background 强引用集合防 GC）

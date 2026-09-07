@@ -196,7 +196,7 @@ def test_scan_one_tv_missing_default_full_mode_enqueues(db, monkeypatch):
     tr, es, tq = run(_read_run())
 
     assert tr.status == "success"
-    assert "入队1" in tr.message
+    assert "已入队 1 个资源" in tr.message
     # 全量模式：episode=文件名，具体文件被视为缺失集入队
     assert es.episode == "S01E01.mkv"
     assert es.state == "queued"
