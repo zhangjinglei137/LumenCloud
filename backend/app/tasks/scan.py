@@ -29,7 +29,7 @@ from sqlalchemy.exc import IntegrityError
 from app.config import settings
 from app.database import async_session
 from app.models import DownloadTask, EpisodeState, Media, TransferQueue
-from app.services import cloudsaver, config_store, emby
+from app.services import cloudsaver, config_store, emby, tmdb
 from app.tasks import as_bool, get_config_value, record_task_run
 
 logger = logging.getLogger(__name__)
@@ -456,24 +456,38 @@ def _season_of_key(key: str) -> int:
 
 
 def _build_keywords(media, missing_keys: set[str]) -> list[str]:
-    """搜索关键词：movie 用标题；tv 按缺失集所在季聚合（P4：一次巡检每个关键词只搜一次）。"""
+    """搜索关键词：movie 用标题；tv 按缺失集所在季聚合（P4：一次巡检每个关键词只搜一次）。
+
+    季词后追加纯标题兜底词（未匹配10 案例根因修复）：按季聚合的「标题 Sxx」召回不到
+    标题不含 Sxx 的资源——如「凡人修仙传 (2020) 4K [更新190集]」这类按集连载动画，
+    网盘资源多以年份/更新集数标识；纯标题词保证召回完整，再交由排序加权选择正确版本。
+    """
     title = (media.title or "").strip()
     if not title:
         return []
     if media.media_type == "movie":
         return [title]
     seasons = sorted({_season_of_key(k) for k in missing_keys})
-    return [f"{title} S{se:02d}" for se in seasons] if seasons else [title]
+    kws = [f"{title} S{se:02d}" for se in seasons] if seasons else []
+    if title not in kws:
+        kws.append(title)  # 纯标题兜底词（排在季词之后）
+    return kws
 
 
 def _title_words(title: str) -> list[str]:
     return [w.lower() for w in re.findall(r"[a-zA-Z0-9]+", title or "") if len(w) >= 2]
 
 
-def _rank_candidates(media, items: list[dict]) -> list[dict]:
-    """加分匹配排序：标题精确包含高分，部分词命中加分（忽略空格/大小写）。"""
+def _rank_candidates(media, items: list[dict], year: str | int | None = None) -> list[dict]:
+    """加分匹配排序：标题精确包含高分，部分词命中加分（忽略空格/大小写）。
+
+    year（媒体首播年份，可选）：候选标题含该年份（如「凡人修仙传 (2020)」）时
+    额外加权——同一剧名存在多版本（2020 动画版 vs 2025 新版）时优先召回与订阅
+    一致的版本，避免版本错位导致全量未匹配（未匹配10 案例根因之二）。
+    """
     title_norm = (media.title or "").replace(" ", "").lower()
     words = _title_words(media.title)
+    year_str = str(year) if year is not None else None
     scored = []
     for it in items:
         name = str(it.get("title") or "").replace(" ", "").lower()
@@ -481,13 +495,27 @@ def _rank_candidates(media, items: list[dict]) -> list[dict]:
         if title_norm and title_norm in name:
             score += 10
         score += sum(2 for w in words if w in name)
+        if year_str and year_str in name:
+            score += 5
         scored.append((score, it))
     scored.sort(key=lambda x: -x[0])
     return [it for _, it in scored]
 
 
+async def _media_year(media) -> int | None:
+    """TMDB 首播年份（排序加权用）；失败静默降级 None，绝不阻断搜索。"""
+    if media.tmdb_id is None or media.media_type is None:
+        return None
+    try:
+        meta = await tmdb.get_by_tmdb_id(media.tmdb_id, media.media_type)
+        return meta.get("year")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[scan] media=%s TMDB 年份获取失败（排序不加权）: %s", media.id, exc)
+        return None
+
+
 async def _search_and_rank(media, missing_keys: set[str]) -> list[dict]:
-    """cloudSaver 搜索 → 展开分享码 → 加分匹配 → 限数 20。单关键词故障不中断整轮。"""
+    """cloudSaver 搜索 → 展开分享码 → 加分匹配（TMDB 年份加权）→ 限数 20。单关键词故障不中断整轮。"""
     raw: list[dict] = []
     for kw in _build_keywords(media, missing_keys):
         try:
@@ -495,7 +523,8 @@ async def _search_and_rank(media, missing_keys: set[str]) -> list[dict]:
         except Exception as exc:
             logger.warning("[scan] cloudSaver 搜索 %s 失败: %s", kw, exc)
     expanded = _expand_share_codes(raw)
-    return _rank_candidates(media, expanded)[:20]
+    year = await _media_year(media)
+    return _rank_candidates(media, expanded, year=year)[:20]
 
 
 # ---------------------------------------------------------------------------
@@ -874,6 +903,7 @@ async def _scan_one(media_id: int) -> int | None:
     skip_enqueue = media.status == "downloading"  # 有进行中任务本轮不入队，但仍检查遗漏
 
     enqueued = existing_skipped = size_filtered = unmatched = non_video = 0
+    unmatched_files: list[str] = []  # 未匹配文件名样例（至多收集 3 个，供 message 定位）
     for cand in candidates:
         share_code = cand["share_code"]
         try:
@@ -910,6 +940,8 @@ async def _scan_one(media_id: int) -> int | None:
                 matched_key = match_missing(file_name, missing_keys)
                 if not matched_key:
                     unmatched += 1
+                    if len(unmatched_files) < 3:
+                        unmatched_files.append(file_name)
                     continue
 
             # 大小过滤（§6.1，阶段 1 Q2 结论 3）：fail-closed——未知大小保守跳过，
@@ -949,7 +981,8 @@ async def _scan_one(media_id: int) -> int | None:
     if size_filtered:
         parts.append(f"大小过滤{size_filtered}")  # 含未知大小保守跳过与超限排除
     if unmatched:
-        parts.append(f"未匹配{unmatched}")
+        sample = f"，如 {', '.join(unmatched_files)}" if unmatched_files else ""
+        parts.append(f"未匹配{unmatched}{sample}")
     if non_video:
         parts.append(f"非视频{non_video}")
     message = "，".join(parts) or "无候选命中"
