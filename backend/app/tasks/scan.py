@@ -67,6 +67,19 @@ _ACTIVE_STATES = ("queued", "transferring", "downloading", "done", "failed")
 _PHASE_KEYS = ("check", "search", "match", "enqueue", "finish")
 
 
+class ScanSearchUnavailable(Exception):
+    """cloudSaver 搜索整体不可用：全部搜索关键词调用均失败（静默降级无法区分）。
+
+    选择自建异常而非复用 cloudsaver.CloudSaverUnavailable：
+    - cloudsaver.search 内部已把各类底层错误统一包装为 CloudSaverUnavailable，再捕获
+      后重抛同名异常会丢失「是本巡检关键词循环整体失败」这一语义层信息；
+    - scan.py 需在 _scan_one 里对该异常做阶段级处理（phases.search=error、
+      scan_detail.failed_phase="search"、message 人话），自建异常使捕获点语义唯一、
+      与 check 阶段的 Emby 故障（直接 catch EmbyUnavailable 风格）对齐，也便于测试直接
+      import 该异常构造确定性用例。
+    """
+
+
 def _new_phases() -> dict:
     """初始 5 阶段骨架：全部 wait，时间戳 None。"""
     return {
@@ -137,8 +150,15 @@ def _fail_phase(phases: dict) -> str | None:
     return None
 
 
-def _result_detail_skeleton(failed_phase: str | None = None) -> dict:
-    """scan_detail 最小骨架（装配前失败时的 fallback，保证前端可解析 failed_phase）。"""
+def _result_detail_skeleton(failed_phase: str | None = None,
+                            search_status: str | None = None) -> dict:
+    """scan_detail 最小骨架（装配前失败时的 fallback，保证前端可解析 failed_phase）。
+
+    search_status（可观测，供日志/排查；前端暂不读，加键不破坏既有结构）：
+    - "ok"：搜索阶段有 ≥1 个关键词成功（后续可能无候选 → message 走缺集文案）
+    - "failed"：全部搜索关键词失败（_search_and_rank 抛 ScanSearchUnavailable）
+    - "no_candidates"：搜索成功但无任何候选分享
+    """
     return {
         "missing_total": 0,
         "enqueued": 0,
@@ -147,12 +167,14 @@ def _result_detail_skeleton(failed_phase: str | None = None) -> dict:
         "unmatched": 0,
         "non_video": 0,
         "failed_phase": failed_phase,
+        "search_status": search_status,
         "missing_items": [],
     }
 
 
 def _result_message(*, enqueued: int, unmatched: int, size_filtered: int,
-                    non_video: int, existing_skipped: int) -> str:
+                    non_video: int, existing_skipped: int,
+                    missing_episodes: list[str] | None = None) -> str:
     """巡检结果「人话」消息（信息列改造）：保留计数 + 引导性结论。
 
     规则：
@@ -161,7 +183,8 @@ def _result_message(*, enqueued: int, unmatched: int, size_filtered: int,
     - enqueued=0 & unmatched>0 → 未找到缺失集资源（搜索文件均不匹配：多为已收录旧集或其它版本，
                           可能尚未更新），括号补充其余过滤计数
     - enqueued=0 & unmatched=0 & 有过滤 → 未找到可入队资源 + 计数
-    - 全部 0 → 无候选命中
+    - 全部 0：缺集场景（missing_episodes 非空）→ 明示「未找到缺失集 … 的资源（搜索无匹配
+      候选，资源可能尚未更新）」，杜绝误导性「无候选命中」；否则兜底「无候选命中」
     """
     if enqueued > 0:
         parts = [f"已入队 {enqueued} 个资源"]
@@ -196,6 +219,13 @@ def _result_message(*, enqueued: int, unmatched: int, size_filtered: int,
         if existing_skipped:
             parts.append(f"{existing_skipped} 个已有任务跳过")
         return "未找到可入队资源：" + "、".join(parts) + "。"
+    if missing_episodes:
+        # 系统明确知道缺失集（missing_total>0），只是搜索无匹配候选 → 人话说明，
+        # 勿再输出误导性「无候选命中」。
+        return (
+            f"未找到缺失集 {','.join(missing_episodes)} 的资源"
+            "（搜索无匹配候选，资源可能尚未更新）"
+        )
     return "无候选命中"
 
 # P3-1 done→failed 循环上限——对齐 transfer._RETRY_LIMIT（3 次）。
@@ -655,13 +685,27 @@ async def _media_year(media) -> int | None:
 
 
 async def _search_and_rank(media, missing_keys: set[str]) -> list[dict]:
-    """cloudSaver 搜索 → 展开分享码 → 加分匹配（TMDB 年份加权）→ 限数 20。单关键词故障不中断整轮。"""
+    """cloudSaver 搜索 → 展开分享码 → 加分匹配（TMDB 年份加权）→ 限数 20。
+
+    - 单关键词失败：记录 warning 并继续（一个词失败、其余成功 → 不中断整轮，
+      保持既有降级语义）。
+    - 全部关键词均失败（ok==0 且关键词数 ≥1）→ 抛 ScanSearchUnavailable：
+      调用方（_scan_one）将 search 阶段标 error，区分「搜索故障」与「搜索成功但无候选」
+      （后者返回 []，message 走缺集人话文案，不再误报「无候选命中」）。
+    """
+    keywords = _build_keywords(media, missing_keys)
     raw: list[dict] = []
-    for kw in _build_keywords(media, missing_keys):
+    ok = 0  # 成功关键词计数
+    for kw in keywords:
         try:
             raw.extend(await cloudsaver.search(kw))
+            ok += 1
         except Exception as exc:
             logger.warning("[scan] cloudSaver 搜索 %s 失败: %s", kw, exc)
+    if ok == 0 and keywords:
+        # 所有搜索关键词都失败 → 搜索服务整体故障（静默降级会让 _scan_one 误以为
+        # 「无缺集/无候选」），上抛由 _scan_one 记录 error + 阶段定位
+        raise ScanSearchUnavailable("全部搜索关键词调用 cloudSaver 均失败")
     expanded = _expand_share_codes(raw)
     year = await _media_year(media)
     return _rank_candidates(media, expanded, year=year)[:20]
@@ -1123,14 +1167,18 @@ async def _scan_one(media_id: int) -> int | None:
     try:
         candidates = await _search_and_rank(media, missing_keys)
     except Exception as exc:  # noqa: BLE001
-        # 搜索异常（含 _search_and_rank 内部年份回源意外失败）→ failed_phase=search
+        # 搜索服务整体故障（全部关键词失败，_search_and_rank 抛 ScanSearchUnavailable）
+        # 或内部意外异常 → 定位 search 阶段为 error（区别于「搜索成功但无候选」的 skipped）
         _phase_error(phases, "search")
         scan_detail["failed_phase"] = "search"
+        scan_detail["search_status"] = "failed"
         return await _finish(
-            "error", f"cloudSaver 搜索异常，本轮中止: {exc}",
+            "error",
+            f"搜索服务异常（cloudSaver 不可达或超时），未能查找缺失集资源，请稍后重试: {exc}",
             touch_last_scan_at=True,
         )
     _phase_done(phases, "search")
+    scan_detail["search_status"] = "ok" if candidates else "no_candidates"
 
     # 4-6. share-info(500ms 串行) → share-list 递归遍历文件 → 大小过滤 → 三重匹配 → 入队
     #      （大小上限经独立短 session _read_size_limits 读取，网络 IO 阶段不持 DB session）
@@ -1229,10 +1277,15 @@ async def _scan_one(media_id: int) -> int | None:
     _phase_done(phases, "enqueue")
 
     # 7. 原地 UPDATE 同一条 task_run 终态 + 更新 last_scan_at（独立短事务）——phase: finish
+    #     message 缺集语义修复：parts 全空（无候选/无入队/无计数）且缺集 >0 时，
+    #     明示缺失集并解释「搜索无匹配候选」（此前误报「无候选命中」）。episodes
+    #     取 scan_detail.missing_items 的 episode（如 S01E190；全量模式含文件名）。
     message = _result_message(
         enqueued=enqueued, unmatched=unmatched,
         size_filtered=size_filtered, non_video=non_video,
         existing_skipped=existing_skipped,
+        missing_episodes=[item["episode"] for item in scan_detail["missing_items"]]
+        if scan_detail["missing_items"] else None,
     )
     scan_detail.update({
         # 全量模式：基线表达为 missing（[None]），实际缺失实体是搜索到的具体文件，

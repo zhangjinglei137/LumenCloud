@@ -7,6 +7,10 @@
   scan_detail.failed_phase（Emby 基线失败→check；cloudSaver 搜索异常→search）；
   正常短路径（跳过）阶段标记 skipped、终态不残留 wait
 - scan_detail：missing_items 初始 not_found → 入队成功改 enqueued；计数准确
+- 搜索故障 vs 无候选（message 语义修复）：全关键词失败 → _search_and_rank 抛
+  ScanSearchUnavailable → status=error + search 阶段 error + failed_phase="search" +
+  message「搜索服务异常…」；搜索成功但无候选且缺集 >0 → message
+  「未找到缺失集 S01E0X 的资源（搜索无匹配候选…）」；单词失败降级语义保持
 - 人话 message：enqueued>0「已入队 N 个资源…」；enqueued=0&unmatched>0
   「未找到缺失集资源…」；skipped/error 沿用既有中文文案
 - GET /api/logs/{id}（含 phases/scan_detail/media_title）与 GET /api/queue
@@ -274,7 +278,8 @@ def test_scan_one_emby_failure_failed_phase_check(db, monkeypatch):
 
 
 def test_scan_one_search_exception_failed_phase_search(db, monkeypatch):
-    """cloudSaver 搜索阶段抛异常 → search 阶段 error、failed_phase='search'。"""
+    """cloudSaver 搜索阶段抛异常 → search 阶段 error、failed_phase='search'、
+    message「搜索服务异常…」，status=error。"""
     from app.tasks import scan as scan_mod
 
     mid = run(_seed_media(db))
@@ -286,7 +291,7 @@ def test_scan_one_search_exception_failed_phase_search(db, monkeypatch):
     rid = run(scan_mod._scan_one(mid))
     tr = run(_read_runs(db, mid))[0]
     assert tr.id == rid and tr.status == "error"
-    assert "cloudSaver 搜索异常，本轮中止: search boom" in tr.message
+    assert "搜索服务异常（cloudSaver 不可达或超时），未能查找缺失集资源，请稍后重试" in tr.message
 
     import json
     phases = json.loads(tr.phases)
@@ -294,6 +299,64 @@ def test_scan_one_search_exception_failed_phase_search(db, monkeypatch):
     assert phases["search"]["status"] == "error"
     detail = json.loads(tr.scan_detail)
     assert detail["failed_phase"] == "search"
+    assert detail["search_status"] == "failed"
+
+
+def test_scan_one_all_keywords_failed_search_error(db, monkeypatch):
+    """全关键词失败（规格场景）：_build_keywords 产生 ≥1 词（tv 季词+纯标题），所有词
+    cloudsaver.search 均抛 CloudSaverUnavailable → _search_and_rank 抛
+    ScanSearchUnavailable → _scan_one：status=error、phases.search=error、
+    scan_detail.failed_phase="search"、message 含「搜索服务异常」。"""
+    from app.services.cloudsaver import CloudSaverUnavailable
+    from app.tasks import scan as scan_mod
+
+    mid = run(_seed_media(db))
+    _patch_scan_env(monkeypatch, db, missing_codes=["S01E01"])
+    # 走真实 _search_and_rank：所有关键词（「测试剧 S01」+「测试剧」≥1 个）均失败
+    monkeypatch.setattr(
+        scan_mod.cloudsaver, "search",
+        AsyncMock(side_effect=CloudSaverUnavailable("cloudSaver 不可达")),
+    )
+
+    rid = run(scan_mod._scan_one(mid))
+    tr = run(_read_runs(db, mid))[0]
+    assert tr.id == rid and tr.status == "error"
+    assert "搜索服务异常（cloudSaver 不可达或超时），未能查找缺失集资源，请稍后重试" in tr.message
+
+    import json
+    phases = json.loads(tr.phases)
+    assert phases["check"]["status"] == "done"
+    assert phases["search"]["status"] == "error"
+    detail = json.loads(tr.scan_detail)
+    assert detail["failed_phase"] == "search"
+    assert detail["search_status"] == "failed"
+
+
+def test_scan_one_single_keyword_failure_still_succeeds(db, monkeypatch):
+    """部分关键词失败降级：一个词抛异常、一个词成功（返回无候选）→ 不抛、正常返回
+    skipped + 缺集文案（保持 test_scan_search_keywords 的单词降级语义在 _scan_one
+    端到端仍成立）。"""
+    from app.services.cloudsaver import CloudSaverUnavailable
+    from app.tasks import scan as scan_mod
+
+    mid = run(_seed_media(db))
+    _patch_scan_env(monkeypatch, db, missing_codes=["S01E01"])
+
+    async def fake_search(kw: str):
+        if "S01" in kw:
+            raise CloudSaverUnavailable("cloudSaver 不可达")
+        return []  # 纯标题词成功但无结果
+
+    monkeypatch.setattr(scan_mod.cloudsaver, "search", fake_search)
+
+    rid = run(scan_mod._scan_one(mid))
+    tr = run(_read_runs(db, mid))[0]
+    assert tr.id == rid and tr.status == "skipped"  # 非 error：存在成功关键词
+    assert "未找到缺失集 S01E01 的资源" in tr.message
+    import json
+    detail = json.loads(tr.scan_detail)
+    assert detail["failed_phase"] is None
+    assert detail["search_status"] == "no_candidates"
 
 
 def test_scan_one_no_missing_skipped_phases_no_wait_residue(db, monkeypatch):
@@ -372,17 +435,32 @@ def test_scan_one_human_message_enqueued_with_filters(db, monkeypatch):
     assert detail["unmatched"] == 0
 
 
-def test_scan_one_human_message_no_candidates_short(db, monkeypatch):
-    """无任何搜索结果（无候选）：enqueued=0/unmatched=0 →「无候选命中」。"""
+def test_scan_one_human_message_no_candidates_with_missing(db, monkeypatch):
+    """搜索成功但无候选且存在缺失集 S01E01（线上案例：candidates 空、parts 空）→
+    message 明示「未找到缺失集 S01E01 的资源…」（不再误导性「无候选命中」）；
+    phases 5 阶段全部 done、scan_detail.missing_total=1、status=skipped。"""
     from app.tasks import scan as scan_mod
 
     mid = run(_seed_media(db))
     scan_mod = _patch_scan_env(monkeypatch, db, missing_codes=["S01E01"])
+    # 搜索成功（≥1 关键词 ok）但云分享无候选 → _search_and_rank 返回 []（不抛）
+    monkeypatch.setattr(scan_mod, "_search_and_rank", AsyncMock(return_value=[]))
 
     rid = run(scan_mod._scan_one(mid))
     tr = run(_read_runs(db, mid))[0]
     assert tr.id == rid and tr.status == "skipped"
-    assert tr.message == "无候选命中"
+    assert "未找到缺失集 S01E01 的资源" in tr.message
+    assert "搜索无匹配候选，资源可能尚未更新" in tr.message
+
+    import json
+    phases = json.loads(tr.phases)
+    assert list(phases.keys()) == ["check", "search", "match", "enqueue", "finish"]
+    assert all(phases[k]["status"] == "done" for k in phases)
+    detail = json.loads(tr.scan_detail)
+    assert detail["missing_total"] == 1
+    assert detail["failed_phase"] is None
+    assert detail["search_status"] == "no_candidates"
+    assert detail["missing_items"] == [{"episode": "S01E01", "result": "not_found"}]
 
 
 # ---------------------------------------------------------------------------
