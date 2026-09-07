@@ -243,3 +243,84 @@ def test_scan_one_share_info_all_failed_with_numeric_share_ok(db, monkeypatch):
     assert detail["enqueued"] == 1
     assert detail["share_info_ok"] == 1
     assert detail["share_info_fail"] == 0
+
+
+def test_scan_one_skips_dead_candidates_reaches_valid_share(db, monkeypatch):
+    """前 20 候选 share-info 全部失效、后续候选有效 → 越过错码、walk 有效分享
+    （含 190.mkv）→ 纯数字兜底命并入队 success。
+
+    线上案例复现：candidates 排序后前 20（乃至前 60）全为失效分享码，真实有效
+    分享 2c16748e7818 排名靠后——验证前截断前 20 会永远轮不到有效分享。
+    """
+    from app.tasks import scan as scan_mod
+
+    mid = run(_seed_media(db))
+    scan_mod = _patch_scan_base(monkeypatch, db, missing_codes=["S01E190"])
+    # 25 个候选：前 20 个失效分享码（share-info 抛错）+ 第 21 个起有效
+    dead = [{"title": "失效分享", "share_code": f"dead{i:012x}"} for i in range(20)]
+    valid = [{"title": "凡人修仙传 (2020)", "share_code": f"ok{i:012x}"} for i in range(5)]
+    monkeypatch.setattr(scan_mod, "_search_and_rank",
+                        AsyncMock(return_value=dead + valid))
+
+    ok_codes = {c["share_code"] for c in valid}
+
+    async def fake_share_info(code: str) -> dict:
+        if code in ok_codes:
+            return {"pwd_id": "pd", "stoken": "st", "receive_code": "", "fileSize": 9999}
+        raise RuntimeError("cloudSaver 500")
+
+    monkeypatch.setattr(scan_mod, "_cloudsaver_share_info", fake_share_info)
+    # 有效分享 walk 返回 190.mkv（纯数字命名）→ _walk_share 根目录一层即命中
+    monkeypatch.setattr(
+        scan_mod.cloudsaver, "share_list",
+        AsyncMock(return_value={"list": [
+            {"fileName": "190.mkv", "fileId": "f1", "fileIdToken": "ft",
+             "isFolder": False, "size": 1024 * 1024 * 1024},
+        ]}),
+    )
+
+    rid = run(scan_mod._scan_one(mid))
+    tr = run(_read_runs(db, mid))[0]
+    assert tr.id == rid and tr.status == "success"
+    assert "已入队 1 个资源" in tr.message
+    detail = json.loads(tr.scan_detail)
+    assert detail["enqueued"] == 1
+    assert detail["share_info_ok"] == 5     # 越过 20 失效码，5 个有效全验证
+    assert detail["share_info_fail"] == 20
+    assert detail["search_status"] == "ok"
+    # 入队落库
+    async def _read_es():
+        from app.models import EpisodeState
+        from sqlalchemy import select
+        async with db() as s:
+            return (await s.execute(
+                select(EpisodeState).where(EpisodeState.media_id == mid)
+            )).scalars().all()
+    es = run(_read_es())
+    assert len(es) == 1 and es[0].episode == "S01E190"
+
+
+def test_scan_one_share_try_limit_stops_when_all_dead(db, monkeypatch):
+    """尝试上限 _MAX_SHARE_TRY 生效：候选 > 上限且全部失效 → 只验证上限个即停；
+    message「验证均失败」N 用实际尝试数（=share_info_fail=上限）。"""
+    from app.tasks import scan as scan_mod
+
+    mid = run(_seed_media(db))
+    scan_mod = _patch_scan_base(monkeypatch, db, missing_codes=["S01E190"])
+    limit = scan_mod._MAX_SHARE_TRY
+    candidates = [{"title": "失效分享", "share_code": f"dead{i:012x}"}
+                  for i in range(limit + 15)]  # 超过上限
+    monkeypatch.setattr(scan_mod, "_search_and_rank",
+                        AsyncMock(return_value=candidates))
+    monkeypatch.setattr(
+        scan_mod, "_cloudsaver_share_info",
+        AsyncMock(side_effect=RuntimeError("cloudSaver 500")),
+    )
+
+    rid = run(scan_mod._scan_one(mid))
+    tr = run(_read_runs(db, mid))[0]
+    assert tr.id == rid and tr.status == "skipped"
+    assert f"搜索到 {limit} 个候选分享，验证均失败" in tr.message  # N = 实际尝试数
+    detail = json.loads(tr.scan_detail)
+    assert detail["share_info_ok"] == 0
+    assert detail["share_info_fail"] == limit   # 未验证剩余候选（超上限）

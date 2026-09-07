@@ -66,6 +66,14 @@ _ACTIVE_STATES = ("queued", "transferring", "downloading", "done", "failed")
 # 巡检是快任务：内存打点，结束时一次性落库（运行中不实时写 DB）。
 _PHASE_KEYS = ("check", "search", "match", "enqueue", "finish")
 
+# 候选分享筛选上限（诊断实证：cloudSaver 搜索返回大量失效分享码——rank 排序前 20/60
+# 全 share-info HTTP 500，真实有效分享（2c16748e7818 排名 #73）被失效码挤出前 20）。
+# 语义对齐 n8n「遍历分享码直到找到」：不再在验证前硬截断前 20，而是放行排序后的
+# 最多 _MAX_RANK_CANDIDATES 个候选，交由 _scan_one 逐个验证（失败跳过、继续后续）。
+_MAX_RANK_CANDIDATES = 100   # rank 后放行上限（本次 230 去重候选内；防极端返回过大）
+_MAX_SHARE_TRY = 80          # 单轮巡检最多验证候选数（80×~0.5s 串行 ≈ 40s 上限，
+                             # 防止遍历 230 个过慢；成功分享也全 walk，不按成功数停）
+
 
 class ScanSearchUnavailable(Exception):
     """cloudSaver 搜索整体不可用：全部搜索关键词调用均失败（静默降级无法区分）。
@@ -749,7 +757,10 @@ async def _search_and_rank(media, missing_keys: set[str]) -> list[dict]:
         raise ScanSearchUnavailable("全部搜索关键词调用 cloudSaver 均失败")
     expanded = _expand_share_codes(raw)
     year = await _media_year(media)
-    return _rank_candidates(media, expanded, year=year)[:20]
+    # 候选分享筛选：rank 排序后不再硬截断前 20（诊断：前 20/60 可能全是失效码，
+    # 有效分享被挤出）——放行排序后最多 _MAX_RANK_CANDIDATES 个，验证/尝试上限由
+    # _scan_one 按 share-info 成功数控制。
+    return _rank_candidates(media, expanded, year=year)[:_MAX_RANK_CANDIDATES]
 
 
 # ---------------------------------------------------------------------------
@@ -1238,17 +1249,22 @@ async def _scan_one(media_id: int) -> int | None:
 
     enqueued = existing_skipped = size_filtered = unmatched = non_video = 0
     unmatched_files: list[str] = []  # 未匹配文件名样例（至多收集 3 个，供 message 定位）
-    share_info_ok = share_info_fail = walk_fail = 0
+    share_info_ok = share_info_fail = walk_fail = tried = 0
     _phase_start(phases, "match")
     _phase_start(phases, "enqueue")  # 匹配+入队同循环内推进；先统一标 process
     for cand in candidates:
+        # 验证尝试上限：对齐 n8n「遍历分享码直到找到」——失效码逐个跳过、继续后续候选，
+        # 但单轮最多验证 _MAX_SHARE_TRY 个（80×~0.5s≈40s 上限，防 230 候选过慢）
+        if tried >= _MAX_SHARE_TRY:
+            break
+        tried += 1
         share_code = cand["share_code"]
         try:
             info = await _cloudsaver_share_info(share_code)
             share_info_ok += 1
         except Exception as exc:
             share_info_fail += 1
-            logger.warning("[scan] share-info %s 失败: %s", share_code, exc)
+            logger.warning("[scan] share-info %s 失败（跳过，继续后续候选）: %s", share_code, exc)
             continue
         finally:
             await asyncio.sleep(0.5)  # 逐码 500ms 间隔串行（§4.3 步骤3）
@@ -1326,8 +1342,9 @@ async def _scan_one(media_id: int) -> int | None:
     #     明示缺失集并解释「搜索无匹配候选」（此前误报「无候选命中」）；候选分享
     #     share-info 验证全部失败（诊断实证：cloudSaver 搜索返回大量失效分享码）
     #     时优先报「候选分享验证均失败」。episodes 取 scan_detail.missing_items 的
-    #     episode（如 S01E190；全量模式含文件名）。
-    share_info_all_failed = len(candidates) if (candidates and share_info_ok == 0) else 0
+    #     episode（如 S01E190；全量模式含文件名）。N 用实际尝试过的候选数
+    #     （share_info_fail：candidates 可能有 _MAX_SHARE_TRY 上限截断，未验证的不计入）。
+    share_info_all_failed = share_info_fail if (candidates and share_info_ok == 0) else 0
     message = _result_message(
         enqueued=enqueued, unmatched=unmatched,
         size_filtered=size_filtered, non_video=non_video,
