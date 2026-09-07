@@ -276,6 +276,11 @@ async def create_media(
     # 已知时查一次 TMDB；失败静默降级为 None，绝不阻断添加流程——与 Emby 故障
     # fail-open 风格一致；media_type 为空跳过查询）
     series_status = None
+    # poster_path：有传入值优先（TMDB 搜索添加 / 手动添加 / 审批透传）；为空时若
+    # 能从 TMDB 元数据取到则回填——Emby 订阅不带海报（Emby 海报是完整 URL，与
+    # poster_path 的 TMDB 相对路径语义不同，故订阅时不传，由后端统一回填）；拿不到
+    # 保持 None（fail-open，TMDB 无海报的影视本来无图）。
+    poster_path = payload.poster_path
     if payload.tmdb_id is not None and payload.media_type is not None:
         try:
             meta = await tmdb.get_by_tmdb_id(payload.tmdb_id, payload.media_type)
@@ -291,6 +296,8 @@ async def create_media(
             )
         else:
             series_status = meta.get("status")
+            if poster_path is None:
+                poster_path = meta.get("poster_path")
 
     media = Media(
         title=payload.title.strip(),
@@ -298,7 +305,7 @@ async def create_media(
         media_type=payload.media_type,
         status="tracking",
         in_emby=False,
-        poster_path=payload.poster_path,  # Q2：海报相对路径落库
+        poster_path=poster_path,  # Q2：海报相对路径落库（Emby 订阅场景由 TMDB 回填）
         series_status=series_status,
     )
     session.add(media)
