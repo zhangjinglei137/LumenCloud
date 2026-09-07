@@ -23,7 +23,7 @@ import re
 import time
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
@@ -58,9 +58,10 @@ _RE_CN_EP = re.compile(r"第\s*(\d{1,3})\s*[集话]")
 # failed 需人工 retry（§4.5 retry≥3→failed），不可被 scan 自动重新入队（否则撞 UNIQUE 且绕过人工确认）
 _ACTIVE_STATES = ("queued", "transferring", "downloading", "done", "failed")
 
-# P3-1（延后项）：done→failed 循环上限——对齐 transfer._RETRY_LIMIT（3 次）。
-# _resolve_done_states 中 done→failed 算一次循环（retry_count +1），达到上限后保持
-# done 状态只写 error，杜绝「人工 retry→转存 done→Emby 仍未入库转 failed」无限循环。
+# P3-1 done→failed 循环上限——对齐 transfer._RETRY_LIMIT（3 次）。
+# _resolve_done_states 中 done→failed 算一次循环（retry_count +1），达到上限后
+# 转为 node='failed'/state='failed' 终态（P1-5：与其它失败终态对齐），经 queue.py
+# retry_task 人工解锁继续（此前保持 done 仅写 error，retry 只认 failed 无法干预卡死）。
 _DONE_FAIL_RETRY_LIMIT = 3
 # 转 failed 与达上限两种 error 文案（供测试与人工排查识别）
 _DONE_FAIL_ERROR = "下载完成但 Emby 未入库，请人工确认"
@@ -159,10 +160,12 @@ async def _resolve_done_states(media, missing_keys: set[str], movie_missing: boo
     - movie 全量模式：episode=文件名。movie_missing=True（Emby 整部缺失）→ 未入库 → 转 failed；
       movie 已入库（missing=[]，movie_missing=False）→ 全部视为确认 → 删除。
 
-    P3-1（延后项）done→failed 循环上限：转 failed 消耗一次 retry_count（SQL 表达式 +1），
+    P3-1 done→failed 循环上限：转 failed 消耗一次 retry_count（SQL 表达式 +1），
     条件 `retry_count < _DONE_FAIL_RETRY_LIMIT`（对齐 transfer._RETRY_LIMIT=3）——未达上限
-    才转 failed 并联动 tq；已达上限的 done 记录保持 done（不转 failed、不删除、防重保留），
-    仅更新 error 说明（上限 error 文案），杜绝「人工 retry → 转存 done → 转 failed」无限循环。
+    才转 failed 并联动 tq；已达上限的记录同样写 node='failed'/state='failed'（P1-5：
+    与其它失败终态对齐，node_error/node_attempt 同步），使 queue.py retry_task 可人工
+    解锁重试（此前保持 done 仅写 error，retry 只认 failed 无法干预 → 卡死）。
+    上限分支不联动 tq（tq 保持 done，P1-3 后 retry 按 status IN ('failed','done') 联动重置）。
     上限分支不通知（巡检避免噪音），task_run 由 _scan_one 主流程统一记录。
 
     全程条件删除/更新（WHERE 当前状态）不影响其他数据；异常由调用方 try/except 兜底，不阻断巡检。
@@ -190,10 +193,16 @@ async def _resolve_done_states(media, missing_keys: set[str], movie_missing: boo
             for es in done_rows:
                 if movie_missing or es.episode in missing_keys:
                     if es.retry_count >= _DONE_FAIL_RETRY_LIMIT:
-                        # P3-1：已达循环上限 → 不转 failed、不删除，保持 done 状态仅写 error
-                        # 供人工核实（防重保留，避免无限循环）。
-                        # m1（Oracle Gate2）：error 已是上限文案的记录不再重复写（无效写 +
-                        # 污染 updated_at），下一轮 select 命中后 update 无实际改写、保持干净。
+                        # P3-1 + P1-5：已达循环上限 → 写 node='failed'/state='failed'
+                        # 终态（与其它失败终态对齐：node_error/node_attempt 同步），
+                        # 使 queue.py retry_task 可人工解锁（此前保持 done 仅写 error，
+                        # retry 只认 failed 无法干预 → 卡死）。node_attempt 置上限值
+                        # _DONE_FAIL_RETRY_LIMIT（retry 后由 queue.py 重置为 0）；
+                        # error 与 node_error 均写上限文案。上限分支不联动 tq（tq 保持
+                        # done，P1-3 后 retry 按 status IN ('failed','done') 联动重置）。
+                        # 防无限循环语义不变：转 failed 消耗本轮，须人工 retry 才可再次
+                        # done→failed，杜绝自动无限循环。state 改 failed 后下一轮
+                        # select(state='done') 天然不命中，无需 error 去重条件。
                         await tx.execute(
                             update(EpisodeState)
                             .where(
@@ -201,12 +210,12 @@ async def _resolve_done_states(media, missing_keys: set[str], movie_missing: boo
                                 EpisodeState.episode == es.episode,
                                 EpisodeState.state == "done",
                                 EpisodeState.retry_count >= _DONE_FAIL_RETRY_LIMIT,
-                                or_(
-                                    EpisodeState.error.is_(None),
-                                    EpisodeState.error != _DONE_LIMIT_ERROR,
-                                ),
                             )
                             .values(
+                                node="failed",
+                                state="failed",
+                                node_error=_DONE_LIMIT_ERROR,
+                                node_attempt=_DONE_FAIL_RETRY_LIMIT,
                                 error=_DONE_LIMIT_ERROR,
                                 updated_at=now,
                             )
@@ -758,19 +767,25 @@ async def scan_all_media(force: bool = False) -> None:
 
 
 async def _record_scan_result(media_id: int, status: str, message: str,
-                              *, touch_last_scan_at: bool = False) -> int | None:
+                              *, duration_seconds: float,
+                              touch_last_scan_at: bool = False) -> int | None:
     """短事务写一条 scan task_run（可选同步更新 media.last_scan_at）并 commit，返回 task_run id。
 
     P1-1（延后项）：各短路/结束分支的独立短 session，避免借用外层长事务——
     session 仅存在于此调用窗口，写完即释放；task_run 表记录（record_task_run 仅
     flush）与本调用内的一次 commit 一并落库。
+
+    Q8①：duration_seconds 必填——调用方（_scan_one 入口 t0 计时）透传真实耗时。
     """
     async with async_session() as s:
         if touch_last_scan_at:
             await s.execute(
                 update(Media).where(Media.id == media_id).values(last_scan_at=_now())
             )
-        rid = await record_task_run(s, "scan_media", status, message, media_id)
+        rid = await record_task_run(
+            s, "scan_media", status, message, media_id,
+            duration_seconds=duration_seconds,
+        )
         await s.commit()
         return rid
 
@@ -785,6 +800,8 @@ async def _scan_one(media_id: int) -> int | None:
     expire_on_commit=False，开头短会话读出的 media 为 detached 对象，已加载属性
     （id/status/title/tmdb_id/media_type 等）可安全继续使用。
     """
+    t0 = time.monotonic()  # Q8①：真实耗时（单部巡检）
+
     # 0. 短事务读取 media（立即关闭；detached 属性后续安全）
     async with async_session() as s:
         media = await s.get(Media, media_id)
@@ -795,7 +812,8 @@ async def _scan_one(media_id: int) -> int | None:
     # 1. 状态预检：paused/error 跳过；downloading 不跳过（防卡死），仅本轮不入队
     if media.status in ("paused", "error"):
         rid = await _record_scan_result(
-            media_id, "skipped", f"media.status={media.status}，跳过巡检"
+            media_id, "skipped", f"media.status={media.status}，跳过巡检",
+            duration_seconds=time.monotonic() - t0,
         )
         return rid
 
@@ -809,6 +827,7 @@ async def _scan_one(media_id: int) -> int | None:
             media_id, "error",
             f"Emby 故障，fail-safe 暂停新缺集发现: {exc}",
             touch_last_scan_at=True,
+            duration_seconds=time.monotonic() - t0,
         )
         return rid
 
@@ -821,6 +840,7 @@ async def _scan_one(media_id: int) -> int | None:
             media_id, "skipped",
             "Emby 未收录该剧集，防重基线强制（scan_baseline_required=True），本轮跳过",
             touch_last_scan_at=True,
+            duration_seconds=time.monotonic() - t0,
         )
         return rid
 
@@ -840,6 +860,7 @@ async def _scan_one(media_id: int) -> int | None:
         rid = await _record_scan_result(
             media_id, "skipped", "无遗漏集（Emby 基线已覆盖），跳过",
             touch_last_scan_at=True,
+            duration_seconds=time.monotonic() - t0,
         )
         return rid
 
@@ -935,6 +956,7 @@ async def _scan_one(media_id: int) -> int | None:
     rid = await _record_scan_result(
         media_id, "success" if enqueued else "skipped", message,
         touch_last_scan_at=True,
+        duration_seconds=time.monotonic() - t0,
     )
     # 6b. 入队成功后触发转存消费（§4.4 事件触发；transfer lane 未就绪时静默跳过）
     #     fire-and-forget 在 DB session 外触发（_background 强引用集合防 GC）

@@ -1,39 +1,48 @@
-"""转存队列 API（阶段 3）：JWT 鉴权 + §9.1 脱敏 + 人工重试。
+"""队列 API（L8 影视任务树）：JWT 鉴权 + 树结构 + 人工重试。
 
-- GET  /api/queue           队列列表（登录用户）；DTO 白名单构造，网盘凭据绝不直出：
-                              guest 全部隐藏；admin 仅脱敏回显 share_code 后 4 位；
-                              stoken/receive_code/fid_tokens/pwd_id/folder_id/fids 任何角色不返回
-- POST /api/queue/{id}/retry admin 人工重试 failed 任务（条件更新防并发，行数=0 → 404；
-                              episode_state 同步失败 → 409，事务回滚保持原状；
-                              commit 后触发转存消费，失败仅告警不阻断）
+- GET  /api/queue           影视任务树列表（登录用户）：
+                              父级 = 影视任务（按 media 分组，aggregate_status 聚合
+                              all_done/partial_failed/running/waiting，
+                              total_count / done_count），
+                              子级 = 分集五节点状态机（node/node_attempt/node_error）。
+                              §9.1 网盘凭据（stoken/fids/share_code 等）一律不返回，
+                              guest/admin 同构。
+- POST /api/queue/{id}/retry admin 人工重试 failed 子任务：
+                              task_id 优先为 episode_state.id（新树结构子任务 id），
+                              兼容旧扁平调用按 transfer_queue.id 传入；
+                              仅 node='failed'（或旧数据 state='failed'）可重试；
+                              重置节点字段 + 双表联动回 pending/queued +
+                              清空 transfer_queue 幂等标记（防盲等）；
+                              非 failed → 409，不存在 → 404，条件更新防并发，
+                              commit 后触发转存消费（失败仅告警不阻断）。
 """
 import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import EpisodeState, TransferQueue, User
+from app.models import EpisodeState, Media, TransferQueue, User
 from app.routers.deps import get_current_admin, get_current_user, get_session
 
 router = APIRouter()
 
 logger = logging.getLogger(__name__)
 
-_GB = 1024**3
+# 父级聚合状态判定中的「进行中」节点集合（L8 oracles 决策）：idle 归「等待」。
+_RUNNING_NODES = frozenset({"transfer", "download", "downloading", "scrape", "library"})
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-def _mask_share_code(code: str) -> str:
-    """§9.1 脱敏：share_code 仅回显后 4 位（如 "****abcd"）。"""
-    return "****" + str(code)[-4:]
+def _iso(dt: datetime | None) -> str | None:
+    return dt.isoformat() if dt else None
 
 
-# 兼容旧模块名（其他 lane 可能 import _load_transfer_queue_model）
+# 兼容旧模块名（其他 lane / capacity.py 仍可能按此名导入该 helper）
 def _load_transfer_queue_model():
     try:
         from app.models.transfer_queue import TransferQueue
@@ -45,25 +54,56 @@ def _load_transfer_queue_model():
     return TransferQueue
 
 
-def _to_item(row: TransferQueue, is_admin: bool) -> dict:
-    """构造白名单 DTO —— 绝不透出表记录（§9.1）。"""
-    dto = {
-        "id": row.id,
-        "status": row.status,
-        "file_name": row.file_name,
-        "file_size": row.file_size,
-        "file_size_gb": round(row.file_size / _GB, 2) if row.file_size else None,
-        "episode": row.episode,
-        "media_id": row.media_id,
-        "quota_reject_count": row.quota_reject_count,
-        "error": row.error,
-        "enqueued_at": row.enqueued_at,
-        "updated_at": row.updated_at,
+def _child_dto(es: EpisodeState) -> dict:
+    """子任务 DTO（分集五节点视图，§9.1 白名单）：仅返回非敏感字段。"""
+    return {
+        "id": es.id,  # 重试接口 POST /queue/{id}/retry 用（episode_state.id）
+        "episode": es.episode,
+        "node": es.node,
+        "node_attempt": es.node_attempt,
+        "node_error": es.node_error,
+        "file_name": es.file_name,
+        "file_size": es.file_size,
+        "updated_at": _iso(es.updated_at),
+        "node_started_at": _iso(es.node_started_at),
+        "node_finished_at": _iso(es.node_finished_at),
     }
-    if is_admin:
-        dto["share_code"] = _mask_share_code(row.share_code)
-        dto["share_code_tail"] = str(row.share_code)[-4:] if row.share_code else None
-    return dto
+
+
+def _aggregate_status(children: list[dict]) -> str:
+    """父级聚合状态规则（L8 oracles 决策，按优先级依次判定）：
+    - 空                                  → waiting
+    - 全部子任务 node='done'              → all_done
+    - 任一子任务 node='failed'            → partial_failed
+    - 任一进行中（transfer/download/downloading/scrape/library）→ running
+    - 其余（全部 idle / 未知节点）        → waiting
+    （idle 视为「等待开始」计入 waiting；「进行中」集合不含 idle，
+      否则「全部等待 → waiting」分支将永不命中。）
+    """
+    if not children:
+        return "waiting"
+    if all(c["node"] == "done" for c in children):
+        return "all_done"
+    if any(c["node"] == "failed" for c in children):
+        return "partial_failed"
+    if any(c["node"] in _RUNNING_NODES for c in children):
+        return "running"
+    return "waiting"
+
+
+def _parent_dto(group: dict) -> dict:
+    """父级 DTO（影视任务）：分组内子任务 + 聚合指标。"""
+    children = group["children"]
+    done_count = sum(1 for c in children if c["node"] == "done")
+    return {
+        "media_id": group["media_id"],
+        "title": group["title"],
+        "media_type": group["media_type"],
+        "aggregate_status": _aggregate_status(children),
+        "total_count": len(children),
+        "done_count": done_count,
+        "children": children,
+    }
 
 
 @router.get("/queue")
@@ -73,16 +113,52 @@ async def list_queue(
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> list[dict]:
-    """转存队列列表，按 enqueued_at 升序（简单分页）。按 admin/guest 分级脱敏。"""
-    stmt = (
-        select(TransferQueue)
-        .order_by(TransferQueue.enqueued_at.asc(), TransferQueue.id.asc())
-        .limit(limit)
-        .offset(offset)
-    )
-    rows = (await session.execute(stmt)).scalars().all()
-    is_admin = user.role == "admin"
-    return [_to_item(row, is_admin) for row in rows]
+    """影视任务树列表（L8 树结构契约，替代旧扁平 QueueItem[]）。
+
+    一次取回分页的 episode_state（LEFT JOIN media 取 title/media_type），按其
+    media_id 分组为父级；孤儿 es（media 记录已不存在，FK 保护下少见）归入合成
+    父级 media_id=null，title 取首个子任务 file_name（缺省「未关联影视」）。
+    父级按子任务最近 updated_at 倒序，子任务内按 updated_at 倒序。
+    """
+    rows = (
+        await session.execute(
+            select(EpisodeState, Media)
+            .outerjoin(Media, Media.id == EpisodeState.media_id)
+            .order_by(EpisodeState.updated_at.desc(), EpisodeState.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+    ).all()
+
+    # 按 media_id 分组（保序）；孤儿用统一哨兵 key 合成一个父级
+    orphan_key: object = object()
+    groups: dict[object, dict] = {}
+    for es, media in rows:
+        key = es.media_id if media is not None else orphan_key
+        g = groups.get(key)
+        if g is None:
+            if media is not None:
+                media_id, title, media_type = media.id, media.title, media.media_type
+            else:
+                media_id = None
+                title = es.file_name or "未关联影视"
+                media_type = None
+            g = {
+                "media_id": media_id,
+                "title": title,
+                "media_type": media_type,
+                "children": [],
+                # 组内最近 updated_at（父级排序用；es.updated_at 可能为 None → 兜底最小）
+                "latest": es.updated_at or datetime.min,
+            }
+            groups[key] = g
+        if es.updated_at and es.updated_at > g["latest"]:
+            g["latest"] = es.updated_at
+        g["children"].append(_child_dto(es))
+
+    # 父级按子任务最近 updated_at 倒序
+    ordered = sorted(groups.values(), key=lambda g: g["latest"], reverse=True)
+    return [_parent_dto(g) for g in ordered]
 
 
 @router.post("/queue/{task_id}/retry")
@@ -91,53 +167,103 @@ async def retry_task(
     admin: User = Depends(get_current_admin),  # §9.1 写操作鉴权
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """admin 人工重试 failed 任务（契约见 §4.5 状态机）：
-    transfer_queue: failed → pending + quota_reject_count=0 + error=null
-    episode_state : failed 同步回 queued + retry_count=0 + error=null + updated_at
-    （retry_count 列仅存在于 episode_state（§3.1），transfer_queue 无此列，故不重置该项）
-    条件更新，行数=0（不存在/非 failed）→ 404。
+    """admin 人工重试 failed 子任务（L8 节点语义，契约见五节点状态机）：
+
+    - task_id 优先为 episode_state.id（树结构子任务 id，即子级返回的 id）；
+      兼容旧扁平接口按 transfer_queue.id 调用（旧调用方/旧测试经
+      (media_id, episode) 关联回 episode_state 后同等处理）。
+    - 可重试：node='failed'（新契约）或旧数据 state='failed'；重置
+      node='idle' / node_attempt=0 / node_error=None / state='queued' /
+      retry_count=0 / error=None，并同步 transfer_queue failed/done → pending +
+      清空 save_task_id/save_attempt_at（P0-1 防幂等盲等）。P1-3：scrape/library
+      失败终态下 tq 已是 'done'（_complete_download 置的），故联动条件放宽为
+      status IN ('failed','done')，以 es 失败定位守卫不误伤正常完成项。
+    - 非 failed → 409；任务不存在 → 404。条件更新防并发（行数=0 → 409，
+      未 commit 自动回滚保持原状）；commit 后延迟导入触发转存消费，
+      失败仅告警不阻断。
     """
-    now = _now()
-    row = await session.get(TransferQueue, task_id)
-    if row is None:
-        raise HTTPException(status_code=404, detail="队列任务不存在")
+    tq = None
+    # 1) 优先按 episode_state.id 定位（新语义）
+    es = await session.get(EpisodeState, task_id)
+    if es is None:
+        # 2) 回退旧语义：task_id 指向 transfer_queue.id → 经双键关联回 es
+        tq = await session.get(TransferQueue, task_id)
+        if tq is None:
+            raise HTTPException(status_code=404, detail="队列任务不存在")
+        es = (
+            await session.execute(
+                select(EpisodeState).where(
+                    EpisodeState.media_id == tq.media_id,
+                    EpisodeState.episode == tq.episode,
+                )
+            )
+        ).scalars().first()
+        if es is None:
+            raise HTTPException(status_code=404, detail="队列任务不存在或状态不允许重试")
+    else:
+        # 3) 新语义取对应 transfer_queue（若存在）以便联动清空幂等标记
+        tq = (
+            await session.execute(
+                select(TransferQueue).where(
+                    TransferQueue.media_id == es.media_id,
+                    TransferQueue.episode == es.episode,
+                )
+            )
+        ).scalars().first()
 
-    result = await session.execute(
-        update(TransferQueue)
-        .where(TransferQueue.id == task_id, TransferQueue.status == "failed")
-        .values(
-            status="pending",
-            quota_reject_count=0,
-            error=None,
-            # P0-1（council）：人工重试 = 完整重新走转存链——与状态回退同事务清空
-            # save_task_id，防「已受理未落盘」的幂等标记残留导致下一轮跳过 save
-            # 盲等死循环；save_attempt_at 与其同生同灭一并清空。
-            save_task_id=None,
-            save_attempt_at=None,
-            updated_at=now,
+    # 4) 可重试判定：node='failed'（新语义）或 state='failed'（旧数据兼容）
+    if es.node != "failed" and es.state != "failed":
+        raise HTTPException(
+            status_code=409,
+            detail="episode_state 状态不一致，任务不可重试（仅 failed 状态可人工重试）",
         )
-    )
-    if result.rowcount == 0:
-        raise HTTPException(status_code=404, detail="任务不存在或状态不允许重试（仅 failed 可重试）")
 
-    # 双表联动（§3.1）：episode_state 防重权威源同步回 queued
+    # 5) 重置节点与执行流状态（WHERE 保留 failed 条件防并发，行数=0 → 409）
+    now = _now()
     es_result = await session.execute(
         update(EpisodeState)
         .where(
-            EpisodeState.media_id == row.media_id,
-            EpisodeState.episode == row.episode,
-            EpisodeState.state == "failed",
+            EpisodeState.id == es.id,
+            or_(EpisodeState.node == "failed", EpisodeState.state == "failed"),
         )
-        .values(state="queued", retry_count=0, error=None, updated_at=now)
+        .values(
+            node="idle",
+            node_attempt=0,
+            node_error=None,
+            node_started_at=None,
+            node_finished_at=None,
+            state="queued",
+            retry_count=0,
+            error=None,
+            updated_at=now,
+        )
     )
     if es_result.rowcount == 0:
-        # P2-3（Oracle 审查）：episode_state 非 failed（双表状态不一致）→ 409 中断；
-        # 未 commit → tq 已改的 pending 一并回滚，保持 failed 原状（合理）
         raise HTTPException(status_code=409, detail="episode_state 状态不一致，请稍后重试")
+
+    # 6) 双表联动（§3.1）：transfer_queue failed/done → pending + 清空幂等标记防盲等。
+    #    P1-3：scrape/library 失败终态（es.node='failed'）下 tq.status 已是 'done'
+    #    （_complete_download 置的），原 WHERE status='failed' 不命中 → es 已重置但
+    #    tq 未联动 → _process_one_pending 取件（tq.pending）永不命中而卡死。放宽为
+    #    IN ('failed','done')：es 已在上方按 node/state='failed' 定位（409 判定守卫），
+    #    正常完成项（es.node='done'）不会走到此分支，不误伤。
+    if tq is not None:
+        await session.execute(
+            update(TransferQueue)
+            .where(TransferQueue.id == tq.id, TransferQueue.status.in_(("failed", "done")))
+            .values(
+                status="pending",
+                quota_reject_count=0,
+                error=None,
+                save_task_id=None,
+                save_attempt_at=None,
+                updated_at=now,
+            )
+        )
     await session.commit()
 
-    # P1-2（Oracle 审查）：重试成功后触发转存消费（延迟导入 + 兜底，与 scan 触发同模式；
-    # 状态已改 pending/queued，触发后由队列消费续跑）
+    # 7) 重试成功后触发转存消费（延迟导入 + 兜底，与 scan 触发同模式；
+    #    状态已改 pending/queued，触发后由队列消费续跑）
     try:
         from app.tasks.transfer import trigger_transfer
 

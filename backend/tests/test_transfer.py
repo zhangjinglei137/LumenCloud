@@ -152,15 +152,12 @@ def env(monkeypatch):
         "capacity": FakeCapacityProvider(),
         "notifier": FakeNotifier(),
     }
-    nas = types.SimpleNamespace(nastools_sync=AsyncMock(return_value=None))
-    fakes["nastools"] = nas
 
     monkeypatch.setattr(transfer_mod, "aria2", types.SimpleNamespace(client=fakes["aria2"]))
     monkeypatch.setattr(transfer_mod, "cloudsaver", fakes["cloudsaver"])
     monkeypatch.setattr(transfer_mod, "alist", fakes["alist"])
     monkeypatch.setattr(transfer_mod, "capacity", types.SimpleNamespace(provider=fakes["capacity"]))
     monkeypatch.setattr(transfer_mod, "notifier", fakes["notifier"])
-    monkeypatch.setattr(transfer_mod, "nastools_sync", nas)
     # P2-6：非终态回退会 _spawn 后台续跑——单测用 asyncio.run 每轮关闭事件循环，
     # 与跨 loop 后台 task 不兼容，此处置为「跟踪不执行」（验证触发行为，不真正续跑；
     # P2-6 续跑语义由 test_oracle_fixes 专门验证）
@@ -253,7 +250,9 @@ async def get_first_dl(db):
 # 阶段 A：complete → 释放链 + 双表 done
 # ---------------------------------------------------------------------------
 
-def test_poll_complete_marks_done_and_triggers_sync(db, env, monkeypatch):
+def test_poll_complete_enters_scrape_and_triggers_scrape(db, env, monkeypatch):
+    """下载完成（L3 新语义）：es 进入刮削节点 node='scrape'，state 不置 done、不删夸克；
+    触发刮削执行器（nastools_sync force=True）+ A-1 转存续跑。"""
     patch_db(monkeypatch, db)
     mid, es_id, tq_id, dl_id = run(seed_downloading(db))
     env["aria2"].statuses["gid1"] = "complete"
@@ -266,19 +265,28 @@ def test_poll_complete_marks_done_and_triggers_sync(db, env, monkeypatch):
     assert dl.status == "complete"
     assert dl.downloaded_at is not None
     assert tq.status == "done"
-    assert es.state == "done"
+    # L2/L3：下载完成 → es 进入刮削节点（node 权威）。state 保持 downloading——
+    # 置 done 会被 scan._resolve_done_states 当作「Emby 已入库」删除/转 failed，
+    # 误伤仍在刮削/入库的集。
+    assert es.state == "downloading"
+    assert es.node == "scrape"
+    assert es.node_attempt == 0
+    assert es.node_started_at is not None
+    assert es.node_finished_at is not None
 
-    # 夸克残留已删除（alist.remove([ep.mkv], /quark/)）
-    assert (["ep.mkv"], "/quark/") in env["alist"].remove_calls
+    # G6：下载完成不再删夸克（入库确认后才删，由 library_check 在 node='library'
+    # 命中 Emby 时执行），此处零删除调用
+    assert env["alist"].remove_calls == []
     # download_complete 通知（全体）
     done_events = [e for e in env["notifier"].events if e.event_type == "download_complete"]
     assert len(done_events) == 1
     assert done_events[0].title == "下载完成: ep.mkv"
     assert done_events[0].extra["media_id"] == mid
     assert done_events[0].extra["episode"] == "S01E01"
-    # nastools_sync 事件触发 + A-1 转存续跑（_spawn 后台任务；单测只验证触发行为）
+    # 刮削执行器事件触发（L3，不阻塞转存链） + A-1 转存续跑（_spawn 后台任务；
+    # 单测只验证触发行为）
     assert len(env["spawn"]) == 2
-    assert env["spawn"][0] is transfer_mod.nastools_sync.nastools_sync  # 先触发 nastools_sync
+    assert env["spawn"][0] is transfer_mod.scrape_runner  # 先触发刮削执行器
     assert env["spawn"][1] is transfer_mod.process_transfer_queue       # A-1：下载完成释放容量后续跑
     # 幂等：二次运行不重复处理（download_task 已 complete，不再命中轮询）
     run(transfer_mod.process_transfer_queue())
@@ -752,34 +760,23 @@ def test_complete_double_table_lost_rolls_back_pending(db, env, monkeypatch):
     assert len(env["cloudsaver"].save_calls) == 1
 
 
-def test_complete_marks_done_before_removing_quark(db, env, monkeypatch):
-    """改动 3h：_complete_download 先双表 done（success task_run）再删夸克。
+def test_complete_enters_scrape_without_removing_quark(db, env, monkeypatch):
+    """G6/L3 新语义：下载完成仅把 es 推进到刮削节点（node='scrape'），不删夸克。
 
-    P0-2 顺序断言：记录顺序为 record:success → remove（先 done 后删夸克），
-    防止「先删后 done 校验失败 → 文件已删但状态未推进 → 重试时无文件可取」。
+    删除夸克移至「入库确认」（node='library' 命中 Emby）后的 library_check 执行
+    （transfer 内已无 alist.remove 调用），state 保持 downloading（不置 done）。
     """
     patch_db(monkeypatch, db)
     mid, es_id, tq_id, dl_id = run(seed_downloading(db))
     env["aria2"].statuses["gid1"] = "complete"
 
-    order: list = []
-    orig_remove = env["alist"].remove
-
-    async def spy_remove(names, dir):
-        order.append("remove")
-        return await orig_remove(names, dir)
-
-    env["alist"].remove = spy_remove
-    orig_record = transfer_mod.record_task_run
-
-    async def spy_record(s, task_type, status, message, media_id=None):
-        order.append(f"record:{status}")
-        return await orig_record(s, task_type, status, message, media_id)
-
-    monkeypatch.setattr(transfer_mod, "record_task_run", spy_record)
-
     run(transfer_mod._poll_downloading_tasks())
 
-    # 双表 done 的 success task_run 必须先于 alist.remove（先 done 后删夸克）
-    assert order == ["record:success", "remove"]
-    assert (["ep.mkv"], "/quark/") in env["alist"].remove_calls
+    es = run(get_es_by_media(db, mid))
+    tq = run(read_row(db, TransferQueue, tq_id))
+    assert es.node == "scrape"
+    assert es.state == "downloading"  # 不置 done（scan 会把 done 当已入库删除/转 failed）
+    assert tq.status == "done"
+    # 下载完成阶段不删夸克（G6：入库确认后才释放）
+    assert env["alist"].remove_calls == []
+    assert (["ep.mkv"], "/quark/") not in env["alist"].remove_calls

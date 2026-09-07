@@ -29,15 +29,21 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def _library_item(name, kind="Series", series_status=_MISSING, tmdb=1001):
-    """构造 Emby 库 Item；series_status=_MISSING 表示 SeriesStatus 字段缺失。"""
+def _library_item(name, kind="Series", series_status=_MISSING, tmdb: int | None = 1001, poster=False):
+    """构造 Emby 库 Item；series_status=_MISSING 表示 SeriesStatus 字段缺失。
+
+    tmdb=None → 无 Tmdb ProviderId（无 tmdb_id 条目）；poster=True → 带海报
+    （否则 tmdb_id 与海报双空的纯目录条目会被 _normalize_library_item 过滤）。
+    """
     item = {
         "Id": f"id-{name}",
         "Name": name,
         "Type": kind,
-        "ProviderIds": {"Tmdb": str(tmdb)},
+        "ProviderIds": {"Tmdb": str(tmdb)} if tmdb is not None else {},
         "ProductionYear": 2024,
     }
+    if poster:
+        item["ImageTags"] = {"Primary": "poster"}
     if series_status is not _MISSING:
         item["SeriesStatus"] = series_status
     return item
@@ -120,3 +126,72 @@ def test_status_filter_passed_through(library_get, _db_maker, monkeypatch):
     assert path == "/Items"
     assert params["SeriesStatus"] == "continuing"
     assert "Series" in params["IncludeItemTypes"]
+
+
+# ---------------------------------------------------------------------------
+# 连载判定 TMDB 优先（_attach_tmdb_series_status）
+# ---------------------------------------------------------------------------
+
+def _fake_tmdb_meta(tv_status):
+    """构造 get_by_tmdb_id 返回值（判定只读 tv_status 字段）。"""
+    return {"tv_status": tv_status}
+
+
+def test_tmdb_priority_overrides_emby_status(library_get, _db_maker, monkeypatch):
+    """TMDB 优先：continuing/缺失的 series 查 TMDB 覆盖；ended 与 movie 不查。"""
+    _use_test_db(monkeypatch, _db_maker)
+    library_get.return_value = {"Items": [
+        _library_item("S1-continuing", series_status="continuing", tmdb=101),
+        _library_item("S2-nostatus", series_status=_MISSING, tmdb=102),
+        _library_item("S3-ended", series_status="ended", tmdb=103),
+        _library_item("M1-movie", kind="Movie", tmdb=104),
+    ]}
+
+    called = []
+
+    async def _fake_get(tmdb_id, media_type):
+        called.append(str(tmdb_id))
+        return _fake_tmdb_meta({"101": "Returning Series", "102": "Ended"}[str(tmdb_id)])
+
+    monkeypatch.setattr(emby_mod, "get_by_tmdb_id", _fake_get)
+
+    result = run(emby_mod.list_library())
+
+    # Returning Series→continuing（覆盖）、Ended→ended（补充）、ended 信任 Emby、movie 不判
+    assert [it["series_status"] for it in result] == ["continuing", "ended", "ended", None]
+    assert sorted(called) == ["101", "102"]  # ended / movie 不发起 TMDB 调用
+
+
+def test_tmdb_status_failure_falls_back_to_emby(library_get, _db_maker, monkeypatch):
+    """TMDB 查询失败（TMDBUnavailable）→ 静默回退 Emby 值，不抛异常不阻塞。"""
+    _use_test_db(monkeypatch, _db_maker)
+    library_get.return_value = {"Items": [
+        _library_item("S1-continuing", series_status="continuing", tmdb=101),
+        _library_item("S2-nostatus", series_status=_MISSING, tmdb=102),
+    ]}
+
+    async def _boom(tmdb_id, media_type):
+        raise emby_mod.TMDBUnavailable("TMDB_API_KEY 未配置")
+
+    monkeypatch.setattr(emby_mod, "get_by_tmdb_id", _boom)
+
+    result = run(emby_mod.list_library())  # 不应抛异常
+    assert [it["series_status"] for it in result] == ["continuing", None]
+
+
+def test_tmdb_priority_canceled_pilot_and_no_tmdb_id(library_get, _db_maker, monkeypatch):
+    """Canceled→ended；Pilot 无映射保留 Emby 值；无 tmdb_id 条目不查 TMDB。"""
+    _use_test_db(monkeypatch, _db_maker)
+    library_get.return_value = {"Items": [
+        _library_item("S1-canceled", series_status="continuing", tmdb=201),
+        _library_item("S2-pilot", series_status="continuing", tmdb=202),
+        _library_item("S3-no-tmdb", series_status="continuing", tmdb=None, poster=True),
+    ]}
+
+    async def _fake_get(tmdb_id, media_type):
+        return _fake_tmdb_meta({"201": "Canceled", "202": "Pilot"}[str(tmdb_id)])
+
+    monkeypatch.setattr(emby_mod, "get_by_tmdb_id", _fake_get)
+
+    result = run(emby_mod.list_library())
+    assert [it["series_status"] for it in result] == ["ended", "continuing", "continuing"]

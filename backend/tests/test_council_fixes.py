@@ -205,7 +205,8 @@ def patch_transfer_env(monkeypatch, db, *, cloudsaver=None, notifier=None, nas=N
     monkeypatch.setattr(transfer_mod, "capacity",
                         types.SimpleNamespace(provider=FakeCapacityProvider()))
     monkeypatch.setattr(transfer_mod, "notifier", fake_notifier)
-    monkeypatch.setattr(transfer_mod, "nastools_sync", fake_nas)
+    # L3：下载完成事件改触发刮削执行器（_spawn 置「跟踪不执行」，此处无需 patch
+    # scrape_runner 内部依赖）；旧 nastools_sync patch 已移除（transfer 不再直接调用）
     spawn_calls: list = []
     monkeypatch.setattr(transfer_mod, "_spawn", lambda factory: spawn_calls.append(factory))
     return spawn_calls, fake_notifier, fake_nas

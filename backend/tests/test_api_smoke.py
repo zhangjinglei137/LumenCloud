@@ -36,8 +36,8 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from app.main import app  # noqa: E402
 
-# §9.1 网盘凭据字段：任何角色都不应返回
-_SENSITIVE_QUEUE_FIELDS = {"stoken", "receive_code", "fid_tokens", "pwd_id", "folder_id", "fids"}
+# §9.1 网盘凭据字段（L8 树 DTO 白名单）：任何角色都不应返回
+_SENSITIVE_QUEUE_FIELDS = {"share_code", "stoken", "receive_code", "fid_tokens", "pwd_id", "folder_id", "fids"}
 
 
 def _auth(token: str) -> dict:
@@ -167,22 +167,32 @@ def test_full_auth_and_api_flow():
         seed = client.portal.call(_seed_queue_data)
         media_id, failed_tq_id = seed["media_id"], seed["failed_tq_id"]
 
-        # guest 视图：无任何凭据字段
+        # guest 视图：影视任务树（L8）——父级 media 聚合 + children 分集子任务，
+        # 凭据字段任何层级都不返回
         r = client.get("/api/queue", headers=_auth(guest_tok))
         assert r.status_code == 200
-        guest_item = r.json()[0]
-        assert guest_item["episode"] == "S01E01"
-        assert "share_code" not in guest_item
-        for f in _SENSITIVE_QUEUE_FIELDS:
-            assert f not in guest_item
+        tree = r.json()
+        parent = tree[0]
+        assert parent["media_id"] == media_id
+        assert parent["title"] == "脱敏测试影视"
+        # seed 子任务未走流程（node 默认 idle）→ 聚合 waiting，无 done 集
+        assert parent["aggregate_status"] == "waiting"
+        assert parent["total_count"] == 2 and parent["done_count"] == 0
+        child = next(c for c in parent["children"] if c["episode"] == "S01E01")
+        assert isinstance(child["id"], int) and child["node"] == "idle"
+        assert child["node_attempt"] == 0 and child["file_name"] == "f01.mkv"
+        for p in tree:
+            for f in _SENSITIVE_QUEUE_FIELDS:
+                assert f not in p and all(f not in c for c in p["children"])
 
-        # admin 视图：share_code 仅后 4 位，其余凭据同样不返回
+        # admin 视图：与 guest 同构（L8 树 DTO 白名单），share_code 亦不掩码返回
         r = client.get("/api/queue", headers=_auth(admin_tok))
         assert r.status_code == 200
-        admin_item = r.json()[0]
-        assert admin_item["share_code"] == "****XyZq"
-        for f in _SENSITIVE_QUEUE_FIELDS:
-            assert f not in admin_item
+        a_tree = r.json()
+        assert a_tree[0]["media_id"] == media_id
+        for p in a_tree:
+            for f in _SENSITIVE_QUEUE_FIELDS:
+                assert f not in p and all(f not in c for c in p["children"])
 
         # media 详情：episode_state 凭据分级（episode_state 按 updated_at/id 倒序，
         # 同更新时间时后插入的在先，故按 episode 索引断言）
@@ -308,9 +318,9 @@ def test_full_auth_and_api_flow():
         )
         r = client.post(f"/api/queue/{failed_tq_id}/retry", headers=_auth(admin_tok))
         assert r.status_code == 200, r.text
-        # 再次 retry（已非 failed）→ 404
+        # 再次 retry（已非 failed）→ 409（L8 树语义：仅 failed 节点可人工重试）
         assert (
-            client.post(f"/api/queue/{failed_tq_id}/retry", headers=_auth(admin_tok)).status_code == 404
+            client.post(f"/api/queue/{failed_tq_id}/retry", headers=_auth(admin_tok)).status_code == 409
         )
         # episode_state 双表联动回 queued + retry_count 归零
         r = client.get(f"/api/media/{media_id}", headers=_auth(admin_tok))

@@ -18,6 +18,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import DownloadTask, EpisodeState, Media, TaskRun, TransferQueue, User
 from app.routers.deps import get_current_admin, get_current_user, get_session
+from app.services import emby
+from app.services.emby import EmbyUnavailable
 
 router = APIRouter()
 
@@ -267,6 +269,24 @@ async def create_media(
         select(Media.id).where(Media.tmdb_id == payload.tmdb_id).limit(1)
     ):
         raise HTTPException(status_code=409, detail="该影视已在影视库，无需重复提交")
+
+    # 需求 4（P1-1）：Emby 防重（本地查重之后、写库之前）——该影视已在 Emby
+    # 媒体库则拒绝重复订阅，与「已在影视库」文案区分。Emby 故障（EmbyUnavailable，
+    # 含「未配置」由 _check_config 抛出）fail-open：仅告警放行，不阻断用户，
+    # 行为等同 Emby 未配置时的现状。tmdb_id 为空无法按 ID 定位 → 同样放行。
+    if payload.tmdb_id is not None:
+        try:
+            emby_id = await emby.find_emby_id(payload.tmdb_id, payload.title)
+        except EmbyUnavailable as exc:
+            logger.warning(
+                "[media] Emby 防重检查不可用（fail-open 放行）tmdb=%s: %s",
+                payload.tmdb_id, exc,
+            )
+        else:
+            if emby_id is not None:
+                raise HTTPException(
+                    status_code=409, detail="该影视已在 Emby 媒体库，无需重复订阅"
+                )
 
     media = Media(
         title=payload.title.strip(),

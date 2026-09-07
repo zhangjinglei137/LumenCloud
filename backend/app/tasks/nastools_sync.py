@@ -40,35 +40,43 @@ def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-async def nastools_sync() -> None:
+async def nastools_sync(force: bool = False) -> None:
     """NasTools 目录同步（下载完成事件触发；APScheduler job 兜底同样走此入口）。
 
-    冷却 → 冷启动放行 → 登录/重启/等待/重登录/全部分目录同步 → 更新时间戳 + task_run(success)。
+    force=True（L3 刮削执行器专用）：跳过冷却检查，直接执行登录/重启/等待/
+    重新登录/全部分目录同步——下载完成的集需立即刮削入库，不受冷却制动；
+    仍持 _sync_lock（与事件触发的日常同步串行化，防 NasTools 双重启）。
+    同步失败（任一环节抛异常）时除 notify + task_run(error) 外**向上 re-raise**
+    ——刮削执行器依赖异常感知失败以推进 node_attempt（L3 节点级重试计数）。
+    force=False（默认）：冷却 → 冷启动放行 → 同步 → 更新时间戳 + task_run(success)；
+    失败仅记录，不向调用方抛（旧语义）。
+
     整条流程持 _sync_lock；冷却检查在锁内重读（首个同步完成后时间戳已更新，后续并发直接冷却跳过）。
     """
     async with _sync_lock:
         t0 = time.monotonic()  # Q8①：真实耗时
-        # 1) 冷却检查（冷启动放行）
-        async with async_session() as s:
-            last_raw = await get_config_value(s, _COOLDOWN_KEY, None)
-            cooldown_min = await get_config_value(
-                s, _COOLDOWN_MIN_KEY, settings.NASTOOLS_SYNC_COOLDOWN_MINUTES
-            )
-            if last_raw:
-                try:
-                    last = datetime.fromisoformat(last_raw)
-                except (TypeError, ValueError):
-                    last = None  # 键存在但格式损坏 → 视为从未同步，立即执行
-                effective_cooldown = float(cooldown_min or settings.NASTOOLS_SYNC_COOLDOWN_MINUTES)
-                if last is not None and _now() - last < timedelta(minutes=effective_cooldown):
-                    await record_task_run(  # Q8①：真实耗时
-                        s, "sync_nastools", "skipped",
-                        f"冷却中（{effective_cooldown}min 制动），跳过本次同步",
-                        duration_seconds=time.monotonic() - t0,
-                    )
-                    await s.commit()
-                    logger.info("[sync_nastools] 冷却中，跳过（last=%s）", last_raw)
-                    return
+        # 1) 冷却检查（冷启动放行）；force=True 跳过（刮削执行器必须立即同步）
+        if not force:
+            async with async_session() as s:
+                last_raw = await get_config_value(s, _COOLDOWN_KEY, None)
+                cooldown_min = await get_config_value(
+                    s, _COOLDOWN_MIN_KEY, settings.NASTOOLS_SYNC_COOLDOWN_MINUTES
+                )
+                if last_raw:
+                    try:
+                        last = datetime.fromisoformat(last_raw)
+                    except (TypeError, ValueError):
+                        last = None  # 键存在但格式损坏 → 视为从未同步，立即执行
+                    effective_cooldown = float(cooldown_min or settings.NASTOOLS_SYNC_COOLDOWN_MINUTES)
+                    if last is not None and _now() - last < timedelta(minutes=effective_cooldown):
+                        await record_task_run(  # Q8①：真实耗时
+                            s, "sync_nastools", "skipped",
+                            f"冷却中（{effective_cooldown}min 制动），跳过本次同步",
+                            duration_seconds=time.monotonic() - t0,
+                        )
+                        await s.commit()
+                        logger.info("[sync_nastools] 冷却中，跳过（last=%s）", last_raw)
+                        return
 
         # 2) 执行同步（登录 → 重启 → 等待 → 重新登录 → 全部分目录同步）
         try:
@@ -91,6 +99,12 @@ async def nastools_sync() -> None:
                     duration_seconds=time.monotonic() - t0,
                 )
                 await s.commit()
+            if force:
+                # L3（刮削执行器专用）：force 路径（下载完成立即刮削）失败必须向上
+                # 暴露——调用方（library_check.scrape_runner）凭异常做节点级重试
+                # 计数（node_attempt++，<3 重试 / ≥3 failed）。内部已 notify +
+                # task_run(error)，re-raise 不重复通知。
+                raise
             return
 
         # 3) 成功：更新冷却时间戳（upsert system_config）+ task_run(success)

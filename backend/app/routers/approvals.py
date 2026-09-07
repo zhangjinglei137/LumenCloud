@@ -15,6 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Media, User, WatchRequest
 from app.routers.deps import get_current_admin, get_current_user, get_session
+from app.services import emby
+from app.services.emby import EmbyUnavailable
 from app.services.notifier import (
     EVENT_APPROVAL_PENDING,
     EVENT_DOWNLOAD_STARTED,
@@ -96,6 +98,23 @@ async def create_approval(
     ):
         raise HTTPException(status_code=409, detail="该影视已在影视库，无需重复提交")
 
+    # 需求 4（P1-1）：Emby 防重（本地查重之后、写库之前）——该影视已在 Emby
+    # 媒体库则拒绝重复提交，与「已在影视库」文案区分。Emby 故障（EmbyUnavailable，
+    # 含「未配置」）fail-open：仅告警放行，不阻断用户提交。
+    if payload.tmdb_id is not None:
+        try:
+            emby_id = await emby.find_emby_id(payload.tmdb_id, payload.title)
+        except EmbyUnavailable as exc:
+            logger.warning(
+                "[approvals] Emby 防重检查不可用（fail-open 放行）tmdb=%s: %s",
+                payload.tmdb_id, exc,
+            )
+        else:
+            if emby_id is not None:
+                raise HTTPException(
+                    status_code=409, detail="该影视已在 Emby 媒体库，无需重复订阅"
+                )
+
     wr = WatchRequest(
         requested_by=user.id,
         title=payload.title.strip(),
@@ -142,6 +161,23 @@ async def approve_approval(
         select(Media.id).where(Media.tmdb_id == wr.tmdb_id).limit(1)
     ):
         raise HTTPException(status_code=409, detail="该影视已在影视库，无需重复提交")
+
+    # 需求 4（P1-1）：Emby 防重（本地查重之后、条件更新消费之前）——该影视已在
+    # Emby 媒体库则拒绝批准，wr 保持 pending，管理员可另行 reject。Emby 故障
+    # （EmbyUnavailable，含「未配置」）fail-open：仅告警放行，不阻断审批。
+    if wr.tmdb_id is not None:
+        try:
+            emby_id = await emby.find_emby_id(wr.tmdb_id, wr.title)
+        except EmbyUnavailable as exc:
+            logger.warning(
+                "[approvals] Emby 防重检查不可用（fail-open 放行）tmdb=%s: %s",
+                wr.tmdb_id, exc,
+            )
+        else:
+            if emby_id is not None:
+                raise HTTPException(
+                    status_code=409, detail="该影视已在 Emby 媒体库，无需重复订阅"
+                )
 
     # 条件更新防并发双重审批（§3.1 条件更新约定）；异常未 commit 时整体回滚
     result = await session.execute(

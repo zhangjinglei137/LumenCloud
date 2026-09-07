@@ -101,7 +101,7 @@ def _fake_sessionmaker(row_factory):
 
 
 def _cache_row(tmdb_id="42", media_type="movie", title="缓存标题",
-               poster_path="/cached.jpg", year=2023, updated_at=None):
+               poster_path="/cached.jpg", year=2023, tv_status=None, updated_at=None):
     """构造 tmdb_cache 命中行（SimpleNamespace 模拟 ORM 行）。"""
     return SimpleNamespace(
         tmdb_id=tmdb_id,
@@ -109,6 +109,7 @@ def _cache_row(tmdb_id="42", media_type="movie", title="缓存标题",
         title=title,
         poster_path=poster_path,
         year=year,
+        tv_status=tv_status,
         updated_at=updated_at or _now(),
     )
 
@@ -171,6 +172,7 @@ def test_get_by_tmdb_id_cache_hit_no_refetch(monkeypatch):
         "media_type": "movie",
         "poster_path": "/cached.jpg",
         "year": "2023",
+        "tv_status": None,
     }
     session.commit.assert_not_called()
 
@@ -198,6 +200,7 @@ def test_get_by_tmdb_id_stale_refetch_and_refresh(monkeypatch):
         "media_type": "movie",
         "poster_path": "/new.jpg",
         "year": "2024",
+        "tv_status": None,  # movie 响应无 status 字段 → None
     }
     assert len(http_calls) == 1 and "/3/movie/42" in http_calls[0]  # 确实回源
     session.commit.assert_called()  # upsert 落盘
@@ -219,10 +222,31 @@ def test_get_by_tmdb_id_miss_refetch_and_insert(monkeypatch):
     result = run(tmdb_mod.get_by_tmdb_id("7", "tv"))
     assert result["title"] == "剧集G" and result["year"] == "2021"
     assert result["poster_path"] is None
+    assert result["tv_status"] is None  # 响应无 status 字段 → None
     session.add.assert_called_once()
     new_row = session.add.call_args.args[0]
     assert new_row.tmdb_id == "7" and new_row.media_type == "tv"
     assert new_row.year == 2021  # year 转 int 落库
+    assert new_row.tv_status is None
+
+
+def test_get_by_tmdb_id_tv_status_parsed_and_cached(monkeypatch):
+    """tv 条目回源解析 status 字段并落缓存（连载判定 TMDB 优先的数据基础）。"""
+    monkeypatch.setattr(settings, "TMDB_API_KEY", "test-key")
+    monkeypatch.setattr(config_store, "_cache", {})
+    maker, session = _fake_sessionmaker(lambda: None)  # 缓存未命中 → 回源新增
+    monkeypatch.setattr(tmdb_mod, "async_session", maker)
+
+    factory, _ = _make_http_factory(
+        {"id": 13, "name": "剧集J", "first_air_date": "2023-01-01",
+         "poster_path": "/j.jpg", "status": "Returning Series"},
+    )
+    monkeypatch.setattr("app.services.tmdb.httpx.AsyncClient", factory)
+
+    result = run(tmdb_mod.get_by_tmdb_id("13", "tv"))
+    assert result["tv_status"] == "Returning Series"
+    new_row = session.add.call_args.args[0]
+    assert new_row.tv_status == "Returning Series"  # tv_status 落库（非 None 才覆盖）
 
 
 def test_get_by_tmdb_id_tv_path(monkeypatch):

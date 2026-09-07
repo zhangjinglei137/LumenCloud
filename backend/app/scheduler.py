@@ -4,12 +4,13 @@ APScheduler（AsyncIOScheduler）—— 单进程内嵌调度器（设计文档 
 - 单 uvicorn 进程（--workers 1）内嵌，MemoryJobStore；任务状态持久化在业务表
   （task_run / episode_state / transfer_queue），重启后按表内状态恢复（recover_on_boot），
   不依赖 jobstore 持久化。
-- 注册 8 个 job（id 固定）：
+- 注册 9 个 job（id 固定）：
   | job_id                   | 触发器                                | 阶段 4 行为 |
   |--------------------------|---------------------------------------|-------------|
   | scan_all_media           | IntervalTrigger(minutes=1)            | B 定时：每分钟 tick，scan_all_media 按各 media last_scan_at 到期过滤；注册默认 paused，阶段 4 经 system_config 启用 |
   | process_transfer_queue   | IntervalTrigger(minutes=1)            | 阶段 3 已实现；定时默认关闭（事件 + 手动触发） |
   | nastools_sync            | IntervalTrigger(hours=1) 兜底（正式事件触发） | 阶段 3 已实现；定时默认关闭（事件触发） |
+  | library_check            | IntervalTrigger(seconds=30)           | L3 已实现：刮削执行兜底 + 入库轮询（node='scrape'→同步 / node='library'→Emby 收录→释放夸克）；定时默认关闭（事件触发 + job 兜底） |
   | release_space_cleanup    | IntervalTrigger(hours=12)             | 阶段 3 已实现；定时默认关闭 |
   | notification_scan        | IntervalTrigger(minutes=5)            | 阶段 3 已实现；定时默认关闭 |
   | recover_stale            | IntervalTrigger(hours=1)              | P2-2 新增：运行期超时回退（recover 不只 boot）；定时默认关闭 |
@@ -30,7 +31,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from app.database import async_session
 from app.models import SystemConfig
-from app.tasks import capacity_alert, cleanup, nastools_sync, notification_scan, recovery, scan, transfer
+from app.tasks import capacity_alert, cleanup, library_check, nastools_sync, notification_scan, recovery, scan, transfer
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ logger = logging.getLogger(__name__)
 JOB_SCAN_ALL_MEDIA = "scan_all_media"
 JOB_PROCESS_TRANSFER_QUEUE = "process_transfer_queue"
 JOB_NASTOOLS_SYNC = "nastools_sync"
+JOB_LIBRARY_CHECK = "library_check"
 JOB_RELEASE_SPACE_CLEANUP = "release_space_cleanup"
 JOB_NOTIFICATION_SCAN = "notification_scan"
 JOB_RECOVER_STALE = "recover_stale"
@@ -48,6 +50,7 @@ JOB_IDS = [
     JOB_SCAN_ALL_MEDIA,
     JOB_PROCESS_TRANSFER_QUEUE,
     JOB_NASTOOLS_SYNC,
+    JOB_LIBRARY_CHECK,
     JOB_RELEASE_SPACE_CLEANUP,
     JOB_NOTIFICATION_SCAN,
     JOB_RECOVER_STALE,
@@ -131,6 +134,18 @@ def register_jobs() -> None:
         IntervalTrigger(hours=1),  # 正式为下载完成事件触发（§4.2），低频兜底注册
         id=JOB_NASTOOLS_SYNC,
         paused=True,  # P3-4：注册即暂停（正式为事件触发）
+        max_instances=1,
+        coalesce=True,
+        replace_existing=True,
+    )
+    # L3：刮削执行兜底 + 入库轮询（node='scrape' 触发 Nastools 同步 / node='library'
+    # 轮询 Emby 收录并释放夸克中转文件）；30s 高频 tick，内部空跑检测零开销。
+    # 事件（下载完成）为正式触发，本 job 兜底重启恢复 / 同步失败重试场景。
+    scheduler.add_job(
+        library_check.library_check_job,
+        IntervalTrigger(seconds=30),
+        id=JOB_LIBRARY_CHECK,
+        paused=True,  # P3-4：注册即暂停（冷切换铁律），由 _apply_job_switches 恢复
         max_instances=1,
         coalesce=True,
         replace_existing=True,

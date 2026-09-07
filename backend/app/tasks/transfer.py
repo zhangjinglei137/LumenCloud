@@ -6,7 +6,8 @@
 两阶段流程（由 process_transfer_queue 统一驱动，供 APScheduler job 与 scan 事件触发）：
 
 - 阶段 A：downloading 完成轮询（交付 D）
-    - complete      → 释放夸克残留 + 双表 done + download_complete 通知 + 触发 nastools_sync（带冷却，不阻塞）
+    - complete      → 三表推进 + es 进入刮削节点（node='scrape'，state 不置 done、不删夸克——
+                        G6：入库确认后才删）+ download_complete 通知 + 触发刮削执行器（L3）
     - error/removed → 确定性失败路径：retry_count++ → ≥3 双表 failed + flow_error 告警；
                         <3 双表回退（es queued / tq pending）+ 清理夸克残留
     - active/waiting（及未知状态）→ 仍在下载：显式刷新 updated_at（防 recover 2h 误回退）
@@ -28,6 +29,7 @@
 import asyncio
 import json
 import logging
+import re
 import time as _time
 from datetime import datetime, timezone
 
@@ -43,7 +45,8 @@ from app.services.notifier import (
     NotifyEvent,
     notifier,
 )
-from app.tasks import nastools_sync, record_task_run
+from app.tasks import record_task_run
+from app.tasks.library_check import scrape_runner
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +89,7 @@ _alert_cooldown: dict[str, tuple[float, str]] = {}
 
 
 def _spawn(coro_factory) -> None:
-    """创建后台任务并持引用（事件触发续跑 / nastools_sync 触发共用）。
+    """创建后台任务并持引用（事件触发续跑 / 刮削执行器触发共用）。
 
     coro_factory：返回 coroutine 的可调用对象（如 process_transfer_queue）。
     任务完成/取消后从 _background_tasks 移除（回调 discard）。
@@ -101,31 +104,97 @@ def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+def _normalize_name(name: str) -> str:
+    """文件名归一：去全部空白字符、全/半角括号统一、转小写（L4 跨目录匹配用）。"""
+    return re.sub(r"\s+", "", name or "").replace("（", "(").replace("）", ")").lower()
+
+
+def _name_without_ext(name: str) -> str:
+    """归一后去掉扩展名（最后一个 '.' 后视为扩展名），供模糊匹配比较。"""
+    norm = _normalize_name(name)
+    if "." in norm:
+        return norm.rsplit(".", 1)[0]
+    return norm
+
+
+def _find_real_name(entries: list[dict], file_name: str) -> str | None:
+    """在 alist 目录条目中查找 file_name 对应的真实文件名（L4）。
+
+    三级匹配：
+      1) 原样精确匹配（大小写敏感，最严格）；
+      2) 归一后精确匹配（去空格 / 全半角括号统一 / 小写）；
+      3) 去扩展名差异模糊匹配（归一后再忽略扩展名，容忍
+         "ep.MKV" vs "ep.mkv" 之类差异）。
+    命中返回条目真实名（供 alist.get_link(f"/quark/{真实名}") 使用——
+    文件名可能被夸克规范化改名，必须用列表里的真实名取直链）；
+    找不到返回 None。
+    """
+    target = (file_name or "").strip()
+    if not target:
+        return None
+    norm_target = _normalize_name(target)
+    stem_target = _name_without_ext(target)
+    for e in entries:
+        name = (e.get("name") or "").strip()
+        if name and name == target:
+            return name
+    for e in entries:
+        name = (e.get("name") or "").strip()
+        if name and _normalize_name(name) == norm_target:
+            return name
+    for e in entries:
+        name = (e.get("name") or "").strip()
+        if name and _name_without_ext(name) == stem_target:
+            return name
+    return None
+
+
 async def _get_link_wait_visible(file_name: str, timeout: float = _LINK_WAIT_TIMEOUT) -> str:
     """save 受理后轮询等待转存文件在 alist /quark 可见，返回直链。
 
     阶段 3 实证：cloudSaver save 返回 task_id 受理后转存**异步落盘**，alist 同步存在
     延迟（阶段 1 实测 164KB srt 约 15s 落盘；实证 1.5-2.6G 文件落盘耗时 60-180s，
     n8n 用「Wait(10s)」节点兜底但大文件不够）。立即 get_link 会 object not found。
-    此处每 5s 轮询直至可见或超时（默认 _LINK_WAIT_TIMEOUT=300s——线上反馈 2.6G
-    个别落盘超 180s，放宽兜底）；超时抛 AlistUnavailable 走外层重试路径
-    （retry_count++，≥3 → failed）。
+
+    L4（五节点模型，oracle 决策「转存全失败」根因修复）：原实现每 5s 直接
+    `alist.get_link(f"/quark/{file_name}")` 轮询 300s——get_link 调 /api/fs/get
+    不带 refresh，吃 AList 缓存索引，且文件名可能被夸克规范化改名，导致文件实际
+    落盘却永远拿不到直链。改造后每轮：
+      1) 先 `alist.list_dir("/quark")`（该函数带 refresh=True 即时刷新）拿真实目录；
+      2) 精确匹配 file_name → 用真实名 `alist.get_link(f"/quark/{真实名}")`；
+      3) 精确不中 → 模糊匹配（_find_real_name：去空格 / 全半角括号统一 / 去扩展名
+         差异），命中用真实名取直链；
+      4) 仍不中（或 list_dir 异常）→ 退化按原路径 get_link 再试一次——目录列表可能
+         因同步延迟暂未含该文件而 /api/fs/get 缓存已可见，成功即返回；失败仅记录，
+         sleep 5s 进入下一轮（总超时 _LINK_WAIT_TIMEOUT=300s 不变）；
+      5) 超时仍抛 AlistUnavailable，错误信息附带最近一次 list_dir 前若干条目名
+         （诊断：区分「落盘到了别处（folderId 配置错）」与「文件名被云盘改名/仍在传输」）。
     """
     import time as _time
 
     path = f"/quark/{file_name}"
     deadline = _time.monotonic() + timeout
     last_exc: Exception | None = None
+    last_entries: list[dict] = []
     while _time.monotonic() < deadline:
         try:
+            entries = await alist.list_dir("/quark")
+        except Exception as exc:  # noqa: BLE001  list_dir 故障 → 记诊断后退化原路径直链
+            last_exc = exc
+            entries = []
+        last_entries = entries or []
+        real_name = _find_real_name(last_entries, file_name)
+        try:
+            if real_name is not None:
+                return await alist.get_link(f"/quark/{real_name}")
+            # 退化兜底：原文件名直链（缓存可能已可见）；失败进入下一轮等待
             return await alist.get_link(path)
         except Exception as exc:  # noqa: BLE001  直链暂不可用（未同步/瞬时失败）→ 继续等待
             last_exc = exc
             await asyncio.sleep(5)
-    # P0-1（线上反馈「转存多次失败」）：save 返回 200 仅代表受理，文件异步落盘；
-    # 超时说明文件始终未在 alist /quark 可见。抛错前先列 /quark 目录记录实际内容，
-    # 便于区分「落盘到了别处（folderId 配置错）」与「文件名被云盘改名/仍在传输」。
+    # 超时诊断：抛错前列 /quark 目录记录实际内容（区分「落盘到别处」与「改名/仍在传输」）
     folder_id = config_store.get("quark_default_folder", settings.QUARK_DEFAULT_FOLDER)
+    recent_names = [e.get("name") for e in last_entries[:10]]
     try:
         entries = await alist.list_dir("/quark")
         logger.warning(
@@ -136,6 +205,7 @@ async def _get_link_wait_visible(file_name: str, timeout: float = _LINK_WAIT_TIM
         logger.warning("[transfer] 落盘超时后列 /quark 目录失败: %s", exc2)
     raise alist.AlistUnavailable(
         f"转存后等待落盘超时（{timeout:.0f}s）: {path}（folderId={folder_id}，{last_exc}）；"
+        f"最近 list_dir 前 {len(recent_names)} 条目: {recent_names}；"
         f"请用 alist 管理 API /api/admin/storage/list 核对 quark_default_folder 是否为 root_folder_id"
     )
 
@@ -185,6 +255,7 @@ async def _poll_downloading_tasks() -> None:
     网络 IO（aria2 tell_status、alist remove）放在数据库事务外；
     状态转移全部走条件更新，保证可重复执行幂等（不重复计数 / 通知 / 触发同步）。
     """
+    t0 = _time.monotonic()  # Q8①：真实耗时
     async with async_session() as s:
         rows = (
             (
@@ -237,22 +308,37 @@ async def _poll_downloading_tasks() -> None:
                 s, "transfer", "error",
                 "aria2 状态轮询失败（本轮跳过，不误判失败; recover 超时兜底）: "
                 + "; ".join(aria2_errors),
+                duration_seconds=_time.monotonic() - t0,
             )
             await s.commit()
 
 
 async def _complete_download(dt_id, media_id, tq_id, episode, file_name, quark_path) -> None:
-    """下载完成释放链：双表 done → 删夸克 → 通知 → 触发 nasTools 同步（不阻塞）。
+    """下载完成推进链（G6 决策 / L2 五节点状态机）：中介完成 → 转存凭据 done → es 进入 scrape。
 
-    P0-2（council）顺序修复：**先双表 done、后删夸克文件**——若先删后双表
-    done 校验失败（双表失联/重复处理），文件已删但状态未推进，下一轮重试时
-    落盘文件已不存在（无法 get_link），等于彻底毁掉重试机会；先 done 则删夸克
-    失败仅告警不阻断，已落 done 的任务无需再依赖夸克中转文件。
+    与旧版（双表 done + 删夸克）的差异：
+      a. download_task 置 complete；tq status='done'（转存凭据使命完成）；
+      b. es 进入 node='scrape'、node_attempt=0、node_started_at=now——
+         **es.state 不置 done**（置 done 会被 scan._resolve_done_states 当作
+         「Emby 已入库」删除/转 failed，误伤仍在刮削/入库的集）；保持
+         state='downloading'（旧字段双写兼容 recovery/scan/queue 等旧逻辑）。
+         五节点模型中 node 是权威：node='scrape' 表示下载完成、刮削进行中，
+         state 仅是旧语义映射（仍在「进行中」，media 保持 downloading 不误回退）；
+      c. 触发刮削执行器（nastools_sync(force=True) 立即刮削，不阻塞）；
+      d. download_complete 通知保留；A-1 转存续跑保留；
+      e. **删除夸克文件的操作已移除**——G6 决策：夸克文件在 Emby 入库确认
+         （library 节点完成）后才删除，由后续 lane 在 library 节点完成时执行；
+         本 lane 保证「下载完成即删」不再发生（删了就无法重新下载/刮削）。
+
+    P0-2（council）保留：状态转移全部条件更新（WHERE 当前状态），幂等防重复
+    处理；双表失联（tq/es 已被 recovery 回退 / 人工 retry）→ 显式回退待重试，
+    不广播完成事件。
     """
+    t0 = _time.monotonic()  # Q8①：真实耗时
     now = _now()
     async with async_session() as s:
         async with s.begin():
-            # a) 双表联动 done + 中介 download_task complete（条件更新，幂等防重复处理）
+            # a) 三表推进（条件更新，幂等防重复处理）
             #    P0-3b（council）：校验 rowcount——若 tq/es 已非 downloading（被 recovery
             #    超时回退 / 人工 retry，双表失联），走下方回退分支。
             r_dl = await s.execute(
@@ -272,20 +358,28 @@ async def _complete_download(dt_id, media_id, tq_id, episode, file_name, quark_p
                     EpisodeState.episode == episode,
                     EpisodeState.state == "downloading",
                 )
-                .values(state="done", updated_at=now)
+                .values(
+                    # state 保持 downloading（旧字段映射，不置 done——见函数 docstring）；
+                    # node 置 scrape：download/downloading 节点完成（node_finished_at=now），
+                    # 进入刮削节点（node_attempt 归零重新计数）。
+                    state="downloading",
+                    node="scrape",
+                    node_attempt=0,
+                    node_started_at=now,
+                    node_finished_at=now,
+                    node_error=None,
+                    updated_at=now,
+                )
             )
             if r_tq.rowcount == 0 or r_es.rowcount == 0 or r_dl.rowcount == 0:
-                # P0-2（council）双表失联 / 重复处理：不再「仅置 dl complete 就返回」——
-                # 显式回退 tq→pending、es→queued 并清空 save_task_id，让下一轮重新
-                # 走完整转存链（重新 save → 转存 → 下载）。download_task 由上方条件
-                # 更新尽力置 complete（未命中说明已被 _fail_download 置 failed / 已
-                # complete，尊重并发方现状，不再覆盖）；**不广播完成事件**。
-                # 回退按 rowcount 精确区分（避免覆盖并发方/历史状态）：
+                # P0-2（council）双表失联 / 重复处理：显式回退 tq→pending、es→queued
+                # 并清空 save_task_id，让下一轮重新走完整转存链（重新 save → 转存 →
+                # 下载）。download_task 由上方条件更新尽力置 complete（未命中说明已被
+                # _fail_download 置 failed / 已 complete，尊重并发方现状，不再覆盖）；
+                # **不广播完成事件**。回退按 rowcount 精确区分（避免覆盖并发方/历史状态）：
                 #   rowcount==1 → 本事务刚把它置 done（半边失联竞态：对方已回退而
-                #                  本方还是 downloading）→ 从 done 回退 pending/queued，
-                #                  保持双表一致；
-                #   rowcount==0 → 未被本事务 done（已被并发方回退为 pending/queued，
-                #                  或本就 done 的重复轮询）→ 保持现状不覆盖。
+                #                  本方还是 downloading）→ 回退 pending/queued；
+                #   rowcount==0 → 未被本事务 done（已被并发方回退 / 本就 done）→ 保持现状。
                 await s.execute(
                     update(TransferQueue)
                     .where(TransferQueue.id == tq_id)
@@ -301,14 +395,23 @@ async def _complete_download(dt_id, media_id, tq_id, episode, file_name, quark_p
                         .values(status="pending", error="双表失联已回退待重试", updated_at=now)
                     )
                 if r_es.rowcount == 1:
+                    # es 刚被本事务写入 node='scrape'（即便 state 仍是 downloading）——
+                    # 回退到排队态（node='idle'/state='queued'），保证下一轮取件命中。
                     await s.execute(
                         update(EpisodeState)
                         .where(
                             EpisodeState.media_id == media_id,
                             EpisodeState.episode == episode,
-                            EpisodeState.state == "done",
+                            EpisodeState.node == "scrape",
                         )
-                        .values(state="queued", error="双表失联已回退待重试", updated_at=now)
+                        .values(
+                            state="queued",
+                            node="idle",
+                            node_started_at=None,
+                            node_finished_at=None,
+                            error="双表失联已回退待重试",
+                            updated_at=now,
+                        )
                     )
                 await record_task_run(
                     s, "transfer", "error",
@@ -316,6 +419,7 @@ async def _complete_download(dt_id, media_id, tq_id, episode, file_name, quark_p
                     f"dl={r_dl.rowcount}），已回退 tq→pending/es→queued 并清空 "
                     f"save_task_id，待下一轮重新转存",
                     media_id,
+                    duration_seconds=_time.monotonic() - t0,
                 )
                 logger.warning(
                     "[transfer] 下载完成但 tq/es 已非 downloading（可能被 recovery 回退/"
@@ -324,37 +428,34 @@ async def _complete_download(dt_id, media_id, tq_id, episode, file_name, quark_p
                 return
             await record_task_run(
                 s, "transfer", "success", f"下载完成: {episode} ({file_name})", media_id,
+                duration_seconds=_time.monotonic() - t0,
             )
-            # P3-6（council）：es 转 done 后检查该 media 是否还有其他进行中 es，
+            # P3-6（council）：es 离开 downloading 后检查该 media 是否还有其他进行中 es，
             # 无则回 tracking（条件更新不覆盖 paused）。与 tq/es/dl 同一事务。
+            # 注意：node='scrape' 时 state 仍为 downloading（进行中态），此处不会误回退。
             await _sync_media_status(media_id, s)
 
-    # b) 双表 done 已成功 → 删夸克文件（网络 IO，事务外；失败仅告警，不阻断 done）
-    #    P0-2：置于双表 done 之后——删失败不影响已落 done 的状态推进。
-    try:
-        if quark_path:
-            dir_part, names = _split_quark_path(quark_path)
-            if names:
-                await alist.remove(names, dir_part)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[transfer] 下载完成清理夸克失败（不阻断）%s: %s", quark_path, exc)
+    # e) G6：**不再删夸克文件**（下载完成即删已废弃）。入库确认（library 节点完成）
+    #    后才由后续 lane 删除夸克中转文件；此处保留 notify/刮削触发/续跑。
 
     # c) 通知（§7 download_complete，全体）
     await notifier.notify(NotifyEvent(
         event_type=EVENT_DOWNLOAD_COMPLETE,
         title=f"下载完成: {file_name}",
-        body=f"媒体 {media_id} · 集 {episode} · {file_name} 下载完成，夸克中转空间已释放。",
+        body=f"媒体 {media_id} · 集 {episode} · {file_name} 下载完成，已推送刮削；"
+             f"夸克中转文件将在 Emby 入库确认后释放。",
         recipient=None,
         extra={"media_id": media_id, "episode": episode},
     ))
 
-    # d) 触发 nastools_sync（任务 2 自带冷却；事件触发不阻塞转存链；P3-3 持引用防 GC）
+    # d) 触发刮削执行器（L3：nastools_sync(force=True) 跳过冷却立即刮削；事件触发
+    #    不阻塞转存链；P3-3 持引用防 GC；成功/失败由执行器推进 node 状态）
     try:
-        _spawn(nastools_sync.nastools_sync)
+        _spawn(scrape_runner)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("[transfer] nastools_sync 事件触发失败: %s", exc)
+        logger.warning("[transfer] 刮削执行器事件触发失败: %s", exc)
 
-    # A-1（P1）：下载完成即释放容量 → 触发转存续跑，容量恢复后保持 pending 的任务自动重试
+    # A-1（P1）：下载完成推进 scrape 后触发转存续跑，保持 pending 的任务自动推进
     try:
         _spawn(process_transfer_queue)
     except Exception as exc:  # noqa: BLE001
@@ -362,16 +463,27 @@ async def _complete_download(dt_id, media_id, tq_id, episode, file_name, quark_p
 
 
 async def _fail_download(dt_id, media_id, tq_id, episode, reason) -> None:
-    """确定性失败（aria2 error/removed）：retry_count++ → ≥3 双表 failed / <3 双表回退。
+    """确定性失败（aria2 error/removed）：节点级重试（L2 五节点状态机）。
 
-    回退前清理夸克残留（alist.remove，失败仅告警不阻断）。
+    统一失败语义（与转存失败路径同一套）：
+      - es.node_attempt + 1（从 es.node_attempt 读取，CAS 条件更新防并发丢增量，
+        与 P2-5 的 retry_count CAS 同协议）；旧 retry_count 同步自增（双写兼容
+        recovery/scan 旧逻辑）；
+      - node_attempt < _RETRY_LIMIT(3) → 非终态：es 回退 node='idle'/state='queued'
+        （排队等待同节点重试，node_started_at 刷新、node_finished_at 清空）、
+        tq 回退 pending、dl 置 failed；
+      - node_attempt ≥ 3 → 终态：es node='failed'/state='failed'（双表 failed +
+        flow_error 告警）；
+      - 失败诊断写入 node_error（node 是权威字段，错误必须写清楚原因）。
 
-    P2-5（council）：retry_count 增量改用 CAS 条件更新（WHERE 含
-    retry_count=读到的旧值），替代「读-改-写」——recovery 并发回退同一任务时，
-    写死 new_retry 会丢失对方增量；CAS 未命中（rowcount=0）视为并发冲突，
-    本轮跳过状态转移、不重复计数（仅记 task_run(error)），交由并发方/下一轮推进。
+    回退前清理夸克残留（alist.remove，失败仅告警不阻断）——G6 仅移除「下载完成
+    即删」，失败回退时文件可能不完整/损坏，清理仍是必要语义。
+
+    注意：CAS 的 WHERE 只用 state/retry_count/node_attempt，不约束 node 取值——
+    存量数据（迁移前 downloading 记录）node 仍为 'idle'，约束 node 会漏处理。
     """
-    # 读当前 retry_count（防重权威源 = episode_state）
+    t0 = _time.monotonic()  # Q8①：真实耗时
+    # 读当前 es 快照（防重权威源 = episode_state）
     async with async_session() as s:
         es = (
             await s.execute(
@@ -382,9 +494,10 @@ async def _fail_download(dt_id, media_id, tq_id, episode, reason) -> None:
             )
         ).scalars().first()
         retry = es.retry_count if es is not None else 0
+        node_attempt = es.node_attempt if es is not None else 0
         es_quark_path = es.quark_path if es is not None else None
-    new_retry = retry + 1
-    terminal = new_retry >= _RETRY_LIMIT
+    new_attempt = node_attempt + 1
+    terminal = new_attempt >= _RETRY_LIMIT
 
     # 清理夸克残留（网络 IO，事务外；失败仅告警）
     try:
@@ -396,7 +509,7 @@ async def _fail_download(dt_id, media_id, tq_id, episode, reason) -> None:
         logger.warning("[transfer] 失败回退前清理夸克残留失败: %s", exc)
 
     now = _now()
-    err = f"{reason}（retry={new_retry}/{_RETRY_LIMIT}）" if terminal else reason
+    err = f"{reason}（node_attempt={new_attempt}/{_RETRY_LIMIT}）" if terminal else reason
     async with async_session() as s:
         async with s.begin():
             r_es = await s.execute(
@@ -405,12 +518,18 @@ async def _fail_download(dt_id, media_id, tq_id, episode, reason) -> None:
                     EpisodeState.media_id == media_id,
                     EpisodeState.episode == episode,
                     EpisodeState.state == "downloading",
-                    EpisodeState.retry_count == retry,  # P2-5 CAS：防读-改-写丢增量
+                    EpisodeState.retry_count == retry,             # P2-5 CAS：防读-改-写丢增量
+                    EpisodeState.node_attempt == node_attempt,     # L2 节点级 CAS
                 )
                 .values(
                     state="failed" if terminal else "queued",
-                    retry_count=new_retry,
+                    node="failed" if terminal else "idle",
+                    node_attempt=new_attempt,
+                    retry_count=new_attempt,
+                    node_error=err,
                     error=err,
+                    node_started_at=now if not terminal else EpisodeState.node_started_at,
+                    node_finished_at=now if terminal else None,
                     updated_at=now,
                 )
             )
@@ -418,8 +537,9 @@ async def _fail_download(dt_id, media_id, tq_id, episode, reason) -> None:
                 # P2-5：CAS 冲突（recovery 并发已回退/已计数）→ 不重复计数、不转移状态
                 await record_task_run(
                     s, "transfer", "error",
-                    f"下载失败但 retry_count CAS 冲突（并发回退?），本轮跳过不计数: {reason}",
+                    f"下载失败但 retry_count/node_attempt CAS 冲突（并发回退?），本轮跳过不计数: {reason}",
                     media_id,
+                    duration_seconds=_time.monotonic() - t0,
                 )
                 return
             await s.execute(
@@ -445,6 +565,7 @@ async def _fail_download(dt_id, media_id, tq_id, episode, reason) -> None:
             await record_task_run(
                 s, "transfer", "error",
                 f"{episode} 下载失败: {err}", media_id,
+                duration_seconds=_time.monotonic() - t0,
             )
             # P3-6（council）：仅终态（es 转 failed）才回 tracking——非终态回退
             # queued 仍属进行中（排队中），media 保持 downloading。与双表同一事务。
@@ -455,13 +576,13 @@ async def _fail_download(dt_id, media_id, tq_id, episode, reason) -> None:
         await notifier.notify(NotifyEvent(
             event_type=EVENT_FLOW_ERROR,
             title=f"任务失败: {episode}",
-            body=f"{reason}；已重试 {new_retry} 次达上限，任务标记 failed，请人工 retry。",
+            body=f"{reason}；已重试 {new_attempt} 次达上限，任务标记 failed，请人工 retry。",
             recipient=None,
             extra={"media_id": media_id, "episode": episode},
         ))
     logger.warning(
-        "[transfer] %s 下载失败 %s（retry=%d/%d）%s",
-        media_id, episode, new_retry, _RETRY_LIMIT, "转 failed" if terminal else "回退 queued",
+        "[transfer] %s 下载失败 %s（node_attempt=%d/%d）%s",
+        media_id, episode, new_attempt, _RETRY_LIMIT, "转 failed" if terminal else "回退 queued",
     )
 
 
@@ -559,9 +680,11 @@ async def _record_alert(media_id, message, category=None, bucket=None) -> None:
     随计数变化）与容量不可用告警（消息含 exc 文本）协议统一传 bucket="capacity"，
     使"容量不足/容量不可用"10 分钟内对同一 media 只 notify 一次（任务 P3-2 要求）。
     """
+    t0 = _time.monotonic()  # Q8①：真实耗时
     logger.warning("[transfer] %s", message)
     async with async_session() as s:
-        await record_task_run(s, "transfer", "error", message, media_id)
+        await record_task_run(s, "transfer", "error", message, media_id,
+                              duration_seconds=_time.monotonic() - t0)
         await s.commit()
     bucket = bucket if bucket is not None else _alert_bucket(message)
     key = f"{media_id}:{category or bucket[:40]}"
@@ -582,8 +705,25 @@ async def _record_alert(media_id, message, category=None, bucket=None) -> None:
     ))
 
 
+class _TransferStateChanged(Exception):
+    """P2-4（council）：步骤 6 成功路径双表 update 的 rowcount 校验未通过（tq/es 在
+    转存链路期间已被并发方变动——recovery 超时回退 / 人工 retry）时抛出的内部信号。
+
+    必须用异常触发 `async with session.begin()` 的事务回滚：直接 return 会让上下文
+    正常退出并 commit，若两条 update 只命中其一（半边失联）会把另一表错误提交为
+    downloading，插入孤儿 DownloadTask 导致双表永久不一致。
+    """
+
+
 async def _process_one_pending() -> None:
-    """阶段 B：取最早 pending 任务串行转存（交付 B，一次只处理一个）。"""
+    """阶段 B：取最早 pending 任务串行转存（交付 B，一次只处理一个）。
+
+    L2（五节点状态机）：取件只认 node='idle' 且 state='queued'（旧值兼容）的 es；
+    进入转存链前 CAS 抢占把 node 置 'transfer'、node_started_at=now。转存成功 →
+    node='download'（瞬时）→ 立即 node='downloading'（add_uri 成功即 download 完成，
+    node_finished_at 标记 download 节点成功，es.state 同步 downloading 双写兼容）。
+    """
+    t0 = _time.monotonic()  # Q8①：真实耗时
     # 1) 取最早 pending（enqueued_at, id 排序，保证 FIFO）
     async with async_session() as s:
         tq = (
@@ -599,7 +739,8 @@ async def _process_one_pending() -> None:
             .first()
         )
         if tq is None:
-            await record_task_run(s, "transfer", "skipped", "无 pending 任务待转存")
+            await record_task_run(s, "transfer", "skipped", "无 pending 任务待转存",
+                                  duration_seconds=_time.monotonic() - t0)
             await s.commit()
             return
         tq_id, media_id, episode = tq.id, tq.media_id, tq.episode
@@ -621,6 +762,22 @@ async def _process_one_pending() -> None:
         ).scalars().first()
         es_retry = es.retry_count if es is not None else 0
         es_quark_path = es.quark_path if es is not None else None
+        # L2（五节点状态机）：节点级快照——取件条件 + 失败重试 CAS 基准。
+        es_node = es.node if es is not None else None
+        es_node_attempt = es.node_attempt if es is not None else 0
+        es_state = es.state if es is not None else None
+        if es is None or es_node != "idle" or es_state != "queued":
+            # L2：只处理 node='idle' 且 state='queued'（旧值兼容）的 es；node 已被
+            # 并行 lane 推进（transfer/downloading/scrape/library）或双表不一致 →
+            # 本轮跳过，不抢占（tq 保持 pending，交由对应节点 lane 推进）。
+            await record_task_run(
+                s, "transfer", "skipped",
+                f"episode_state 非待转存态（node={es_node or 'None'}/state={es_state or 'None'}），本轮跳过",
+                media_id,
+                duration_seconds=_time.monotonic() - t0,
+            )
+            await s.commit()
+            return
 
     # 2) GID 来源校验兜底（§12.2 简化版）：存在陌生 aria2 活动/等待任务 → 本轮跳过并告警
     #    （不处理、不 ++quota_reject_count；防 n8n 被误启动时的双转存）
@@ -646,6 +803,109 @@ async def _process_one_pending() -> None:
             )
             return
 
+    # 2.5) L5（oracle 决策）：/quark 挂载前置校验（容量门槛之前）。
+    #      quark_default_folder 与 AList Quark 驱动 root_folder_id 不一致时，
+    #      cloudSaver save 的文件会落盘夸克其他目录，/quark 永不可见——与其白等
+    #      _LINK_WAIT_TIMEOUT=300s 轮询失败，不如在转存前预检直接走失败路径快速
+    #      计数（node_attempt++，≤3 次即 failed 供人工修正配置）。
+    #      match is False 或 configured_folder_id 为空 → 本轮直接失败（走失败路径，
+    #      node_error 写精确诊断）；调用异常 → 仅告警不阻断（继续正常流程）。
+    try:
+        diag = await alist.diagnose_quark_mount()
+    except Exception as exc:  # noqa: BLE001  预检不可用（含旧服务缺该方法）→ 告警后继续
+        logger.warning("[transfer] /quark 挂载预检不可用（仅告警，不阻断转存）: %s", exc)
+        diag = None
+    if diag is not None:
+        configured = diag.get("configured_folder_id") or None
+        root = diag.get("root_folder_id") or None
+        if diag.get("match") is False or not configured:
+            if not configured:
+                reason = ("quark_default_folder 为空（folderId 配置缺失），转存前预检失败；"
+                          "请配置为 AList Quark 驱动的 root_folder_id")
+            else:
+                reason = (f"quark_default_folder 配置与 AList root_folder_id 不一致："
+                          f"configured={configured} vs root={root}，转存前预检失败；"
+                          f"文件将落盘夸克其他目录，/quark 永不可见")
+            # 失败路径（与转存失败同一节点级语义：node_attempt++，<3 排队重试 / ≥3 failed）
+            now = _now()
+            async with async_session() as s:
+                async with s.begin():
+                    # 重读 es 最新计数（步骤 1 快照可能已过期——并发方可能推进过）
+                    es_now = (
+                        await s.execute(
+                            select(EpisodeState).where(
+                                EpisodeState.media_id == media_id,
+                                EpisodeState.episode == episode,
+                            )
+                        )
+                    ).scalars().first()
+                    cur_retry = es_now.retry_count if es_now is not None else 0
+                    cur_node_attempt = es_now.node_attempt if es_now is not None else 0
+                    new_attempt = cur_node_attempt + 1
+                    terminal = new_attempt >= _RETRY_LIMIT
+                    r_es = await s.execute(
+                        update(EpisodeState)
+                        .where(
+                            EpisodeState.media_id == media_id,
+                            EpisodeState.episode == episode,
+                            EpisodeState.state == "queued",
+                            EpisodeState.node == "idle",
+                            EpisodeState.retry_count == cur_retry,
+                            EpisodeState.node_attempt == cur_node_attempt,
+                        )
+                        .values(
+                            state="failed" if terminal else "queued",
+                            node="failed" if terminal else "idle",
+                            node_attempt=new_attempt,
+                            retry_count=new_attempt,
+                            node_error=reason,
+                            error=reason,
+                            node_started_at=now if not terminal else EpisodeState.node_started_at,
+                            node_finished_at=now if terminal else None,
+                            updated_at=now,
+                        )
+                    )
+                    if r_es.rowcount == 0:
+                        # CAS 冲突（node 已被并发方推进）→ 本轮跳过不计数
+                        await record_task_run(
+                            s, "transfer", "error",
+                            f"{episode} /quark 挂载预检失败但 CAS 冲突（node 已被推进），本轮跳过不计数: {reason}",
+                            media_id,
+                            duration_seconds=_time.monotonic() - t0,
+                        )
+                        return
+                    await s.execute(
+                        update(TransferQueue)
+                        .where(TransferQueue.id == tq_id, TransferQueue.status == "pending")
+                        .values(
+                            status="failed" if terminal else "pending",
+                            error=reason,
+                            save_task_id=None,
+                            save_attempt_at=None,
+                            updated_at=now,
+                        )
+                    )
+                    await record_task_run(
+                        s, "transfer", "error",
+                        f"{episode} /quark 挂载预检失败（node_attempt={new_attempt}/"
+                        f"{_RETRY_LIMIT}）: {reason}", media_id,
+                        duration_seconds=_time.monotonic() - t0,
+                    )
+                    if terminal:
+                        await _sync_media_status(media_id, s)
+            if terminal:
+                await notifier.notify(NotifyEvent(
+                    event_type=EVENT_FLOW_ERROR,
+                    title=f"转存配置校验失败: {file_name}",
+                    body=f"{reason}；已预检失败 {new_attempt} 次达上限，任务标记 failed，请修正 quark_default_folder 后人工 retry。",
+                    recipient=None,
+                    extra={"media_id": media_id, "episode": episode},
+                ))
+            else:
+                # 非终态：排队等待下一轮（配置修正后自动通过）
+                _spawn(process_transfer_queue)
+            return
+
     # 3) 容量门槛（fail-closed，§6.2/§6.3 模型 B：capacity.provider.check）
     try:
         capacity_ok = await capacity.provider.check(file_size)
@@ -658,7 +918,8 @@ async def _process_one_pending() -> None:
         )
         return
     if not capacity_ok:
-        # 容量不足：保持 pending + quota_reject_count++（绝不消耗 retry_count，§4.5）
+        # 容量不足：保持 pending/idle + quota_reject_count++（绝不消耗 retry/node_attempt，§4.5）
+        # L2：node_error 记录诊断「等待容量释放」，供展示层/排障查看。
         now = _now()
         async with async_session() as s:
             async with s.begin():
@@ -670,8 +931,22 @@ async def _process_one_pending() -> None:
                         updated_at=now,
                     )
                 )
+                await s.execute(
+                    update(EpisodeState)
+                    .where(
+                        EpisodeState.media_id == media_id,
+                        EpisodeState.episode == episode,
+                        EpisodeState.state == "queued",
+                        EpisodeState.node == "idle",
+                    )
+                    .values(
+                        node_error="等待容量释放（已用+本集超配额），保持排队（不消耗 node_attempt）",
+                        updated_at=now,
+                    )
+                )
                 await record_task_run(
                     s, "transfer", "skipped", f"容量不足等待释放: {file_name}", media_id,
+                    duration_seconds=_time.monotonic() - t0,
                 )
                 # P3-2（council）: 读取更新后的累计次数；达到阈值（≥5）→ 容量类
                 # flow_error 告警。task_run(skipped) 仍每次记录，告警复用 P2-2 的
@@ -695,6 +970,8 @@ async def _process_one_pending() -> None:
         return
 
     # 4) 条件更新抢占（单 worker 也做，防 recover 并发；任一行数=0 → 冲突跳过）
+    #    L2（五节点状态机）：进入转存链前把 es.node 置 'transfer'、node_started_at=now
+    #    （CAS 条件更新：node='idle' 才会命中，防与 scrape/library 等节点 lane 并发冲突）。
     now = _now()
     async with async_session() as s:
         async with s.begin():
@@ -709,14 +986,23 @@ async def _process_one_pending() -> None:
                     EpisodeState.media_id == media_id,
                     EpisodeState.episode == episode,
                     EpisodeState.state == "queued",
+                    EpisodeState.node == "idle",
                 )
-                .values(state="transferring", updated_at=now)
+                .values(
+                    state="transferring",
+                    node="transfer",
+                    node_started_at=now,
+                    node_finished_at=None,
+                    node_error=None,
+                    updated_at=now,
+                )
             )
             if r1.rowcount != 1 or r2.rowcount != 1:
                 await record_task_run(
                     s, "transfer", "error",
                     f"状态抢占冲突（tq 命中 {r1.rowcount} / es 命中 {r2.rowcount}），本轮跳过",
                     media_id,
+                    duration_seconds=_time.monotonic() - t0,
                 )
                 return
             # P3-6（council）：media.status → downloading（转存/下载进行中的影视
@@ -808,11 +1094,11 @@ async def _process_one_pending() -> None:
             comment=f"{_COMMENT_PREFIX}{media_id}:{episode}",
         )
     except Exception as exc:  # noqa: BLE001
-        # 任一步失败（含转存成功但直链/aria2 提交失败）→ 重试路径；
-        # 清理可能已转存的夸克残留（避免残留占用中转空间）。
+        # 任一步失败（含转存成功但直链/aria2 提交失败）→ 节点级重试路径（L2 五节点
+        # 状态机）；清理可能已转存的夸克残留（避免残留占用中转空间）。
         # P2-10 / P0-1（线上反馈「转存多次失败」）：save_task_id 已落库代表「已受理」
         # 而非「已完成」——若不清空，下一轮会跳过 save 并永远等不到文件（盲等死循环
-        # 到 retry 上限标 failed）。下方失败回退事务同时清空 save_task_id，强制下一轮
+        # 到重试上限标 failed）。下方失败回退事务同时清空 save_task_id，强制下一轮
         # 重新 save；仅成功路径保持幂等。
         try:
             dir_part, names = _split_quark_path(es_quark_path or f"/quark/{file_name}")
@@ -820,14 +1106,17 @@ async def _process_one_pending() -> None:
                 await alist.remove(names, dir_part)
         except Exception as e:  # noqa: BLE001  清理失败仅告警（P3-1），不阻断重试
             logger.warning("[transfer] 转存失败后清理夸克残留失败: %s", e)
-        new_retry = es_retry + 1
-        terminal = new_retry >= _RETRY_LIMIT
+        # L2：node_attempt+1（从步骤 1 快照的 es_node_attempt 读取，CAS 防并发）；
+        # 旧 retry_count 同步自增（双写兼容 recovery/scan 旧逻辑）。
+        new_attempt = es_node_attempt + 1
+        terminal = new_attempt >= _RETRY_LIMIT
         logger.warning(
-            "[transfer] 转存失败 media=%s %s（retry=%d/%d）: %s",
-            media_id, episode, new_retry, _RETRY_LIMIT, exc,
+            "[transfer] 转存失败 media=%s %s（node_attempt=%d/%d）: %s",
+            media_id, episode, new_attempt, _RETRY_LIMIT, exc,
         )
         now = _now()
         reason = f"转存失败: {exc}"
+        err = f"{reason}（node_attempt={new_attempt}/{_RETRY_LIMIT}）" if terminal else reason
         async with async_session() as s:
             async with s.begin():
                 r_es = await s.execute(
@@ -836,12 +1125,19 @@ async def _process_one_pending() -> None:
                         EpisodeState.media_id == media_id,
                         EpisodeState.episode == episode,
                         EpisodeState.state == "transferring",
-                        EpisodeState.retry_count == es_retry,  # P2-5 CAS：防读-改-写丢增量
+                        EpisodeState.node == "transfer",
+                        EpisodeState.retry_count == es_retry,         # P2-5 CAS：防读-改-写丢增量
+                        EpisodeState.node_attempt == es_node_attempt,  # L2 节点级 CAS
                     )
                     .values(
                         state="failed" if terminal else "queued",
-                        retry_count=new_retry,
-                        error=reason,
+                        node="failed" if terminal else "idle",
+                        node_attempt=new_attempt,
+                        retry_count=new_attempt,
+                        node_error=err,
+                        error=err,
+                        node_started_at=now if not terminal else EpisodeState.node_started_at,
+                        node_finished_at=now if terminal else None,
                         updated_at=now,
                     )
                 )
@@ -850,8 +1146,9 @@ async def _process_one_pending() -> None:
                     # 转移状态、不触发续跑（避免与并发方争抢），交由对方/下一轮 job 推进
                     await record_task_run(
                         s, "transfer", "error",
-                        f"{episode} 转存失败但 retry_count CAS 冲突（并发回退?），本轮跳过不计数: {exc}",
+                        f"{episode} 转存失败但 retry_count/node_attempt CAS 冲突（并发回退?），本轮跳过不计数: {exc}",
                         media_id,
+                        duration_seconds=_time.monotonic() - t0,
                     )
                     # P0-1（council）：CAS 冲突分支（此前直接 return）也无条件清空
                     # save_task_id / save_attempt_at（WHERE id=tq_id，不依赖 CAS 结果）
@@ -867,7 +1164,7 @@ async def _process_one_pending() -> None:
                     .where(TransferQueue.id == tq_id, TransferQueue.status == "transferring")
                     .values(
                         status="failed" if terminal else "pending",
-                        error=reason,
+                        error=err,
                         # P0-1：失败重试路径清空 save_task_id，下一轮强制重新 save
                         # （打破「已受理未落盘」的盲等死循环）；成功路径才保持幂等。
                         save_task_id=None,
@@ -876,7 +1173,8 @@ async def _process_one_pending() -> None:
                 )
                 await record_task_run(
                     s, "transfer", "error",
-                    f"{episode} 转存失败（retry={new_retry}/{_RETRY_LIMIT}）: {exc}", media_id,
+                    f"{episode} 转存失败（node_attempt={new_attempt}/{_RETRY_LIMIT}）: {exc}", media_id,
+                    duration_seconds=_time.monotonic() - t0,
                 )
                 # P3-6（council）：转存失败转 failed 与 _fail_download 终态同语义——
                 # es 不再是进行中态时，media 若无其他进行中 es 则回 tracking。
@@ -886,57 +1184,102 @@ async def _process_one_pending() -> None:
             await notifier.notify(NotifyEvent(
                 event_type=EVENT_FLOW_ERROR,
                 title=f"转存失败: {file_name}",
-                body=f"{reason}；已重试 {new_retry} 次达上限，任务标记 failed，请人工 retry。",
+                body=f"{err}；已重试 {new_attempt} 次达上限，任务标记 failed，请人工 retry。",
                 recipient=None,
                 extra={"media_id": media_id, "episode": episode},
             ))
         else:
-            # P2-6（Oracle 审查）：非终态回退（pending/queued）后触发下一轮消费续跑，
+            # P2-6（Oracle 审查）：非终态回退（pending/queued/idle）后触发下一轮消费续跑，
             # 防队列滞留（阶段 3 定时关闭，靠事件/手动触发，回退后需主动续跑）
             _spawn(process_transfer_queue)
         return
 
     # 6) 成功：建 download_task + 双表 downloading（aria2_gid / quark_path 一并落 es）
+    #    L2（五节点状态机）：转存成功（直链拿到 + add_uri 成功）→ node='download'
+    #    （瞬时态：add_uri 成功即 download 完成，node_finished_at=now 作为 download
+    #    节点成功标记）→ 立即 node='downloading'（等待 aria2 下载）；es.state 同步
+    #    downloading（旧字段双写兼容 recovery.py）；node_attempt 归零（进入
+    #    downloading 节点重新计数）、node_error 清空（上一节点诊断不留）。
     quark_path = f"/quark/{file_name}"
     now = _now()
-    async with async_session() as s:
-        async with s.begin():
-            s.add(DownloadTask(
-                media_id=media_id,
-                transfer_id=tq_id,
-                episode=episode,
-                file_name=file_name,
-                aria2_gid=gid,
-                status="downloading",
-                quark_path=quark_path,
-            ))
-            await s.execute(
-                update(TransferQueue)
-                .where(TransferQueue.id == tq_id, TransferQueue.status == "transferring")
-                .values(
-                    status="downloading",
-                    save_task_id=save_task_id if save_task_id else None,
-                    updated_at=now,
+    # P2-4：rowcount 结果预声明（仅 _TransferStateChanged 分支使用；预初始化
+    # 保证静态分析/极端路径下均有绑定值）
+    r_tq = r_es = None
+    try:
+        async with async_session() as s:
+            async with s.begin():
+                # P2-4（council）：先双表 update + rowcount 校验，全部通过后才 add
+                # download_task——转存链路（save → 落盘等待，最长 300s）期间 tq/es
+                # 可能已被并发方变动（recovery 超时回退 / 人工 retry）。任一行数
+                # != 1 → raise 触发整个事务回滚（拒绝落 downloading，不插入孤儿
+                # DownloadTask）；校验通过才建中介任务并记录 task_run。
+                r_tq = await s.execute(
+                    update(TransferQueue)
+                    .where(TransferQueue.id == tq_id, TransferQueue.status == "transferring")
+                    .values(
+                        status="downloading",
+                        save_task_id=save_task_id if save_task_id else None,
+                        updated_at=now,
+                    )
                 )
-            )
-            await s.execute(
-                update(EpisodeState)
-                .where(
-                    EpisodeState.media_id == media_id,
-                    EpisodeState.episode == episode,
-                    EpisodeState.state == "transferring",
+                r_es = await s.execute(
+                    update(EpisodeState)
+                    .where(
+                        EpisodeState.media_id == media_id,
+                        EpisodeState.episode == episode,
+                        EpisodeState.state == "transferring",
+                        EpisodeState.node == "transfer",
+                    )
+                    .values(
+                        state="downloading",
+                        node="downloading",
+                        node_attempt=0,
+                        node_started_at=now,
+                        node_finished_at=now,  # download 节点瞬时完成标记
+                        node_error=None,
+                        aria2_gid=gid,
+                        quark_path=quark_path,
+                        updated_at=now,
+                    )
                 )
-                .values(
-                    state="downloading",
+                if r_tq.rowcount != 1 or r_es.rowcount != 1:
+                    # P2-4：转存链路期间 tq/es 已被并发方变动（半边失联）→ 拒绝落
+                    # downloading。必须 raise（而非 return）触发事务回滚——直接
+                    # return 会让 begin 上下文正常退出并 commit，若两条 update 只
+                    # 命中其一会把另一表错误提交为 downloading，插入孤儿 DownloadTask。
+                    raise _TransferStateChanged()
+                s.add(DownloadTask(
+                    media_id=media_id,
+                    transfer_id=tq_id,
+                    episode=episode,
+                    file_name=file_name,
                     aria2_gid=gid,
+                    status="downloading",
                     quark_path=quark_path,
-                    updated_at=now,
+                ))
+                await record_task_run(
+                    s, "transfer", "success",
+                    f"转存并提交 aria2 下载: {episode}（gid={gid}）", media_id,
+                    duration_seconds=_time.monotonic() - t0,
                 )
-            )
+    except _TransferStateChanged:
+        # P2-4：事务已整体回滚（tq/es/dl 均未落 downloading）。aria2.add_uri 已
+        # 提交下行任务（gid 已签发）——best-effort 清理，防孤儿 aria2 下载继续占用
+        # 带宽/空间；失败仅告警不阻断（下一轮 job 仍会取件重试）。
+        try:
+            await aria2.client.remove(gid)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[transfer] 清理孤儿 aria2 任务失败 %s: %s", gid, exc)
+        async with async_session() as s:
             await record_task_run(
-                s, "transfer", "success",
-                f"转存并提交 aria2 下载: {episode}（gid={gid}）", media_id,
+                s, "transfer", "error",
+                f"{episode} 状态已变，清理孤儿 aria2 任务"
+                f"（tq 命中 {r_tq.rowcount if r_tq is not None else 0} / "
+                f"es 命中 {r_es.rowcount if r_es is not None else 0}）", media_id,
+                duration_seconds=_time.monotonic() - t0,
             )
+            await s.commit()
+        return
 
     # A-1（P1）：成功提交后触发下一 pending 消费续跑——与失败回退（:896）对称；
     # _process_lock 保证串行（续跑仅排队等待下一轮），解决「一次 scan 入队 N 集只处理 1 集」的静默积压
@@ -957,20 +1300,23 @@ async def process_transfer_queue() -> None:
     （scan 事件 / 手动 retry / 定时 job / _spawn 续跑 均经此入口）；拿不到锁的
     调用方按 asyncio.Lock 语义等待而非跳过，保证容量检查-转存两步不并发。
     """
+    t0 = _time.monotonic()  # Q8①：真实耗时
     async with _process_lock:
         try:
             await _poll_downloading_tasks()
         except Exception as exc:  # noqa: BLE001
             logger.exception("[transfer] 阶段A（完成轮询）异常")
             async with async_session() as s:
-                await record_task_run(s, "transfer", "error", f"阶段A轮询异常: {exc}")
+                await record_task_run(s, "transfer", "error", f"阶段A轮询异常: {exc}",
+                                      duration_seconds=_time.monotonic() - t0)
                 await s.commit()
         try:
             await _process_one_pending()
         except Exception as exc:  # noqa: BLE001
             logger.exception("[transfer] 阶段B（串行转存）异常")
             async with async_session() as s:
-                await record_task_run(s, "transfer", "error", f"阶段B转存异常: {exc}")
+                await record_task_run(s, "transfer", "error", f"阶段B转存异常: {exc}",
+                                      duration_seconds=_time.monotonic() - t0)
                 await s.commit()
 
 
@@ -1020,4 +1366,23 @@ async def trigger_transfer() -> None:
 #         （WHERE status='tracking' 不覆盖 paused）；_complete_download done、
 #         _fail_download 终态 failed、转存失败终态 failed 后经 _sync_media_status
 #         检查该 media 无任何进行中 es（queued/transferring/downloading）→ 回 tracking。
+# ---------------------------------------------------------------------------
+# L2/L4/L5/G6（oracle 决策，五节点任务模型）实施记录：
+# - L2  ：episode_state.node 成为状态机权威字段（idle→transfer→download→downloading
+#         →scrape→library→done；failed/done 终态）。node_attempt 节点级重试计数
+#         （<3 排队重试 / ≥3 failed，与 retry_count 双写平行自增）；node_started_at/
+#         node_finished_at/node_error 节点级时间戳与精确失败诊断。
+#         es.state 保留旧值双写兼容（recovery.py/scan.py/queue 等旧逻辑）：
+#         node=transfer→state=transferring、node=download/downloading→state=downloading、
+#         node=scrape/library→state 保持 downloading（**不置 done**——scan 的
+#         _resolve_done_states 会把 state='done' 当作「Emby 已入库」删除/转 failed，
+#         误伤仍在刮削/入库的集）。node='failed'→state='failed'、node='done'→state='done'。
+# - L4  ：_get_link_wait_visible 每轮先 list_dir("/quark")（refresh=True）拿真实目录，
+#         精确/模糊（归一 + 去扩展名差异）匹配真实名再 get_link——根治原实现直接
+#         get_link 吃缓存索引 + 文件名被夸克规范化改名导致「转存全失败」。
+# - L5  ：步骤 3 容量门槛前调用 alist.diagnose_quark_mount() 前置校验：match=False /
+#         configured 为空 → 本轮直接失败（node_error 精确诊断，不浪费 300s 轮询）；
+#         调用异常仅告警不阻断。
+# - G6  ：下载完成不再删夸克文件（_complete_download 的 alist.remove 已移除）——
+#         入库确认（library 节点完成）后才删，由后续 lane 执行。
 # ---------------------------------------------------------------------------

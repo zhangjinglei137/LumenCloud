@@ -549,8 +549,10 @@ def test_done_resolution_failed_respects_retry_count_below_limit(db, monkeypatch
     assert tq.status == "failed"  # es 转 failed 成功 → 联动 tq
 
 
-def test_done_resolution_hit_retry_limit_keeps_done(db, monkeypatch):
-    """P3-1：达循环上限（retry_count=3）→ 保持 done、不删除、仅写上限 error，tq 不联动。"""
+def test_done_resolution_hit_retry_limit_marks_failed(db, monkeypatch):
+    """P3-1/P1-5：达循环上限（retry_count=3）→ 写 node='failed'/state='failed' 终态
+    （与其它失败终态对齐，queue.py retry_task 可人工解锁；此前保持 done 仅写 error
+    导致 retry 只认 failed 无法干预而卡死），上限分支不联动 tq（retry 时联动）。"""
     from app.tasks import scan as scan_mod
 
     monkeypatch.setattr(scan_mod, "async_session", db)
@@ -559,10 +561,14 @@ def test_done_resolution_hit_retry_limit_keeps_done(db, monkeypatch):
 
     es = run(read_row(db, EpisodeState, es_id))
     tq = run(read_row(db, TransferQueue, tq_id))
-    assert es is not None and es.state == "done"  # 不再转 failed（防重保留）
+    assert es is not None
+    assert es.state == "failed"
+    assert es.node == "failed"
     assert es.retry_count == 3  # 不消耗 / 不再递增
-    assert es.error == scan_mod._DONE_LIMIT_ERROR  # 上限 error 文案，人工核实 Emby 端
-    assert tq.status == "done"  # 上限分支不联动 tq
+    assert es.node_attempt == scan_mod._DONE_FAIL_RETRY_LIMIT  # 达上限值
+    assert es.node_error == scan_mod._DONE_LIMIT_ERROR  # 上限 error 文案，人工核实 Emby 端
+    assert es.error == scan_mod._DONE_LIMIT_ERROR
+    assert tq.status == "done"  # 上限分支不联动 tq（P1-3 后 retry 按 IN ('failed','done') 联动）
 
 
 # ---------------------------------------------------------------------------

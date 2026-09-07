@@ -71,13 +71,16 @@ def test_record_task_run_persists_duration_and_started_at(_db_maker):
     run(_case())
 
 
-def test_record_task_run_backward_compatible_defaults(_db_maker):
-    """不传新参数 → duration_seconds 为 None、started_at == finished_at（旧行为完全不变）。"""
+def test_record_task_run_duration_required(_db_maker):
+    """duration_seconds 必填（签名强制）：不传 → TypeError；显式传入 0.0 落库，
+    started_at 缺省时仍为 started_at == finished_at（缺省时刻行为不变）。"""
     async def _case():
         async with _db_maker() as session:
-            rid = await record_task_run(session, "notify", "skipped", "空跑")
+            with pytest.raises(TypeError):
+                await record_task_run(session, "notify", "skipped", "空跑")
+            rid = await record_task_run(session, "notify", "skipped", "空跑", duration_seconds=0.0)
             row = await session.get(TaskRun, rid)
-            assert row.duration_seconds is None
+            assert row.duration_seconds == 0.0
             assert row.started_at == row.finished_at
 
     run(_case())

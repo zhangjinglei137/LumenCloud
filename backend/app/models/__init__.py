@@ -93,6 +93,15 @@ class EpisodeState(Base):
     state = mapped_column(  # queued/transferring/downloading/done/failed
         Text, nullable=False
     )
+    # 五节点任务模型（oracle 决策）：节点级状态机，与旧 state 并行演进。
+    # 节点取值：idle/transfer/download/downloading/scrape/library/failed/done
+    # （failed/done 为终态；node_error 记录节点级失败诊断）。
+    # 迁移见 alembic/versions/0009_episode_node_fields.py。
+    node = mapped_column(Text, nullable=False, server_default=text("'idle'"))
+    node_attempt = mapped_column(Integer, server_default=text("0"))
+    node_started_at = mapped_column(DateTime)
+    node_finished_at = mapped_column(DateTime)
+    node_error = mapped_column(Text)
     file_name = mapped_column(Text)
     file_size = mapped_column(BigInteger)
     share_code = mapped_column(Text)
@@ -280,6 +289,11 @@ class TmdbCache(Base):
     media_type = mapped_column(String(32), nullable=False)  # movie / tv
     poster_path = mapped_column(Text, nullable=True)  # TMDB 图床相对路径 /t/p/w500/...
     year = mapped_column(Integer, nullable=True)
+    # TV 连载状态（TMDB /3/tv/{id} 的 status 字段：Returning Series/Ended/Canceled/Pilot）。
+    # 由 get_by_tmdb_id 回源时落库；movie 或无该字段 → NULL。Emby 库页
+    # TMDB 优先判定连载时复用，避免对同一剧集反复回源（7 天 TTL）。
+    # 迁移见 alembic/versions/0009_tmdb_cache_tv_status.py。
+    tv_status = mapped_column(String(32), nullable=True)
     updated_at = mapped_column(
         DateTime,
         server_default=text("CURRENT_TIMESTAMP"),

@@ -107,9 +107,9 @@ def test_load_failure_warns_and_keeps_fallback(monkeypatch):
 def test_sensitive_keys_covered():
     for key in (
         "alist_base_url", "alist_token",              # alist 统一处理（内部地址 + token）
-        "cloudsaver_username", "cloudsaver_password",
+        "cloudsaver_password",
         "aria2_rpc_url", "aria2_token",               # aria2 统一处理（RPC 端点 + token）
-        "nastools_username", "nastools_password",
+        "nastools_password",
         "emby_api_key",
         "tmdb_api_key",
         "pushplus_token",
@@ -120,6 +120,9 @@ def test_sensitive_keys_covered():
         assert config_store.is_sensitive(key), key
     # URL 类键（base_url / proxy）不算敏感，可回显
     for key in ("cloudsaver_base_url", "emby_base_url", "nastools_base_url", "tmdb_proxy"):
+        assert not config_store.is_sensitive(key), key
+    # username 类为登录账号名非密钥，明文回显（P2-3）
+    for key in ("cloudsaver_username", "nastools_username"):
         assert not config_store.is_sensitive(key), key
     # 非敏感系统键
     assert not config_store.is_sensitive("quark_quota_gb")

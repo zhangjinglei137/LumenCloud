@@ -6,7 +6,9 @@ Emby 防重基线 / 遗漏集 / 已有集 / 影视库展示服务。
 - get_missing_episodes：查剧集遗漏集（/emby/Shows/Missing），作为防重基线
 - list_episodes     ：查已有集（/Shows/{id}/Episodes），供防重基线
 - list_library      ：查 Emby 影视库（/Items Recursive 全量），供 des-3 展示页；
-                      支持 item_type / status（SeriesStatus 在更/完结）/ anime（动漫库）
+                      支持 item_type / status（SeriesStatus 在更/完结）/ anime（动漫库）；
+                      series 条目连载判定 TMDB 优先（有 tmdb_id → /3/tv/{id}
+                      status 字段，无 → Emby SeriesStatus 兜底，见 _attach_tmdb_series_status）
 - list_libraries    ：查 Emby 媒体库列表（/Library/VirtualFolders），供动漫库识别
 
 契约参照 n8n 旧流程（docs/新系统设计.md §10）：
@@ -16,6 +18,7 @@ Emby 防重基线 / 遗漏集 / 已有集 / 影视库展示服务。
 故障（超时 / 5xx / 网络异常）统一抛 EmbyUnavailable，由调用方按 fail-safe 处理
 （docs/新系统设计.md §4.3：Emby 故障时不进入新缺集发现）。
 """
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -27,6 +30,7 @@ from app.config import settings
 from app.database import async_session
 from app.models import Media
 from app.services import config_store
+from app.services.tmdb import TMDBUnavailable, get_by_tmdb_id
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +41,25 @@ REQUEST_TIMEOUT = httpx.Timeout(30.0)   # Emby 为慢端点（/Shows/Missing 实
 ANIME_LIBRARY_KEYWORDS = ("动漫", "动画", "anime")
 # VirtualFolderInfo.CollectionType 白名单：仅保留影视类媒体库（movies/tvshows 或 null）
 LIBRARY_COLLECTION_TYPES = ("movies", "tvshows")
+
+# 连载判定 TMDB 优先：get_by_tmdb_id 返回的 tv status 原值 → 库页 series_status
+# 小写约定（与 Emby SeriesStatus 归一化口径一致）。
+# - Returning Series → continuing（在更）
+# - Ended / Canceled → ended（完结 / 被砍均不再连载）
+# - Pilot / None / 其它 → 无有效判定，保留 Emby SeriesStatus 原值
+_TMDB_TV_STATUS_MAP = {
+    "Returning Series": "continuing",
+    "Ended": "ended",
+    "Canceled": "ended",
+}
+# TMDB 批量回源并发上限：list_library 一次可能返回数百条剧集，逐条直连会触发
+# TMDB 免费 API 限流（~40 req/10s）；信号量限并发，缓存命中不占并发额度。
+_TMDB_BATCH_CONCURRENCY = 5
+# P2-8：Emby /Items 分页拉取（list_library 大库完整）。单页 500（原硬编码 Limit）；
+# 当前页满单页即 StartIndex 翻页（模式对齐 alist.list_dir），直到少于单页或达到
+# 页数上限防御（防 Emby 恒满页导致死循环拉爆）。
+_LIST_PAGE_SIZE = 500
+_LIST_MAX_PAGES = 40  # 500 × 40 = 20000 条，远超影视库实际规模，仅作异常兜底
 
 
 class EmbyUnavailable(Exception):
@@ -384,6 +407,58 @@ async def _attach_in_media_flag(items: list[dict[str, Any]]) -> None:
         item["media_id"] = media_id
 
 
+async def _attach_tmdb_series_status(items: list[dict[str, Any]]) -> None:
+    """TMDB 优先连载判定：就地覆盖 series 条目的 series_status。
+
+    规则（oracle 决策）：Emby 条目有 tmdb_id → 用 TMDB /3/tv/{id} 的 status
+    字段判定；无 tmdb_id → 保留 Emby SeriesStatus 原值。
+
+    批量策略（成本控制——list_library 一次返回数百条 series，逐条查 TMDB 是
+    N+1 网络调用，必须收敛请求量）：
+    1. 候选过滤：仅「Emby SeriesStatus 缺失或为 continuing」且 tmdb_id 非空的
+       series 条目进入候选。Emby 已判 ended 的条目直接信任 Emby 值——完结剧集
+       极少复活，即便 TMDB 先行报 Returning Series，Emby 检测到新集也会自行
+       更新，接受该延迟一致，从而省掉大部分请求；
+    2. 命中有效缓存跳过：候选逐条走 get_by_tmdb_id，内部命中 7 天 TTL 的
+       tmdb_cache 直接返回（零网络调用）；仅未命中/过期的条目回源 TMDB；
+    3. 并发收敛：回源并发受 _TMDB_BATCH_CONCURRENCY 信号量约束（TMDB 免费 API
+       限流保护）；
+    4. 静默降级：TMDB 未配置 / 调用失败 / 响应无 status（含 Pilot）→ 保留
+       Emby SeriesStatus 原值，不抛异常、不阻塞 list_library 主流程。
+    """
+    candidates: list[tuple[dict[str, Any], str]] = []  # (item, tmdb_id 字符串)
+    for item in items:
+        if item.get("type") != "series":
+            continue  # movie 不判定连载
+        tmdb_id = item.get("tmdb_id")
+        if not tmdb_id:
+            continue  # 无 tmdb_id → Emby SeriesStatus 兜底
+        if item.get("series_status") == "ended":
+            continue  # Emby 已判完结 → 信任 Emby 值，省一次网络调用
+        candidates.append((item, str(tmdb_id)))
+
+    if not candidates:
+        return
+
+    sem = asyncio.Semaphore(_TMDB_BATCH_CONCURRENCY)
+
+    async def _fetch(tmdb_id: str) -> Optional[str]:
+        async with sem:
+            try:
+                meta = await get_by_tmdb_id(tmdb_id, "tv")
+            except TMDBUnavailable as exc:
+                # TMDB 未配置 / 请求失败 → 静默回退 Emby SeriesStatus
+                logger.info("TMDB 连载判定降级（回退 Emby SeriesStatus）tmdb_id=%s: %s", tmdb_id, exc)
+                return None
+            return meta.get("tv_status")
+
+    results = await asyncio.gather(*(_fetch(tmdb_id) for _, tmdb_id in candidates))
+    for (item, _), tv_status in zip(candidates, results):
+        mapped = _TMDB_TV_STATUS_MAP.get(tv_status or "")
+        if mapped is not None:
+            item["series_status"] = mapped
+
+
 async def list_library(
     item_type: Optional[str] = None,
     status: Optional[str] = None,
@@ -401,8 +476,10 @@ async def list_library(
                    找不到动漫库则返回空列表（前端显示空态，不算错误）
     返回:
         归一化条目列表，每项含 emby_id/title/type/year/poster_url/
-        community_rating/tmdb_id/emby_web_url、series_status（Q12：在更/完结，
-        "continuing"/"ended"/None），及增强 B 的 in_media/media_id；
+        community_rating/tmdb_id/emby_web_url、series_status（连载判定 TMDB 优先：
+        /3/tv/{id} status 映射 "continuing"/"ended"；无 tmdb_id 或 TMDB 查询失败时
+        回退 Emby SeriesStatus 原值 "continuing"/"ended"/None），及增强 B 的
+        in_media/media_id；
         emby_web_url 在 serverId 获取失败/无 Id 时为 None（前端隐藏「在 Emby 中打开」）
     异常:
         EmbyUnavailable: 配置缺失 / 请求失败
@@ -425,17 +502,39 @@ async def list_library(
         "Recursive": "true",
         "IncludeItemTypes": include_item_types,
         "Fields": "ProviderIds,CommunityRating,ProductionYear,SeriesStatus",
-        "Limit": "500",
+        "Limit": str(_LIST_PAGE_SIZE),
     }
     if parent_id:
         params["ParentId"] = parent_id
     if status:
         params["SeriesStatus"] = status
 
-    payload = await _get("/Items", params)
+    # P2-8：分页拉取全部（Emby /Items 支持 StartIndex+Limit）——原硬编码 Limit=500 会
+    # 截断大库（>500 条）导致筛选/展示与遗漏判定不完整。模式对齐 alist.list_dir：当前
+    # 页满单页就 StartIndex 翻页，直到少于单页（含 0 条）或达到页数上限防御。
+    items: list[dict[str, Any]] = []
+    start_index = 0
+    page = 0
+    while True:
+        page += 1
+        if page > _LIST_MAX_PAGES:
+            logger.warning(
+                "Emby 影视库分页超过 %d 页上限，提前停止（已收集 %d 条）",
+                _LIST_MAX_PAGES, len(items),
+            )
+            break
+        page_params = dict(params)
+        page_params["StartIndex"] = str(start_index)
+        payload = await _get("/Items", page_params)
+        chunk = payload.get("Items", []) or []
+        items.extend(chunk)
+        # 当前页条数 < 单页 → 已到最后一页（含 0 条），停止分页
+        if len(chunk) < _LIST_PAGE_SIZE:
+            break
+        start_index += len(chunk)
+
     base = _base_url()
     api_key = config_store.get("emby_api_key", settings.EMBY_API_KEY)
-    items = payload.get("Items", []) or []
     # D-1（P1）：详情链接的 serverId 一次获取，批量复用（惰性缓存，失败降级 None）
     server_id = await _get_server_id()
     result: list[dict[str, Any]] = []
@@ -443,6 +542,10 @@ async def list_library(
         normalized = _normalize_library_item(item, base, api_key, server_id)
         if normalized is not None:
             result.append(normalized)
+
+    # TMDB 优先连载判定：series 条目按「SeriesStatus 缺失或为 continuing + 缓存未命中」
+    # 批量查 TMDB /3/tv/{id}，失败静默回退 Emby SeriesStatus（不阻塞展示）
+    await _attach_tmdb_series_status(result)
 
     # 本地已收录标记（in_media/media_id）：按 tmdb_id 批量查 Media 表（单次 IN 查询）
     await _attach_in_media_flag(result)

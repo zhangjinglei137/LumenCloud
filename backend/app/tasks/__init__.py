@@ -38,13 +38,14 @@ async def get_config_value(session, key: str, default=None):
 
 async def record_task_run(session, task_type: str, status: str, message: str,
                           media_id: int | None = None, *,
-                          duration_seconds: float | None = None,
+                          duration_seconds: float,
                           started_at: datetime | None = None) -> int | None:
     """写入 task_run 执行记录（设计文档 §3.1）并返回记录 id。
 
-    Q8①：job 入口以 time.monotonic() 计时后传入 duration_seconds（真实耗时）；
-    started_at 可选（entry 级起表时间，缺省即写入时刻）。旧调用（不传新参数）
-    行为完全不变。仅 add+flush，由调用方统一 commit。
+    Q8①：duration_seconds 必填——job 入口以 time.monotonic() 计时后传入
+    （真实耗时，杜绝前端算 started/finished 差值恒 0 的假象）；started_at 可选
+    （entry 级起表时间，缺省即写入时刻，此时 finished_at 与 started_at 同一时刻，
+    duration_seconds 仍为真实耗时）。仅 add+flush，由调用方统一 commit。
     """
     ts = started_at or _now()
     run = TaskRun(

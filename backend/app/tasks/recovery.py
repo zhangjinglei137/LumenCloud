@@ -10,13 +10,20 @@ transferring/downloading 记录 → 回退 queued + retry_count++，并清理夸
 （调用 alist；服务未就绪/调用失败 try/except 包裹，记录 task_run，不阻塞回退）；
 同步 transfer_queue 对应记录回退 pending。
 
-幂等：回退后记录变为 queued，不再命中 transferring/downloading 条件，可重复执行。
+P0-1（council）：五节点下按 **node 维度** 判断超时回退候选（仅
+node∈transfer/download/downloading）；scrape/library 的 state 双写保持
+'downloading'（旧字段映射，node 权威，见 transfer._complete_download），但二者有
+独立超时机制（scrape 靠 node_attempt 重试、library 靠 library_check_timeout_seconds），
+recovery 不处理；回退时同步复位 node='idle'/node_attempt=0/节点时序/节点诊断，
+保证回退后重新满足取件条件（node='idle' 且 state='queued'）。
+
+幂等：回退后记录变为 queued，不再命中进行中态条件，可重复执行。
 """
 import logging
 import time
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import and_, or_, select, update
 
 from app.config import settings
 from app.database import async_session
@@ -26,10 +33,16 @@ from app.tasks import record_task_run
 
 logger = logging.getLogger(__name__)
 
-# 状态机进行中态（§3.1）：超时回退候选
+# 状态机进行中态（§3.1）：超时回退候选（旧字段 state 维度）
 _PROGRESS_STATES = ("transferring", "downloading")
 # transfer_queue 中与进行中态对应的执行流状态
 _TQ_PROGRESS_STATES = ("transferring", "downloading")
+# P0-1（council）：五节点下可被超时回退的节点（transfer/download/downloading）。
+# scrape/library **排除**——它们的 state 双写保持 'downloading'（旧字段映射，node 才是
+# 权威），但由独立机制负责：scrape 靠 node_attempt 重试、library 靠
+# library_check_timeout_seconds。recovery 按 node 维度处理，杜绝把这两类集"回退"
+# 成 state='queued' + node≠'idle' 的永久卡死态（head-of-line blocking）。
+_REVERTABLE_NODES = ("transfer", "download", "downloading")
 
 # system_config 中的超时阈值键（「配置双源统一」：system_config 优先，env 仅 fallback）
 EPISODE_TIMEOUT_CONFIG_KEY = "episode_state_timeout_hours"
@@ -37,6 +50,26 @@ EPISODE_TIMEOUT_CONFIG_KEY = "episode_state_timeout_hours"
 
 def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _es_revert_condition():
+    """五节点下可被超时回退的 es 条件（阶段①快照查询 / 阶段③ CAS 更新共用）。
+
+    1. 只认 node∈('transfer','download','downloading') 的集——进行中节点超时回退；
+    2. scrape/library 的集**排除**：五节点下它们的 state 双写保持 'downloading'
+       （旧字段映射，node 才是权威，见 transfer._complete_download docstring），
+       但由独立超时机制负责：scrape 靠 node_attempt 重试、library 靠
+       library_check_timeout_seconds——recovery 不处理这两类；
+    3. 兜底兼容五节点迁移前的旧数据：node 未推进（默认 'idle'）但 state 已是
+       transferring/downloading 双写且确已超时——同样可回退（保持老逻辑行为）。
+    """
+    return or_(
+        EpisodeState.node.in_(_REVERTABLE_NODES),
+        and_(
+            EpisodeState.node == "idle",
+            EpisodeState.state.in_(_PROGRESS_STATES),
+        ),
+    )
 
 
 async def _load_timeout_hours() -> float:
@@ -98,13 +131,17 @@ async def recover_stale_tasks() -> int:
     cutoff = _now() - timedelta(hours=timeout_hours)
     t0 = time.monotonic()  # Q8①：真实耗时
 
-    # 阶段①：只读快照查询（NULL updated_at 显式覆盖，P5）
+    # 阶段①：只读快照查询（NULL updated_at 显式覆盖，P5）。
+    # P0-1（council）：查询条件按**五节点 node 维度**匹配（_es_revert_condition）——
+    # 旧实现按 state 匹配 _PROGRESS_STATES 会误命中 scrape/library（state 双写为
+    # downloading）的集，回退后 node≠idle + state='queued' 永久卡死（head-of-line
+    # blocking）。scrape/library 由独立超时机制负责，recovery 不处理。
     async with async_session() as session:
         rows = (
             (
                 await session.execute(
                     select(EpisodeState).where(
-                        EpisodeState.state.in_(_PROGRESS_STATES),
+                        _es_revert_condition(),
                         or_(
                             EpisodeState.updated_at < cutoff,
                             EpisodeState.updated_at.is_(None),
@@ -159,7 +196,10 @@ async def recover_stale_tasks() -> int:
                     update(EpisodeState)
                     .where(
                         EpisodeState.id == row.id,
-                        EpisodeState.state.in_(_PROGRESS_STATES),
+                        # P0-1：CAS 更新同样带五节点 node 条件（与阶段①一致）——
+                        # 防并发方在阶段②网络 IO 期间把 node 推进到
+                        # scrape/library/etc. 后仍被本回退覆盖
+                        _es_revert_condition(),
                         # CAS：仅当 retry_count 仍等于阶段①快照值时才自增（DB 原子），
                         # 即未被 transfer 的失败回退并发推进
                         EpisodeState.retry_count == retry_snapshots[row.id],
@@ -169,6 +209,15 @@ async def recover_stale_tasks() -> int:
                         retry_count=EpisodeState.retry_count + 1,
                         error=error,
                         updated_at=now,
+                        # P0-1（council）：回退同时复位五节点字段——回到取件条件
+                        # （node='idle' 且 state='queued'），下一轮 process_transfer_queue
+                        # 可正常取件；node_attempt 归零、时序/节点诊断一并清空
+                        # （node_error 置 None，终态诊断仍保留在 error 列）。
+                        node="idle",
+                        node_attempt=0,
+                        node_error=None,
+                        node_started_at=None,
+                        node_finished_at=None,
                     )
                 )
                 if r_es.rowcount == 0:

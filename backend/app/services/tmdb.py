@@ -130,6 +130,8 @@ async def _read_cache(tmdb_id: str | int, media_type: str) -> dict[str, Any] | N
             "media_type": row.media_type,
             "poster_path": row.poster_path,
             "year": year,
+            # TV 连载状态（TMDB /3/tv/{id} 的 status 字段原值；movie/旧缓存行 → None）
+            "tv_status": row.tv_status,
         }
     except Exception as exc:  # noqa: BLE001 缓存不可用降级回源
         logger.warning("tmdb_cache 读取失败（降级回源）: %s", exc)
@@ -142,11 +144,14 @@ async def _upsert_cache(
     title: str,
     poster_path: str | None,
     year: str | None,
+    tv_status: str | None = None,
 ) -> None:
     """tmdb_cache 幂等 upsert（命中更新 / 未命中新增，updated_at=now）。
 
     - tmdb_id 字符串化（P3 契约）；
     - year 转 int（可空）：int("2023") → 2023，缺失/非法 → None；
+    - tv_status 仅在非 None 时覆盖（search_multi 等无 status 来源的调用传 None，
+      不覆盖 get_by_tmdb_id 已落库的连载状态，防误清）；
     - 缓存层纯优化：失败仅告警（表未建 / DB 不可用等），不阻断调用方。
     """
     try:
@@ -173,6 +178,8 @@ async def _upsert_cache(
             row.title = title
             row.poster_path = poster_path
             row.year = year_int
+            if tv_status is not None:
+                row.tv_status = tv_status
             row.updated_at = now
             await session.commit()
     except Exception as exc:  # noqa: BLE001 缓存落盘失败降级（不阻断返回）
@@ -189,7 +196,9 @@ async def get_by_tmdb_id(tmdb_id: str | int, media_type: str) -> dict[str, Any]:
        复用 _client_kwargs 出口代理与 config_store api_key 读取）→ 归一化
        title / poster_path / year → upsert 缓存（updated_at=now）→ 返回。
 
-    返回 dict：{tmdb_id, title, media_type, poster_path, year}。
+    返回 dict：{tmdb_id, title, media_type, poster_path, year, tv_status}。
+    tv_status：仅 tv 条目解析 payload 的 status 字段（连载判定 TMDB 优先，
+    'Returning Series'/'Ended'/'Canceled'/'Pilot'）；movie 或无该字段 → None。
 
     异常:
         TMDBUnavailable: 未配置 key / 请求失败 / 响应异常
@@ -232,7 +241,9 @@ async def get_by_tmdb_id(tmdb_id: str | int, media_type: str) -> dict[str, Any]:
             "first_air_date": payload.get("first_air_date"),
         }
     )
-    await _upsert_cache(tmdb_id, media_type, title, poster_path, year)
+    # 连载判定 TMDB 优先：tv 条目解析 status 字段（movie 响应无该字段 → None）
+    tv_status = payload.get("status") if media_type == "tv" else None
+    await _upsert_cache(tmdb_id, media_type, title, poster_path, year, tv_status=tv_status)
 
     return {
         "tmdb_id": str(tmdb_id),
@@ -240,6 +251,7 @@ async def get_by_tmdb_id(tmdb_id: str | int, media_type: str) -> dict[str, Any]:
         "media_type": media_type,
         "poster_path": poster_path,
         "year": year,
+        "tv_status": tv_status,
     }
 
 
@@ -303,7 +315,8 @@ async def search_multi(q: str) -> list[dict[str, Any]]:
             "year": _extract_year(item),
         }
         results.append(entry)
-        # P3 元数据缓存：搜索命中即 upsert（tmdb_id 字符串化；id 缺失的异常条目跳过）
+        # P3 元数据缓存：搜索命中即 upsert（tmdb_id 字符串化；id 缺失的异常条目跳过；
+        # tv_status 无来源传 None，不覆盖 get_by_tmdb_id 已落库的连载状态）
         if entry["tmdb_id"] is not None:
             await _upsert_cache(
                 tmdb_id=entry["tmdb_id"],
