@@ -168,16 +168,26 @@ def _result_detail_skeleton(failed_phase: str | None = None,
         "non_video": 0,
         "failed_phase": failed_phase,
         "search_status": search_status,
+        # share-info 验证统计（诊断：cloudSaver 搜索返回大量失效分享码 share-info 500）。
+        # 可观测字段，供日志/排查与 message 语义区分「候选全部失效」vs「候选可用但无匹配」。
+        "share_info_ok": 0,
+        "share_info_fail": 0,
+        "walk_fail": 0,
         "missing_items": [],
     }
 
 
 def _result_message(*, enqueued: int, unmatched: int, size_filtered: int,
                     non_video: int, existing_skipped: int,
-                    missing_episodes: list[str] | None = None) -> str:
+                    missing_episodes: list[str] | None = None,
+                    share_info_all_failed_candidates: int = 0) -> str:
     """巡检结果「人话」消息（信息列改造）：保留计数 + 引导性结论。
 
     规则：
+    - share_info_all_failed_candidates>0（候选分享全部验证失败）→ 优先报「搜索到 N 个
+      候选分享，验证均失败（分享可能已失效/过期）」，区分于「搜索成功但无匹配」——
+      诊断实证：cloudSaver 搜索返回大量失效分享码 share-info HTTP 500，此前误报
+      「搜索无匹配候选」。该场景入队必为 0。
     - enqueued>0         → 「已入队 N 个资源」开头，后接存在的
                           M 个文件未匹配 / K 个超大小限制跳过 / J 个非视频 / 已有跳过
     - enqueued=0 & unmatched>0 → 未找到缺失集资源（搜索文件均不匹配：多为已收录旧集或其它版本，
@@ -186,6 +196,11 @@ def _result_message(*, enqueued: int, unmatched: int, size_filtered: int,
     - 全部 0：缺集场景（missing_episodes 非空）→ 明示「未找到缺失集 … 的资源（搜索无匹配
       候选，资源可能尚未更新）」，杜绝误导性「无候选命中」；否则兜底「无候选命中」
     """
+    if share_info_all_failed_candidates:
+        return (
+            f"搜索到 {share_info_all_failed_candidates} 个候选分享，验证均失败"
+            "（分享可能已失效/过期），未能获取缺失集资源"
+        )
     if enqueued > 0:
         parts = [f"已入队 {enqueued} 个资源"]
         if unmatched:
@@ -258,9 +273,15 @@ def _ep_num(key: str) -> int | None:
 
 
 def match_missing(text: str, missing_keys: set[str]) -> str | None:
-    """三重匹配缺失集：SxxExx / SxxExxx / 第N集（跨季按集号匹配）。
+    """三重匹配缺失集：SxxExx / SxxExxx / 第N集（跨季按集号匹配）→ 纯数字兜底。
 
-    返回命中的缺失集 key；未命中返回 None。
+    纯数字兜底（凡人修仙传 S01E190 案例）：网盘资源文件常为纯数字命名
+    （`190.mkv`、`189.mkv`），既非 SxxExx 也非「第N集」——若不兜底，真实有效
+    分享即使遍历到也匹配不到。双重收紧防歧义：
+      ① 文件名主体提取 1-3 位数字块（开头或独立数字块，前置 [xxx] 标签可忽略）；
+      ② 缺失集全部属于同一季 S，且 SxxE{数字} ∈ missing_keys 才命中。
+    多季缺失（{"S01E01","S02E05"}）、数字超范围、纯数字与缺失集不吻合 → None，
+    不影响既有三条规则（放在最后作为兜底）。
     """
     if not text:
         return None
@@ -277,6 +298,18 @@ def match_missing(text: str, missing_keys: set[str]) -> str | None:
         hits = [k for k in missing_keys if _ep_num(k) == ep]
         if hits:
             return sorted(hits)[0]
+    # 3) 纯数字兜底：文件名主体为纯数字（190.mkv → 190），前置 [xxx] 标签可忽略。
+    #    「190.2020.2160p.mkv」首个数字块 190 亦可；「风起天南1」首字符非数字不匹配。
+    basename = text.rsplit(".", 1)[0] if "." in text else text
+    m = re.match(r"^(?:\[[^\]]*\])*(\d{1,3})(?=\D|$)", basename)
+    if m and missing_keys:
+        ep = int(m.group(1))
+        seasons = {_season_of_key(k) for k in missing_keys}
+        if len(seasons) == 1:  # 多季缺失集：纯数字无法判定归属季 → 不匹配（防歧义）
+            season = next(iter(seasons))
+            key = _fmt_episode(season, ep)
+            if key in missing_keys:
+                return key
     return None
 
 
@@ -462,15 +495,23 @@ async def _resolve_done_states(media, missing_keys: set[str], movie_missing: boo
 # ---------------------------------------------------------------------------
 
 def _expand_share_codes(results: list[dict]) -> list[dict]:
-    """从 search 结果展开 quark 分享码候选：{title, share_code}（P8 正则提取）。"""
+    """从 search 结果展开 quark 分享码候选：{title, share_code}（P8 正则提取）。
+
+    按 share_code 去重（保留首次出现的 title）——cloudSaver 搜索接口会在多个
+    channel/条目里重复返回同一失效分享码（如「凡人修仙传 (2020) 4k 高码率
+    [更新190集]」同码出现 5 次），不去重会占用多个候选位、浪费逐码 share-info
+    验证配额（诊断发现：rank 前 20 里失效码 83025fed147e 出现 5 次）。
+    """
     out: list[dict] = []
+    seen: set[str] = set()
     for item in results:
         title = item.get("title") or ""
         for cl in item.get("cloud_links") or []:
             if (cl.get("cloud_type") or "").lower() != "quark":
                 continue
             m = _SHARE_CODE_RE.search(str(cl.get("link") or ""))
-            if m:
+            if m and m.group(1) not in seen:
+                seen.add(m.group(1))
                 out.append({"title": str(title), "share_code": m.group(1)})
     return out
 
@@ -1197,13 +1238,16 @@ async def _scan_one(media_id: int) -> int | None:
 
     enqueued = existing_skipped = size_filtered = unmatched = non_video = 0
     unmatched_files: list[str] = []  # 未匹配文件名样例（至多收集 3 个，供 message 定位）
+    share_info_ok = share_info_fail = walk_fail = 0
     _phase_start(phases, "match")
     _phase_start(phases, "enqueue")  # 匹配+入队同循环内推进；先统一标 process
     for cand in candidates:
         share_code = cand["share_code"]
         try:
             info = await _cloudsaver_share_info(share_code)
+            share_info_ok += 1
         except Exception as exc:
+            share_info_fail += 1
             logger.warning("[scan] share-info %s 失败: %s", share_code, exc)
             continue
         finally:
@@ -1212,6 +1256,7 @@ async def _scan_one(media_id: int) -> int | None:
         try:
             files = await _walk_share(share_code, info)
         except Exception as exc:
+            walk_fail += 1
             logger.warning("[scan] share-list 递归遍历 %s 失败: %s", share_code, exc)
             continue
 
@@ -1278,14 +1323,18 @@ async def _scan_one(media_id: int) -> int | None:
 
     # 7. 原地 UPDATE 同一条 task_run 终态 + 更新 last_scan_at（独立短事务）——phase: finish
     #     message 缺集语义修复：parts 全空（无候选/无入队/无计数）且缺集 >0 时，
-    #     明示缺失集并解释「搜索无匹配候选」（此前误报「无候选命中」）。episodes
-    #     取 scan_detail.missing_items 的 episode（如 S01E190；全量模式含文件名）。
+    #     明示缺失集并解释「搜索无匹配候选」（此前误报「无候选命中」）；候选分享
+    #     share-info 验证全部失败（诊断实证：cloudSaver 搜索返回大量失效分享码）
+    #     时优先报「候选分享验证均失败」。episodes 取 scan_detail.missing_items 的
+    #     episode（如 S01E190；全量模式含文件名）。
+    share_info_all_failed = len(candidates) if (candidates and share_info_ok == 0) else 0
     message = _result_message(
         enqueued=enqueued, unmatched=unmatched,
         size_filtered=size_filtered, non_video=non_video,
         existing_skipped=existing_skipped,
         missing_episodes=[item["episode"] for item in scan_detail["missing_items"]]
         if scan_detail["missing_items"] else None,
+        share_info_all_failed_candidates=share_info_all_failed,
     )
     scan_detail.update({
         # 全量模式：基线表达为 missing（[None]），实际缺失实体是搜索到的具体文件，
@@ -1296,6 +1345,9 @@ async def _scan_one(media_id: int) -> int | None:
         "size_filtered": size_filtered,
         "unmatched": unmatched,
         "non_video": non_video,
+        "share_info_ok": share_info_ok,
+        "share_info_fail": share_info_fail,
+        "walk_fail": walk_fail,
     })
     _phase_start(phases, "finish")
     _phase_done(phases, "finish")
