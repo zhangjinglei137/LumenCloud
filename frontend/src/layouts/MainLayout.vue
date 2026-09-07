@@ -79,7 +79,7 @@ async function onReadAll() {
         </el-menu-item>
         <el-menu-item index="/queue">
           <el-icon><List /></el-icon>
-          <span>转存队列</span>
+          <span>任务队列</span>
         </el-menu-item>
         <el-menu-item index="/approvals">
           <el-icon><Stamp /></el-icon>
@@ -120,19 +120,27 @@ async function onReadAll() {
             aria-label="切换主题"
             @change="theme.toggle()"
           />
-          <div v-if="queueStore.capacity" class="lc-capacity">
-            <el-progress
-              type="circle"
-              :width="40"
-              :stroke-width="5"
-              :percentage="queueStore.usagePercent"
-              :status="queueStore.usagePercent >= 90 ? 'exception' : undefined"
-            />
-            <div class="text">
-              夸克容量 {{ formatGb(queueStore.capacity.used_gb) }} /
-              {{ formatGb(queueStore.capacity.total_gb) }} · {{ queueStore.usagePercent }}%
+          <!-- D6：width=40 的圆形进度内部文字仅 6.4px 不可读，隐藏内部数字，悬浮 tooltip 展示百分比 -->
+          <el-tooltip
+            v-if="queueStore.capacity"
+            :content="`夸克容量已用 ${queueStore.usagePercent}%（${formatGb(queueStore.capacity.used_gb)} / ${formatGb(queueStore.capacity.total_gb)}）`"
+            placement="bottom"
+          >
+            <div class="lc-capacity">
+              <el-progress
+                type="circle"
+                :width="40"
+                :stroke-width="5"
+                :percentage="queueStore.usagePercent"
+                :show-text="false"
+                :status="queueStore.usagePercent >= 90 ? 'exception' : undefined"
+              />
+              <div class="text">
+                夸克容量 {{ formatGb(queueStore.capacity.used_gb) }} /
+                {{ formatGb(queueStore.capacity.total_gb) }} · {{ queueStore.usagePercent }}%
+              </div>
             </div>
-          </div>
+          </el-tooltip>
 
           <el-popover placement="bottom-end" :width="360" trigger="click">
             <template #reference>

@@ -15,7 +15,7 @@ import type {
   MediaItem,
   MediaPatch,
   NotificationList,
-  QueueItem,
+  QueueMediaTask,
   QuarkVerifyResult,
   SettingsResponse,
   TmdbSearchResult,
@@ -89,9 +89,14 @@ export function searchTmdbApi(q: string) {
 }
 
 // ---------- 队列与容量 ----------
+/**
+ * 任务队列。
+ * 新契约为「影视任务树」（QueueMediaTask[]，父级含 children 分集子任务）。
+ * 后端未完成改造前仍返回旧扁平 QueueItem[]，由 store 归一化，二者均可进入。
+ */
 export function listQueueApi(limit = 50, offset = 0) {
   return http
-    .get<QueueItem[]>('/queue', { params: { limit, offset } })
+    .get<QueueMediaTask[]>('/queue', { params: { limit, offset } })
     .then((r) => r.data)
 }
 

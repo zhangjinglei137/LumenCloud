@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, reactive } from 'vue'
 import { useLogsStore, type LogFilter } from '../stores/logs'
+import type { LogItem } from '../types'
 import { formatTime, taskStatusLabel, taskStatusType, taskTypeLabel, taskTypeType } from '../utils/format'
 
 const store = useLogsStore()
@@ -35,6 +36,22 @@ function formatDuration(seconds: number): string {
   const m = Math.floor(seconds / 60)
   const s = Math.round(seconds % 60)
   return `${m}m ${s}s`
+}
+
+// Q8①：耗时文本——真实耗时（duration_seconds）优先；0 或缺失（历史记录 null）
+// 返回 ''，模板显示「—」（杜绝误导性的「0秒」）
+function durationText(row: LogItem): string {
+  if (row.duration_seconds != null) {
+    return row.duration_seconds > 0 ? formatDuration(row.duration_seconds) : ''
+  }
+  if (row.started_at && row.finished_at) {
+    const secs = Math.max(
+      0,
+      Math.round((new Date(row.finished_at).getTime() - new Date(row.started_at).getTime()) / 1000),
+    )
+    return secs > 0 ? `${secs}s` : ''
+  }
+  return ''
 }
 </script>
 
@@ -152,18 +169,8 @@ function formatDuration(seconds: number): string {
           </el-table-column>
           <el-table-column label="耗时" width="100" align="right">
             <template #default="{ row }">
-              <!-- Q8①：优先展示真实耗时（duration_seconds），历史记录（null）回退 started/finished 差值 -->
-              <span v-if="row.duration_seconds != null" class="lc-muted">
-                {{ formatDuration(row.duration_seconds) }}
-              </span>
-              <span v-else-if="row.started_at && row.finished_at" class="lc-muted">
-                {{
-                  Math.max(
-                    0,
-                    Math.round((new Date(row.finished_at).getTime() - new Date(row.started_at).getTime()) / 1000),
-                  )
-                }}s
-              </span>
+              <!-- Q8①：优先展示真实耗时（duration_seconds）；0 或缺失（历史记录）显示「—」，不显示「0秒」 -->
+              <span v-if="durationText(row)" class="lc-muted">{{ durationText(row) }}</span>
               <span v-else class="lc-muted">—</span>
             </template>
           </el-table-column>

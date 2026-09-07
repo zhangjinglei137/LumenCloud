@@ -111,8 +111,74 @@ export interface QueueItem {
   share_code_tail?: string | null
 }
 
-export interface Capacity {
-  total_gb: number
+// ---------- 任务队列（五节点流程，影视任务树） ----------
+/**
+ * 子任务节点（线性状态机）：
+ * idle（待开始）→ transfer（转存）→ download（已推送 aria2）→ downloading（下载中）
+ * → scrape（刮削）→ library（入库确认）→ done（完成）；failed 为失败终态。
+ * 用 string 兜底，后端新增节点值时前端可原样展示。
+ */
+export type QueueNode =
+  | 'idle'
+  | 'transfer'
+  | 'download'
+  | 'downloading'
+  | 'scrape'
+  | 'library'
+  | 'failed'
+  | 'done'
+  | string
+
+/** 队列子任务（单集分集）。字段按后端 DTO 设计；实际以后端为准，缺失时前端显示「—」 */
+export interface QueueChildTask {
+  id: number
+  /** 集号（如 S01E10），无集号时前端回退展示 file_name */
+  episode?: string | null
+  /** 当前节点 */
+  node?: QueueNode | null
+  /** 当前节点已重试次数 */
+  node_attempt?: number | null
+  /** 节点失败诊断文案 */
+  node_error?: string | null
+  node_started_at?: string | null
+  node_finished_at?: string | null
+  file_name?: string | null
+  /** 字节 */
+  file_size?: number | null
+  updated_at?: string | null
+  /** 旧扁平结构兼容字段（后端未完成改造时由前端映射） */
+  status?: string | null
+  error?: string | null
+  enqueued_at?: string | null
+  share_code_tail?: string | null
+  quota_reject_count?: number | null
+  media_id?: number | null
+  /** 前端内部表格行 key */
+  __key?: string
+}
+
+/** 队列父级（影视任务）聚合状态 */
+export type QueueAggregateStatus = 'all_done' | 'partial_failed' | 'running' | 'waiting' | string
+
+/** 队列父级（影视任务树节点） */
+export interface QueueMediaTask {
+  media_id?: number | null
+  title?: string | null
+  media_type?: MediaType | string | null
+  /** 聚合状态：all_done / partial_failed / running / waiting */
+  aggregate_status?: QueueAggregateStatus | null
+  /** 总集数 */
+  total_count?: number | null
+  /** 完成集数 */
+  done_count?: number | null
+  /** 分集子任务列表 */
+  children?: QueueChildTask[]
+  /** 前端内部表格行 key */
+  __key?: string
+  [key: string]: unknown
+}
+
+export interface Capacity {  total_gb: number
   used_gb: number
   source: string
   checked_at: string | null

@@ -181,7 +181,12 @@ export const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
   scheduler_enabled: {
     label: '定时调度总开关',
     desc: '所有定时任务（扫描、同步等）的总开关；关闭后定时任务全部停止，只保留手动触发。',
-    default: '默认关闭',
+    default: '默认开启',
+    // Q4：布尔但语义为总开关，以下拉呈现
+    selectOptions: [
+      { value: true, label: '开启' },
+      { value: false, label: '关闭' },
+    ],
   },
   scan_baseline_required: {
     label: 'Emby 防重基线缺失时跳过巡检',

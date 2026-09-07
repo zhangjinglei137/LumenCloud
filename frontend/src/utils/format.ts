@@ -83,6 +83,56 @@ export function queueStatusType(status: string | null | undefined): string {
   return QUEUE_STATUS_MAP[status]?.[1] ?? 'info'
 }
 
+/** 五节点线性流程（含终态 done）：transfer → download → downloading → scrape → library → done */
+export const QUEUE_FLOW_NODES: readonly string[] = [
+  'transfer',
+  'download',
+  'downloading',
+  'scrape',
+  'library',
+  'done',
+]
+
+/** 节点值 → [中文标签, Element Plus tag type]；未知值回退原值 / info */
+const QUEUE_NODE_MAP: Record<string, [string, string]> = {
+  idle: ['待开始', 'info'],
+  transfer: ['转存', 'warning'],
+  download: ['推送下载', 'primary'],
+  downloading: ['下载中', 'primary'],
+  scrape: ['刮削', 'warning'],
+  library: ['入库确认', 'primary'],
+  failed: ['失败', 'danger'],
+  done: ['完成', 'success'],
+}
+
+export function queueNodeLabel(node: string | null | undefined): string {
+  if (!node) return '—'
+  return QUEUE_NODE_MAP[node]?.[0] ?? node
+}
+
+export function queueNodeType(node: string | null | undefined): string {
+  if (!node) return 'info'
+  return QUEUE_NODE_MAP[node]?.[1] ?? 'info'
+}
+
+/** 影视任务聚合状态 → [中文标签, tag type] */
+const QUEUE_AGGREGATE_MAP: Record<string, [string, string]> = {
+  all_done: ['全部完成', 'success'],
+  partial_failed: ['部分失败', 'danger'],
+  running: ['进行中', 'primary'],
+  waiting: ['等待中', 'info'],
+}
+
+export function queueAggregateLabel(status: string | null | undefined): string {
+  if (!status) return '—'
+  return QUEUE_AGGREGATE_MAP[status]?.[0] ?? status
+}
+
+export function queueAggregateType(status: string | null | undefined): string {
+  if (!status) return 'info'
+  return QUEUE_AGGREGATE_MAP[status]?.[1] ?? 'info'
+}
+
 const TASK_STATUS_MAP: Record<string, [string, string]> = {
   success: ['成功', 'success'],
   failed: ['失败', 'danger'],

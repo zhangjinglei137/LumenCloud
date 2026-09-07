@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '../stores/auth'
 import { useUsersStore } from '../stores/users'
@@ -24,6 +24,16 @@ function roleTagType(role: string): 'warning' | 'info' {
 
 function roleLabel(role: string): string {
   return role === 'admin' ? '管理员' : '访客'
+}
+
+/** 管理员总数（列表统计，用于判断「唯一管理员」禁删） */
+const adminCount = computed(() => store.items.filter((u) => u.role === 'admin').length)
+
+/** 删除按钮禁用原因；返回 null 表示允许删除 */
+function removeDisabledReason(row: UserItem): string | null {
+  if (row.id === auth.user?.id) return '不能删除自己'
+  if (row.role === 'admin' && adminCount.value === 1) return '至少保留一个管理员'
+  return null
 }
 
 async function onRoleChange(row: UserItem, role: string): Promise<void> {
@@ -91,16 +101,20 @@ async function onRemove(row: UserItem): Promise<void> {
         </el-table-column>
         <el-table-column label="角色" width="150">
           <template #default="{ row }">
-            <el-select
-              :model-value="row.role"
-              size="small"
-              :loading="patchingRoleIds.has(row.id)"
-              :disabled="patchingRoleIds.has(row.id)"
-              @change="(v: string) => onRoleChange(row, v)"
-            >
-              <el-option value="admin" :label="`管理员`" />
-              <el-option value="guest" :label="`访客`" />
-            </el-select>
+            <el-tooltip :disabled="row.id !== auth.user?.id" content="不能修改自己的角色" placement="top">
+              <span style="display: inline-block">
+                <el-select
+                  :model-value="row.role"
+                  size="small"
+                  :loading="patchingRoleIds.has(row.id)"
+                  :disabled="patchingRoleIds.has(row.id) || row.id === auth.user?.id"
+                  @change="(v: string) => onRoleChange(row, v)"
+                >
+                  <el-option value="admin" :label="`管理员`" />
+                  <el-option value="guest" :label="`访客`" />
+                </el-select>
+              </span>
+            </el-tooltip>
             <el-tag size="small" effect="plain" :type="roleTagType(row.role)" style="margin-left: 6px">
               {{ roleLabel(row.role) }}
             </el-tag>
@@ -116,16 +130,24 @@ async function onRemove(row: UserItem): Promise<void> {
         </el-table-column>
         <el-table-column label="操作" width="90" align="right">
           <template #default="{ row }">
-            <el-button
-              size="small"
-              link
-              type="danger"
-              :loading="removingIds.has(row.id)"
-              :disabled="removingIds.has(row.id)"
-              @click="onRemove(row)"
+            <el-tooltip
+              :disabled="removeDisabledReason(row) === null"
+              :content="removeDisabledReason(row) ?? ''"
+              placement="top"
             >
-              删除
-            </el-button>
+              <span style="display: inline-block">
+                <el-button
+                  size="small"
+                  link
+                  type="danger"
+                  :loading="removingIds.has(row.id)"
+                  :disabled="removingIds.has(row.id) || removeDisabledReason(row) !== null"
+                  @click="onRemove(row)"
+                >
+                  删除
+                </el-button>
+              </span>
+            </el-tooltip>
           </template>
         </el-table-column>
         <template #empty>

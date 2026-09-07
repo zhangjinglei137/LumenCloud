@@ -17,6 +17,8 @@ import {
 const store = useSettingsStore()
 const auth = useAuthStore()
 
+const activeTab = ref('credentials')
+
 const generateCount = ref(1)
 const savingKeys = ref<Set<string>>(new Set())
 
@@ -45,12 +47,20 @@ const configEntries = computed<[string, unknown][]>(() =>
   ),
 )
 
-const notifyEntries = computed<[string, unknown][]>(() =>
-  configEntries.value.filter(([k]) => k.startsWith('notify_')),
+/**
+ * 业务参数：未被 selectOptions 标注的配置项（数值、文本等运行参数）。
+ * 注意 system_config 的值全是字符串，不能按 typeof 判断布尔。
+ */
+const businessEntries = computed<[string, unknown][]>(() =>
+  configEntries.value.filter(([k]) => !getSettingMeta(k).selectOptions),
 )
 
-const otherEntries = computed<[string, unknown][]>(() =>
-  configEntries.value.filter(([k]) => !k.startsWith('notify_')),
+/**
+ * 系统开关：settingsMeta 以 selectOptions 标注的配置项
+ * （notify_* 通知开关、scheduler_enabled、scan_baseline_required 等）
+ */
+const switchEntries = computed<[string, unknown][]>(() =>
+  configEntries.value.filter(([k]) => getSettingMeta(k).selectOptions),
 )
 
 const serviceEntries = computed<[string, boolean][]>(() =>
@@ -419,8 +429,11 @@ function serviceLabel(key: string): string {
         </div>
       </div>
 
-      <!-- 服务配置状态 -->
-      <div class="lc-panel">
+      <el-tabs v-model="activeTab" class="settings-tabs">
+        <!-- 服务凭据：服务状态 + 各凭据组表单 -->
+        <el-tab-pane label="服务凭据" name="credentials">
+          <!-- 外部服务配置状态 -->
+          <div class="lc-panel">
         <h3 class="lc-panel-title">外部服务配置状态</h3>
         <div class="service-grid">
           <div v-for="[key, ok] in serviceEntries" :key="key" class="service-item">
@@ -442,14 +455,14 @@ function serviceLabel(key: string): string {
           title="服务凭据在下方表单配置，保存后立即生效（无需重启）。敏感值仅显示掩码，不会回显真实内容。"
           style="margin-top: 14px"
         />
-        <!-- Q5：jwt_secret 为后端首启自动生成的文件，状态「未配置」并非缺漏 -->
+        <!-- jwt_secret 为后端首启自动生成的文件，状态「未配置」并非缺漏 -->
         <p class="lc-muted" style="margin: 10px 0 0; font-size: 12px">
           jwt_secret 已自动生成并落盘 .jwt_secret 文件，无需手动配置；如需轮换：删除该文件后重启服务。
         </p>
-      </div>
+          </div>
 
-      <!-- 服务凭据配置 -->
-      <div v-if="editableKeys.length > 0" class="lc-panel">
+          <!-- 服务凭据配置 -->
+          <div v-if="editableKeys.length > 0" class="lc-panel">
         <div class="lc-toolbar" style="margin-bottom: 12px">
           <div>
             <h3 class="lc-panel-title" style="margin: 0">服务凭据配置</h3>
@@ -489,16 +502,14 @@ function serviceLabel(key: string): string {
                     已修改
                   </el-tag>
                 </div>
-                <div class="cred-desc">
+                <div v-if="getSettingMeta(key).desc" class="cred-desc">
                   <el-tooltip
-                    v-if="getSettingMeta(key).desc"
                     :content="getSettingMeta(key).desc"
                     placement="top"
                     :show-after="200"
                   >
-                    <el-icon class="cred-desc-icon" aria-hidden="true"><Warning /></el-icon>
+                    <el-icon class="desc-icon" aria-hidden="true"><QuestionFilled /></el-icon>
                   </el-tooltip>
-                  <span>{{ getSettingMeta(key).desc }}</span>
                 </div>
               </div>
               <el-input
@@ -533,89 +544,95 @@ function serviceLabel(key: string): string {
                   </el-button>
                 </el-tooltip>
               </div>
+          </div>
+          </div>
+          </div>
+          </div>
+        </el-tab-pane>
+
+        <!-- 业务参数：非布尔类的运行参数 -->
+        <el-tab-pane label="业务参数" name="business">
+          <div class="lc-panel">
+            <el-empty v-if="businessEntries.length === 0" description="暂无配置项" :image-size="60" />
+            <div v-else class="config-list">
+              <div v-for="[key, value] in businessEntries" :key="key" class="config-item">
+                <div class="config-info">
+                  <span class="config-label">{{ getSettingMeta(key).label }}</span>
+                  <el-tooltip
+                    v-if="getSettingMeta(key).desc"
+                    :content="getSettingMeta(key).desc"
+                    placement="top"
+                    :show-after="200"
+                  >
+                    <el-icon class="desc-icon" aria-hidden="true"><QuestionFilled /></el-icon>
+                  </el-tooltip>
+                </div>
+                <template v-if="typeof value === 'number'">
+                  <el-input-number
+                    :model-value="value"
+                    @change="(v: number) => v !== undefined && saveKey(key, v)"
+                  />
+                </template>
+                <template v-else>
+                  <el-input
+                    :model-value="String(value ?? '')"
+                    style="max-width: 360px"
+                    @change="(v: string) => saveKey(key, v)"
+                  />
+                </template>
+              </div>
             </div>
           </div>
-        </div>
-      </div>
+        </el-tab-pane>
 
-      <!-- 通知开关 -->
-      <div v-if="notifyEntries.length > 0" class="lc-panel">
-        <h3 class="lc-panel-title">通知开关</h3>
-        <div class="notify-list">
-          <div v-for="[key, value] in notifyEntries" :key="key" class="notify-item">
-            <div class="config-info">
-              <span class="config-label">{{ getSettingMeta(key).label }}</span>
-              <span v-if="getSettingMeta(key).desc" class="config-desc">
-                {{ getSettingMeta(key).desc }}
-              </span>
-            </div>
-            <el-switch
-              :model-value="Boolean(value)"
-              :loading="savingKeys.has(key)"
-              @change="(v: boolean) => saveKey(key, v)"
-            />
-          </div>
-        </div>
-      </div>
-
-      <!-- 业务参数 -->
-      <div class="lc-panel">
-        <h3 class="lc-panel-title">业务参数</h3>
-        <p class="lc-muted" style="margin: 0 0 12px; font-size: 12px">
-          业务运行参数：扫描频率、容量阈值、超时行为等；均为非敏感配置。
-        </p>
-        <el-empty v-if="otherEntries.length === 0" description="暂无配置项" :image-size="60" />
-        <div v-else class="config-list">
-          <div v-for="[key, value] in otherEntries" :key="key" class="config-item">
-            <div class="config-info">
-              <span class="config-label">{{ getSettingMeta(key).label }}</span>
-              <span v-if="getSettingMeta(key).desc" class="config-desc">
-                {{ getSettingMeta(key).desc }}
-              </span>
-            </div>
-            <template v-if="typeof value === 'boolean'">
-              <!-- Q4：元数据标注 selectOptions 的布尔字段以下拉呈现（如 scan_baseline_required），其余仍为开关 -->
-              <el-select
-                v-if="getSettingMeta(key).selectOptions"
-                :model-value="value"
-                size="small"
-                style="width: 120px"
-                :disabled="savingKeys.has(key)"
-                @change="(v: boolean) => saveKey(key, v)"
-              >
-                <el-option
-                  v-for="opt in getSettingMeta(key).selectOptions"
-                  :key="String(opt.value)"
-                  :value="opt.value"
-                  :label="opt.label"
+        <!-- 系统开关：布尔类字段（通知开关、调度总开关等） -->
+        <el-tab-pane label="系统开关" name="switches">
+          <div class="lc-panel">
+            <el-empty v-if="switchEntries.length === 0" description="暂无开关" :image-size="60" />
+            <div v-else class="config-list">
+              <div v-for="[key, value] in switchEntries" :key="key" class="config-item">
+                <div class="config-info">
+                  <span class="config-label">{{ getSettingMeta(key).label }}</span>
+                  <el-tooltip
+                    v-if="getSettingMeta(key).desc"
+                    :content="getSettingMeta(key).desc"
+                    placement="top"
+                    :show-after="200"
+                  >
+                    <el-icon class="desc-icon" aria-hidden="true"><QuestionFilled /></el-icon>
+                  </el-tooltip>
+                </div>
+                <!-- Q4：元数据标注 selectOptions 的布尔字段以下拉呈现（如 scheduler_enabled、scan_baseline_required），其余仍为开关 -->
+                <el-select
+                  v-if="getSettingMeta(key).selectOptions"
+                  :model-value="value === true || String(value).toLowerCase() === 'true'"
+                  size="small"
+                  style="width: 120px"
+                  :disabled="savingKeys.has(key)"
+                  @change="(v: boolean) => saveKey(key, v)"
+                >
+                  <el-option
+                    v-for="opt in getSettingMeta(key).selectOptions"
+                    :key="String(opt.value)"
+                    :value="opt.value"
+                    :label="opt.label"
+                  />
+                </el-select>
+                <el-switch
+                  v-else
+                  :model-value="value === true || String(value).toLowerCase() === 'true'"
+                  :loading="savingKeys.has(key)"
+                  @change="(v: boolean) => saveKey(key, v)"
                 />
-              </el-select>
-              <el-switch
-                v-else
-                :model-value="value"
-                :loading="savingKeys.has(key)"
-                @change="(v: boolean) => saveKey(key, v)"
-              />
-            </template>
-            <template v-else-if="typeof value === 'number'">
-              <el-input-number
-                :model-value="value"
-                @change="(v: number) => v !== undefined && saveKey(key, v)"
-              />
-            </template>
-            <template v-else>
-              <el-input
-                :model-value="String(value ?? '')"
-                style="max-width: 360px"
-                @change="(v: string) => saveKey(key, v)"
-              />
-            </template>
+              </div>
+            </div>
           </div>
-        </div>
-      </div>
+        </el-tab-pane>
 
-      <!-- 邀请码管理 -->
-      <div class="lc-panel">
+        <!-- 邀请码管理 -->
+        <el-tab-pane label="邀请码管理" name="invites">
+          <div class="lc-panel">
+
         <div class="lc-toolbar" style="margin-bottom: 16px">
           <h3 class="lc-panel-title" style="margin: 0">邀请码管理</h3>
           <div class="right">
@@ -662,7 +679,9 @@ function serviceLabel(key: string): string {
             </template>
           </el-table-column>
         </el-table>
-      </div>
+          </div>
+        </el-tab-pane>
+      </el-tabs>
     </template>
 
     <!-- 修改密码对话框 -->
@@ -887,20 +906,7 @@ function serviceLabel(key: string): string {
 }
 
 .cred-desc {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  margin-top: 4px;
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--lc-text-secondary, #9aa0a6);
-}
-
-/* Q4：desc 提示的黄色带圈叹号（悬停显示完整说明） */
-.cred-desc-icon {
-  color: var(--lc-warning, #e6a23c);
   margin-top: 2px;
-  flex-shrink: 0;
 }
 
 .cred-input {
@@ -935,14 +941,12 @@ function serviceLabel(key: string): string {
   font-size: 14px;
 }
 
-.notify-list,
 .config-list {
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
-.notify-item,
 .config-item {
   display: flex;
   align-items: center;
@@ -950,11 +954,12 @@ function serviceLabel(key: string): string {
 }
 
 .config-info {
-  width: 340px;
-  flex-shrink: 0;
+  flex: 1;
+  min-width: 0;
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 .config-label {
@@ -963,10 +968,11 @@ function serviceLabel(key: string): string {
   color: var(--lc-text-primary, #e8eaed);
 }
 
-.config-desc {
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--lc-text-secondary, #9aa0a6);
+/* 字段说明统一收进黄色叹号 tooltip，正文不再铺开描述文字 */
+.desc-icon {
+  color: var(--lc-warning, #e6a23c);
+  cursor: help;
+  flex-shrink: 0;
 }
 
 /* ---------- 验证夸克 folderId 对话框 ---------- */
