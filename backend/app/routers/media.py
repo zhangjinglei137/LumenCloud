@@ -18,8 +18,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import DownloadTask, EpisodeState, Media, TaskRun, TransferQueue, User
 from app.routers.deps import get_current_admin, get_current_user, get_session
-from app.services import emby
-from app.services.emby import EmbyUnavailable
+from app.services import tmdb
+from app.services.tmdb import TMDBUnavailable
 
 router = APIRouter()
 
@@ -153,6 +153,7 @@ def _media_dto(m: Media) -> dict:
         "tmdb_id": m.tmdb_id,
         "media_type": m.media_type,
         "poster_path": m.poster_path,  # 线上反馈修复 Q2：后端有值即回显（不拼接图床地址）
+        "series_status": m.series_status,  # Q12：在更/完结（TMDB status 原值）
         "status": m.status,
         "scan_interval_minutes": m.scan_interval_minutes,
         "max_episode_size_gb": m.max_episode_size_gb,
@@ -264,29 +265,32 @@ async def create_media(
     if payload.media_type not in (None, "movie", "tv"):
         raise HTTPException(status_code=422, detail="media_type 仅支持 movie/tv")
 
-    # Q2①（P1）：已存在于影视库的 tmdb_id 拒绝重复添加（应用层去重）
+    # 本地 tmdb_id 去重（应用层防重；Emby 侧防重已移除——需求确认：影视已存在于
+    # Emby 媒体库不再阻止订阅）
     if payload.tmdb_id is not None and await session.scalar(
         select(Media.id).where(Media.tmdb_id == payload.tmdb_id).limit(1)
     ):
         raise HTTPException(status_code=409, detail="该影视已在影视库，无需重复提交")
 
-    # 需求 4（P1-1）：Emby 防重（本地查重之后、写库之前）——该影视已在 Emby
-    # 媒体库则拒绝重复订阅，与「已在影视库」文案区分。Emby 故障（EmbyUnavailable，
-    # 含「未配置」由 _check_config 抛出）fail-open：仅告警放行，不阻断用户，
-    # 行为等同 Emby 未配置时的现状。tmdb_id 为空无法按 ID 定位 → 同样放行。
-    if payload.tmdb_id is not None:
+    # series_status 落库：电影/剧集展示 TMDB 状态原值（tmdb_id 非空且 media_type
+    # 已知时查一次 TMDB；失败静默降级为 None，绝不阻断添加流程——与 Emby 故障
+    # fail-open 风格一致；media_type 为空跳过查询）
+    series_status = None
+    if payload.tmdb_id is not None and payload.media_type is not None:
         try:
-            emby_id = await emby.find_emby_id(payload.tmdb_id, payload.title)
-        except EmbyUnavailable as exc:
+            meta = await tmdb.get_by_tmdb_id(payload.tmdb_id, payload.media_type)
+        except TMDBUnavailable as exc:
             logger.warning(
-                "[media] Emby 防重检查不可用（fail-open 放行）tmdb=%s: %s",
+                "[media] TMDB 状态查询不可用（series_status=None 放行）tmdb=%s: %s",
+                payload.tmdb_id, exc,
+            )
+        except Exception as exc:  # noqa: BLE001 兜底：任何异常都不阻断添加
+            logger.warning(
+                "[media] TMDB 状态查询异常（series_status=None 放行）tmdb=%s: %s",
                 payload.tmdb_id, exc,
             )
         else:
-            if emby_id is not None:
-                raise HTTPException(
-                    status_code=409, detail="该影视已在 Emby 媒体库，无需重复订阅"
-                )
+            series_status = meta.get("status")
 
     media = Media(
         title=payload.title.strip(),
@@ -295,6 +299,7 @@ async def create_media(
         status="tracking",
         in_emby=False,
         poster_path=payload.poster_path,  # Q2：海报相对路径落库
+        series_status=series_status,
     )
     session.add(media)
     await session.commit()

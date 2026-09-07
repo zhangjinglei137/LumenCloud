@@ -2,7 +2,8 @@
 
 - GET  /api/settings  system_config 全量 + services 凭据「是否已配置」布尔 +
                       editable_keys 前端可配置键清单（Phase 8）
-                      —— 敏感凭据键绝不回显明文，以 "***" 占位，只回 {key: bool}
+                      —— 仅 jwt_secret / init_admin_password 以 "***" 占位隐藏；
+                      其余服务凭据键明文回显（Q5：地址/令牌/用户/密码/token 全部明文）
 - PATCH /api/settings 白名单键 UPSERT（Phase 8 起含服务凭据键）；commit 后刷新
                       进程内配置缓存（config_store.refresh，保存即生效）；含调度
                       相关键时事件驱动重新应用 job 开关（M2，Oracle Gate2）
@@ -50,11 +51,18 @@ _WHITELIST_EXACT = {
     "tmdb_api_key", "tmdb_proxy", "tmdb_http_proxy",
     "pushplus_token",
     "quark_default_folder",
+    # Q2 后端：剧集页可见媒体库白名单（Emby VirtualFolder ItemId，逗号分隔，
+    # 如 "a1b2c3,d4e5f6"；空串 = 不启用白名单过滤）。PATCH 可写，但属「业务
+    # 参数」——不进 editable_keys（见 _EDITABLE_KEYS 注释），避免前端误渲染为
+    # 服务凭据文本框。
+    "emby_series_library_ids",
 }
 
 # Phase 8 配置入库：前端可配置键清单（= config_store 可管理键，scheduler.* 前缀
 # 键为动态不可枚举，不在此列；GET /api/settings 以 editable_keys 字段返回给前端渲染表单）。
-_EDITABLE_KEYS = frozenset(_WHITELIST_EXACT)
+# Q2：emby_series_library_ids 为业务行为参数（设置页以下拉多选渲染在「业务参数」区），
+# 必须从 editable_keys 排除——若进入该清单，前端会把此键当作服务凭据字段渲染成文本框。
+_EDITABLE_KEYS = frozenset(_WHITELIST_EXACT - {"emby_series_library_ids"})
 
 
 def _is_allowed_key(key: str) -> bool:
@@ -106,8 +114,9 @@ async def get_settings(
 
     Phase 8 配置入库：
     - 首次 GET 惰性加载进程内配置缓存（config_store），services 判定需 DB 值；
-    - system_config 中敏感键（config_store._SENSITIVE_KEYS：token/password/
-      api_key/folder/secret 及统一处理的内部服务地址）不回显值，以 "***" 占位；
+    - system_config 中敏感键（config_store._SENSITIVE_KEYS：仅 jwt_secret 与
+      init_admin_password，Q5 收紧）不回显值，以 "***" 占位；其余服务凭据键
+      （token/password/api_key 等）明文回显，前端表单直接预填可编辑；
     - 新增 editable_keys 字段：前端可配置的键清单（= config_store 可管理键）。
     """
     from app.services import config_store  # noqa: PLC0415 延迟导入

@@ -10,6 +10,8 @@ import {
   mediaStatusLabel,
   mediaStatusType,
   mediaTypeLabel,
+  seriesStatusLabel,
+  seriesStatusType,
   taskStatusLabel,
   taskStatusType,
   timeAgo,
@@ -42,6 +44,7 @@ onUnmounted(() => {
 const hasRunning = computed(() => store.items.some((m) => m.last_task_run?.status === 'running'))
 
 function episodeText(m: MediaItem): string {
+  if (m.media_type === 'movie') return seriesStatusLabel(m.series_status, 'movie')
   const s = m.episode_stats
   if (!s) return '—'
   const avail = s.available ?? s.downloaded
@@ -143,7 +146,12 @@ async function onDelete(m: MediaItem, e: Event) {
                     {{ mediaStatusLabel(m.status) }}
                   </el-tag>
                 </span>
-                <span>已有 {{ episodeText(m) }}</span>
+                <span v-if="m.media_type === 'movie'">
+                  <el-tag size="small" effect="plain" :type="seriesStatusType(m.series_status, 'movie')">
+                    {{ seriesStatusLabel(m.series_status, 'movie') }}
+                  </el-tag>
+                </span>
+                <span v-else>已有 {{ episodeText(m) }}</span>
               </div>
               <div class="row">
                 <span v-if="m.in_emby" class="lc-muted">已在 Emby</span>
@@ -202,8 +210,18 @@ async function onDelete(m: MediaItem, e: Event) {
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="已有 / 总集数" width="130" align="center">
-            <template #default="{ row }">{{ episodeText(row) }}</template>
+          <el-table-column label="集数 / 影视状态" width="150" align="center">
+            <template #default="{ row }">
+              <el-tag
+                v-if="row.media_type === 'movie'"
+                size="small"
+                effect="plain"
+                :type="seriesStatusType(row.series_status, 'movie')"
+              >
+                {{ seriesStatusLabel(row.series_status, 'movie') }}
+              </el-tag>
+              <template v-else>{{ episodeText(row) }}</template>
+            </template>
           </el-table-column>
           <el-table-column label="Emby" width="90" align="center">
             <template #default="{ row }">

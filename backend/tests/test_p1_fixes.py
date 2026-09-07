@@ -244,29 +244,27 @@ async def _seed_done_at_limit(db, *, episode="S01E01", retry_count=3):
 # P1-1：Emby 防重三入口
 # ---------------------------------------------------------------------------
 
-def test_create_media_emby_hit_409(db, monkeypatch):
-    """create_media：find_emby_id 命中 → 409「已在 Emby 媒体库」（本地查重之后）。"""
+def test_create_media_emby_present_still_creates(db, monkeypatch):
+    """create_media：Emby 中已存在该影视也不再 409（需求移除 Emby 防重），正常创建。"""
     monkeypatch.setattr("app.services.emby.find_emby_id", AsyncMock(return_value="e100"))
 
     async def _case():
         async with db() as s:
-            with pytest.raises(HTTPException) as ei:
-                await create_media(
-                    payload=MediaCreate(title="重复影视", tmdb_id=42, media_type="movie"),
-                    admin=MagicMock(),
-                    session=s,
-                )
-            assert ei.value.status_code == 409
-            assert ei.value.detail == EMBY_DUP_DETAIL
-        # 命中即拦截，不落库
+            dto = await create_media(
+                payload=MediaCreate(title="重复影视", tmdb_id=42, media_type="movie"),
+                admin=MagicMock(),
+                session=s,
+            )
+            assert dto["tmdb_id"] == 42  # Emby 命中不再拦截，落库成功
         async with db() as s:
-            assert (await s.execute(select(Media))).scalars().first() is None
+            row = (await s.execute(select(Media))).scalars().first()
+            assert row is not None and row.tmdb_id == 42
 
     run(_case())
 
 
 def test_create_media_emby_unavailable_fail_open(db, monkeypatch):
-    """create_media：EmbyUnavailable（含「未配置」）→ fail-open 放行，正常创建。"""
+    """create_media：Emby 防重已移除，EmbyUnavailable 不再影响创建（fail-open 语义保持）。"""
     monkeypatch.setattr(
         "app.services.emby.find_emby_id",
         AsyncMock(side_effect=EmbyUnavailable("EMBY_API_KEY 未配置")),
@@ -285,7 +283,7 @@ def test_create_media_emby_unavailable_fail_open(db, monkeypatch):
 
 
 def test_create_media_local_dup_short_circuits_emby(db, monkeypatch):
-    """P1-1 回归：本地 tmdb 查重仍在——本地命中优先 409，且不再调用 find_emby_id。"""
+    """P1-1 回归：本地 tmdb 查重仍在——本地命中优先 409（Emby 防重已移除，仍不调 Emby）。"""
     _seed_media(db, tmdb_id=42)
     find = AsyncMock(return_value="e100")
     monkeypatch.setattr("app.services.emby.find_emby_id", find)
@@ -299,14 +297,14 @@ def test_create_media_local_dup_short_circuits_emby(db, monkeypatch):
                     session=s,
                 )
             assert ei.value.status_code == 409
-            assert ei.value.detail == LOCAL_DUP_DETAIL  # 本地文案，不是 Emby 文案
-            assert find.await_count == 0  # 本地查重在前短路，不调 Emby
+            assert ei.value.detail == LOCAL_DUP_DETAIL  # 本地文案
+            assert find.await_count == 0  # 不再调用 Emby 防重
 
     run(_case())
 
 
 def test_create_media_without_tmdb_skips_emby(db, monkeypatch):
-    """create_media：tmdb_id=None 无法按 ID 定位 → 跳过 Emby 防重，正常创建。"""
+    """create_media：tmdb_id=None 正常创建（Emby 防重已移除，此路径本就放行）。"""
     find = AsyncMock(return_value="e100")
     monkeypatch.setattr("app.services.emby.find_emby_id", find)
 

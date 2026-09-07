@@ -235,7 +235,7 @@ def test_full_auth_and_api_flow():
         client.patch("/api/settings", json={"quark_quota_gb": "10"}, headers=_auth(admin_tok))
 
         # Phase 8 配置入库：服务凭据可经 PATCH 写入 DB 且保存即生效；
-        # GET 对敏感键不回显值（"***" 占位），services 布尔判定读 DB 值（非仅 env）。
+        # Q5 收紧：GET 对服务凭据键明文回显真实值（仅 jwt_secret/init_admin_password 隐藏）。
         r = client.patch(
             "/api/settings",
             json={"tmdb_api_key": "db-tmdb-key"},
@@ -244,7 +244,7 @@ def test_full_auth_and_api_flow():
         assert r.status_code == 200, r.text
         r = client.get("/api/settings", headers=_auth(admin_tok))
         cfg = r.json()["system_config"]
-        assert cfg.get("tmdb_api_key") == "***"  # 敏感键不回显明文
+        assert cfg.get("tmdb_api_key") == "db-tmdb-key"  # 明文回显（Q5）
         assert r.json()["services"]["tmdb"] is True  # DB 来源凭据判定已配置
         assert "tmdb_api_key" in r.json().get("editable_keys", [])
 

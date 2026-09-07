@@ -44,6 +44,8 @@ export interface MediaItem {
   in_emby: boolean
   /** TMDB 海报路径（含前缀 / 的相对路径；配合 TMDB_POSTER_BASE 拼完整 URL；可为空） */
   poster_path?: string | null
+  /** 影视状态（TMDB 原值，如 Released / Returning Series；后端 _media_dto 回传；存量可能为 null） */
+  series_status?: string | null
   last_scan_at: string | null
   max_episode_size_gb: number | null
   max_movie_size_gb: number | null
@@ -211,10 +213,14 @@ export interface SettingFieldMeta {
   placeholder?: string
   /** 默认值 / 可选性提示（如「默认 60 分钟」「可选，留空 = 官方地址」） */
   default?: string
-  /** 敏感凭据：后端以 *** 掩码回显，未改动时不提交 */
+  /** 敏感凭据：后端已改为全明文回显（仅 jwt_secret/init_admin_password 隐藏），前端不再消费它渲染密码框，该标记仅作纵深防御参考 */
   sensitive?: boolean
   /** Q4：布尔字段以下拉形式呈现（如 scan_baseline_required）；未标注的布尔仍为开关 */
   selectOptions?: { value: boolean; label: string }[]
+  /** 多选下拉控件标记（如 emby_series_library_ids） */
+  multiSelect?: true
+  /** 多选/下拉选项来源标识（'embyLibraries' = GET /api/emby/libraries 媒体库清单） */
+  optionsSource?: 'embyLibraries'
 }
 
 export interface SettingsResponse {
@@ -375,4 +381,17 @@ export interface EmbyLibraryResponse {
   total: number
   /** 库条目类型筛选回显（全部时为 null） */
   item_type: EmbyItemType | null
+}
+
+/** Emby 媒体库（VirtualFolder）信息：设置页多选下拉的选项 */
+export interface EmbyLibraryFolder {
+  item_id: string
+  name: string
+  collection_type: string | null
+}
+
+/** GET /api/emby/libraries 响应 */
+export interface EmbyLibrariesResponse {
+  libraries: EmbyLibraryFolder[]
+  total: number
 }

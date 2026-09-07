@@ -37,3 +37,6 @@ logs/
 backend/static/
 # ---- deepwork 进度（git 本地） ----
 .slim/deepwork/
+
+# ---- n8n 旧版备份（含真实凭据，不入库） ----
+n8n旧版备份/

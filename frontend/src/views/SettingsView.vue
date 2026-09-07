@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import type { AxiosError } from 'axios'
 import { useSettingsStore } from '../stores/settings'
 import { useAuthStore } from '../stores/auth'
-import { verifyQuarkFolderApi } from '../api'
-import type { QuarkVerifyResult } from '../types'
+import { listEmbyLibrariesApi, verifyQuarkFolderApi } from '../api'
+import type { EmbyLibraryFolder, QuarkVerifyResult } from '../types'
 import { formatTime } from '../utils/format'
 import {
   CRED_GROUP_LABELS,
@@ -67,12 +67,56 @@ const serviceEntries = computed<[string, boolean][]>(() =>
   Object.entries(store.settings?.services ?? {}),
 )
 
+// ---------- Emby 媒体库多选（业务参数 Tab） ----------
+
+const embyLibraries = ref<EmbyLibraryFolder[]>([])
+const embyLibrariesLoading = ref(false)
+const embyLibrariesError = ref<string | null>(null)
+const embyLibrariesLoaded = ref(false)
+
+async function loadEmbyLibraries(): Promise<void> {
+  if (embyLibrariesLoaded.value) return
+  embyLibrariesLoading.value = true
+  embyLibrariesError.value = null
+  try {
+    const res = await listEmbyLibrariesApi()
+    embyLibraries.value = res.libraries ?? []
+    embyLibrariesLoaded.value = true
+  } catch {
+    embyLibrariesError.value = '无法获取 Emby 媒体库列表，请先在「服务凭据」配置 Emby 后重试'
+  } finally {
+    embyLibrariesLoading.value = false
+  }
+}
+
+// 多选配置值（逗号分隔字符串 ↔ 数组）
+const multiSelectValues = reactive<Record<string, string[]>>({})
+function syncMultiSelectValues(): void {
+  for (const key of configEntries.value.map(([k]) => k)) {
+    if (getSettingMeta(key).multiSelect) {
+      const raw = (systemConfig.value[key] as string) ?? ''
+      multiSelectValues[key] = raw
+        ? raw
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : []
+    }
+  }
+}
+async function onMultiSelectChange(key: string): Promise<void> {
+  await saveKey(key, multiSelectValues[key].join(','))
+  syncMultiSelectValues()
+}
+
+// 业务参数 Tab 首次激活时拉取媒体库选项
+watch(activeTab, (tab) => {
+  if (tab === 'business') loadEmbyLibraries()
+})
+
 // ---------- 服务凭据表单 ----------
 
-/** 后端对敏感值的回显占位，绝不作为真实值提交 */
-const MASK = '***'
-
-/** 凭据输入框当前值；敏感项回显为 *** */
+/** 凭据输入框当前值；后端全明文回显 */
 const credValues = reactive<Record<string, string>>({})
 
 /** 凭据初始值（fetch 后的快照），用于判断「是否已修改」 */
@@ -106,14 +150,6 @@ const credGroups = computed<{ prefix: string; label: string; keys: string[] }[]>
   return groups
 })
 
-/** 敏感类键渲染为密码框（可显隐切换）；优先用映射表标注，未知键按命名约定兜底 */
-function isSecretKey(key: string): boolean {
-  return (
-    getSettingMeta(key).sensitive === true ||
-    /password|token|secret|api_key|apikey|folder/i.test(key)
-  )
-}
-
 function syncCredValues(): void {
   const sys = systemConfig.value
   for (const key of editableKeys.value) {
@@ -133,13 +169,13 @@ function isCredModified(key: string): boolean {
 }
 
 /**
- * 待提交的键集合：已修改、非空、且不再是掩码 *** 的字段。
- * 未改动 / 留空 / 仍为 *** 的字段绝不提交，避免误清空其它服务的凭据。
+ * 待提交的键集合：已修改且非空。
+ * 未改动 / 留空的字段绝不提交，避免误清空其它服务的凭据。
  */
 const dirtyCredKeys = computed<string[]>(() =>
   editableKeys.value.filter((key) => {
     const v = (credValues[key] ?? '').trim()
-    return v !== '' && v !== MASK && isCredModified(key)
+    return v !== '' && isCredModified(key)
   }),
 )
 
@@ -147,8 +183,12 @@ const savingAll = ref(false)
 
 /** 保存全部：一次性 PATCH 所有已修改字段 */
 async function saveAll(): Promise<void> {
+  if (savingAll.value) return
   const keys = dirtyCredKeys.value
-  if (keys.length === 0 || savingAll.value) return
+  if (keys.length === 0) {
+    ElMessage.info('没有需要保存的更改')
+    return
+  }
   const patch: Record<string, string> = {}
   for (const key of keys) {
     patch[key] = (credValues[key] ?? '').trim()
@@ -336,6 +376,7 @@ async function submitPwd(): Promise<void> {
 onMounted(async () => {
   await Promise.all([store.fetchSettings(), store.fetchInvites()])
   syncCredValues()
+  syncMultiSelectValues()
 })
 
 async function saveKey(key: string, value: unknown) {
@@ -452,7 +493,7 @@ function serviceLabel(key: string): string {
           type="info"
           :closable="false"
           show-icon
-          title="服务凭据在下方表单配置，保存后立即生效（无需重启）。敏感值仅显示掩码，不会回显真实内容。"
+          title="服务凭据在下方表单配置，保存后立即生效（无需重启）。凭据明文显示，请妥善保管本页面访问权限。"
           style="margin-top: 14px"
         />
         <!-- jwt_secret 为后端首启自动生成的文件，状态「未配置」并非缺漏 -->
@@ -467,14 +508,12 @@ function serviceLabel(key: string): string {
           <div>
             <h3 class="lc-panel-title" style="margin: 0">服务凭据配置</h3>
             <p class="lc-muted cred-hint">
-              一次填好所有要改的字段，点右上角「保存全部」统一提交；未改动 / 留空 / 仍为
-              *** 的字段不会提交，敏感值只显示掩码。
+              一次填好所有要改的字段，点右上角「保存全部」统一提交；未改动或留空的字段不会提交，如需清空某凭据请用右侧「清除」按钮。
             </p>
           </div>
           <div class="right">
             <el-button
               type="primary"
-              :disabled="dirtyCredKeys.length === 0"
               :loading="savingAll"
               @click="saveAll"
             >
@@ -498,7 +537,7 @@ function serviceLabel(key: string): string {
                   <el-tag v-if="getSettingMeta(key).default" size="small" effect="plain" type="info">
                     {{ getSettingMeta(key).default }}
                   </el-tag>
-                  <el-tag v-if="isCredModified(key)" size="small" type="warning" effect="plain">
+                  <el-tag v-if="dirtyCredKeys.includes(key)" size="small" type="warning" effect="plain">
                     已修改
                   </el-tag>
                 </div>
@@ -514,8 +553,8 @@ function serviceLabel(key: string): string {
               </div>
               <el-input
                 v-model="credValues[key]"
-                :type="isSecretKey(key) ? 'password' : 'text'"
-                :show-password="isSecretKey(key)"
+                type="text"
+                autocomplete="off"
                 :placeholder="getSettingMeta(key).placeholder ?? ''"
                 class="cred-input"
                 @keyup.enter="saveAll"
@@ -567,7 +606,35 @@ function serviceLabel(key: string): string {
                     <el-icon class="desc-icon" aria-hidden="true"><QuestionFilled /></el-icon>
                   </el-tooltip>
                 </div>
-                <template v-if="typeof value === 'number'">
+                <template v-if="getSettingMeta(key).multiSelect">
+                  <el-select
+                    v-model="multiSelectValues[key]"
+                    multiple
+                    collapse-tags
+                    collapse-tags-tooltip
+                    :loading="embyLibrariesLoading"
+                    :disabled="embyLibrariesError !== null || embyLibraries.length === 0"
+                    :placeholder="embyLibrariesError ? '媒体库加载失败' : '不选 = 不按白名单过滤'"
+                    style="min-width: 360px"
+                    @change="onMultiSelectChange(key)"
+                  >
+                    <el-option
+                      v-for="lib in embyLibraries"
+                      :key="lib.item_id"
+                      :label="`${lib.name} (${lib.collection_type ?? 'unknown'})`"
+                      :value="lib.item_id"
+                    />
+                  </el-select>
+                  <div
+                    v-if="embyLibrariesError"
+                    class="lc-muted"
+                    style="color: var(--el-color-danger); font-size: 12px; margin-top: 4px"
+                  >
+                    {{ embyLibrariesError }}
+                    <el-link type="primary" @click="loadEmbyLibraries">重试</el-link>
+                  </div>
+                </template>
+                <template v-else-if="typeof value === 'number'">
                   <el-input-number
                     :model-value="value"
                     @change="(v: number) => v !== undefined && saveKey(key, v)"

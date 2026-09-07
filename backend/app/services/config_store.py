@@ -32,24 +32,17 @@ _cache: dict[str, str] = {}
 _loaded: bool = False
 
 # Phase 8 配置入库：system_config 中不回显值的敏感键（settings GET 用 "***" 占位）。
-# 遮蔽原则：
-#   - token / password / api_key / folder / secret 类一律敏感（如 alist_token、
-#     cloudsaver_password、emby_api_key、quark_default_folder、jwt_secret、
-#     init_admin_password、tmdb_api_key、pushplus_token、nastools_password）；
-#   - username 类为登录账号名非密钥，明文回显（P2-3：管理员需核对配置的账号名）；
-#   - URL 类键（cloudsaver_base_url / emby_base_url / nastools_base_url / tmdb_proxy /
-#     tmdb_http_proxy）不算敏感可回显（前端表单预填需要）；
-#   - 例外「统一处理」：alist_base_url / aria2_rpc_url 为服务内部地址（alist 直链
-#     网关 / aria2 RPC 端点），按服务凭据统一遮蔽，避免暴露内部网络拓扑。
+# 遮蔽原则（Q5 收紧为仅系统内部密钥遮蔽）：
+#   - 仅 jwt_secret（JWT 签名密钥，运行期文件落盘）与 init_admin_password
+#     （初始管理员密码，仅首启预置）隐藏——二者为系统内部密钥，不在可编辑
+#     白名单表单中，保持 "***" 占位；
+#   - 服务凭据键（alist_token / cloudsaver_password / aria2_token / nastools_password /
+#     emby_api_key / tmdb_api_key / pushplus_token）、内部服务地址（alist_base_url /
+#     aria2_rpc_url）与默认目录（quark_default_folder）一律明文回显——settings GET
+#     返回真实值，前端表单直接预填可编辑（Q5 用户确认：地址/令牌/用户/密码/token
+#     全部明文显示，仅 jwt_secret 与 init_admin_password 隐藏）；
+#   - username / URL 类键本就不在此列，始终明文回显。
 _SENSITIVE_KEYS = frozenset({
-    "alist_base_url", "alist_token",
-    "cloudsaver_password",
-    "aria2_rpc_url", "aria2_token",
-    "nastools_password",
-    "emby_api_key",
-    "tmdb_api_key",
-    "pushplus_token",
-    "quark_default_folder",
     "jwt_secret",
     "init_admin_password",
 })

@@ -173,6 +173,7 @@ def test_get_by_tmdb_id_cache_hit_no_refetch(monkeypatch):
         "poster_path": "/cached.jpg",
         "year": "2023",
         "tv_status": None,
+        "status": None,
     }
     session.commit.assert_not_called()
 
@@ -201,6 +202,7 @@ def test_get_by_tmdb_id_stale_refetch_and_refresh(monkeypatch):
         "poster_path": "/new.jpg",
         "year": "2024",
         "tv_status": None,  # movie 响应无 status 字段 → None
+        "status": None,  # 同 tv_status：movie 无 status → None
     }
     assert len(http_calls) == 1 and "/3/movie/42" in http_calls[0]  # 确实回源
     session.commit.assert_called()  # upsert 落盘

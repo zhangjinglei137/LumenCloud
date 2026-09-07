@@ -7,6 +7,10 @@
  *   SCAN_INTERVAL_MINUTES=60、NASTOOLS_SYNC_COOLDOWN_MINUTES=30、
  *   EPISODE_STATE_TIMEOUT_HOURS=2、CAPACITY_SAFETY_MARGIN_GB=0.05、
  *   CAPACITY_ALERT_THRESHOLD=0.90（代码常量）。
+ *
+ * 凭据说明（Phase 升级后）：后端 settings GET 已改为全明文回显所有凭据
+ * （仅 jwt_secret/init_admin_password 隐藏），因此前端不再消费 sensitive 渲染密码框，
+ * 占位文案统一为「不修改可保持原样」。sensitive: true 标记保留，仅作纵深防御参考。
  */
 import type { SettingFieldMeta } from '../types'
 
@@ -21,7 +25,7 @@ export const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
   alist_token: {
     label: 'AList 管理令牌',
     desc: 'AList 后台生成的令牌，系统用它操作 /quark 挂载目录。',
-    placeholder: '已配置则显示 ***，不修改可留空',
+    placeholder: '不修改可保持原样',
     default: '必填',
     sensitive: true,
   },
@@ -42,7 +46,7 @@ export const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
   cloudsaver_password: {
     label: 'cloudSaver 密码',
     desc: '登录 cloudSaver 的密码，用于搜索分享码和发起转存。',
-    placeholder: '已配置则显示 ***，不修改可留空',
+    placeholder: '不修改可保持原样',
     default: '必填',
     sensitive: true,
   },
@@ -57,7 +61,7 @@ export const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
   aria2_token: {
     label: 'aria2 RPC 密钥',
     desc: 'aria2 配置里的 rpc-secret 密钥，与 RPC 地址配对使用。',
-    placeholder: '已配置则显示 ***，不修改可留空',
+    placeholder: '不修改可保持原样',
     default: '必填',
     sensitive: true,
   },
@@ -78,7 +82,7 @@ export const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
   nastools_password: {
     label: 'NasTools 密码',
     desc: '登录 NasTools 的密码。',
-    placeholder: '已配置则显示 ***，不修改可留空',
+    placeholder: '不修改可保持原样',
     default: '可选',
     sensitive: true,
   },
@@ -93,7 +97,7 @@ export const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
   emby_api_key: {
     label: 'Emby API 密钥',
     desc: 'Emby 后台「高级 → API 密钥」里生成的密钥，与地址配对用于查询媒体库。',
-    placeholder: '已配置则显示 ***，不修改可留空',
+    placeholder: '不修改可保持原样',
     default: '必填',
     sensitive: true,
   },
@@ -102,7 +106,7 @@ export const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
   tmdb_api_key: {
     label: 'TMDB API 密钥',
     desc: '影视元数据搜索用，需要在 TMDB 官网（themoviedb.org）免费申请。⚠️ 注意：不要把科学上网代理端口填到这里；如需代理请在容器或系统网络层配置。',
-    placeholder: '在 TMDB 官网申请后粘贴到这里',
+    placeholder: '不修改可保持原样',
     default: '必填（否则无法搜索影视信息）',
     sensitive: true,
   },
@@ -123,7 +127,7 @@ export const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
   pushplus_token: {
     label: 'PushPlus 推送令牌',
     desc: '可选。用于把任务结果推送到微信；留空则只用站内通知。',
-    placeholder: '已配置则显示 ***，不修改可留空',
+    placeholder: '不修改可保持原样',
     default: '可选，留空 = 只用站内通知',
     sensitive: true,
   },
@@ -132,12 +136,19 @@ export const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
   quark_default_folder: {
     label: '夸克中转目录 folderId',
     desc: '转存默认落到的夸克目录 ID（即 alist Quark 驱动的 root_folder_id，可用 alist 管理 API /api/admin/storage/list 查询）。留空 = 不指定目录。可在本页点「验证 folderId」一键检测与 AList 挂载根目录是否一致。',
-    placeholder: '已配置则显示 ***，不修改可留空',
+    placeholder: '不修改可保持原样',
     default: '可选，留空 = 不指定',
     sensitive: true,
   },
 
   // ---------- 业务参数 ----------
+  emby_series_library_ids: {
+    label: '剧集页可见的 Emby 媒体库',
+    desc: '勾选的媒体库内容会显示在 Emby 影视库的「剧集」Tab，用于把动漫库排除在剧集之外。不勾选任何库 = 不按白名单过滤（显示全部剧集）。',
+    default: '可选，不选 = 不过滤',
+    multiSelect: true,
+    optionsSource: 'embyLibraries',
+  },
   quark_quota_gb: {
     label: '夸克网盘容量上限（GB）',
     desc: '夸克中转网盘的可用容量上限，用于计算剩余空间并决定是否继续转存。',

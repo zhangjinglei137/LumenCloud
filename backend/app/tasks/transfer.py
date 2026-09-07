@@ -167,8 +167,11 @@ async def _get_link_wait_visible(file_name: str, timeout: float = _LINK_WAIT_TIM
       4) 仍不中（或 list_dir 异常）→ 退化按原路径 get_link 再试一次——目录列表可能
          因同步延迟暂未含该文件而 /api/fs/get 缓存已可见，成功即返回；失败仅记录，
          sleep 5s 进入下一轮（总超时 _LINK_WAIT_TIMEOUT=300s 不变）；
-      5) 超时仍抛 AlistUnavailable，错误信息附带最近一次 list_dir 前若干条目名
-         （诊断：区分「落盘到了别处（folderId 配置错）」与「文件名被云盘改名/仍在传输」）。
+      5) 超时抛 AlistUnavailable，错误信息按最后一次 list_dir 是否命中目标文件区分：
+         - 已落盘但直链失败（real_name 命中）→ 提示文件已可见、url/raw_url 均空（缓存或
+           夸克直链生成问题），不再误导性提示核对 folderId；
+         - 未落盘（list_dir 一直看不到目标）→ 保留原「等待落盘超时」语义并附 folderId
+           核对提示（诊断「落盘到了别处（folderId 配置错）」与「文件名被云盘改名/仍在传输」）。
     """
     import time as _time
 
@@ -192,9 +195,20 @@ async def _get_link_wait_visible(file_name: str, timeout: float = _LINK_WAIT_TIM
         except Exception as exc:  # noqa: BLE001  直链暂不可用（未同步/瞬时失败）→ 继续等待
             last_exc = exc
             await asyncio.sleep(5)
-    # 超时诊断：抛错前列 /quark 目录记录实际内容（区分「落盘到别处」与「改名/仍在传输」）
-    folder_id = config_store.get("quark_default_folder", settings.QUARK_DEFAULT_FOLDER)
+    # 超时诊断：抛错前先按最后一次 list_dir 是否命中目标文件区分两种情况——
+    # 命中 → 文件已落盘，失败在直链；未命中 → 文件未落盘（可能落盘到别处/仍在传输）。
+    # last_entries 在循环内已保存，这里重算一次 real_name 取最后状态。
+    real_name = _find_real_name(last_entries, file_name)
     recent_names = [e.get("name") for e in last_entries[:10]]
+    if real_name is not None:
+        # 文件已落盘但直链获取失败：folderId 核对提示会误导（folderId 配错则文件
+        # 根本不会出现在 /quark），改为提示 AList 缓存/夸克直链生成问题。
+        raise alist.AlistUnavailable(
+            f"转存后文件已落盘但 AList 直链获取失败（{timeout:.0f}s）: {path}（{last_exc}）；"
+            f"最近 list_dir 已可见目标文件（前 {len(recent_names)} 条目: {recent_names}）；"
+            f"url 与 raw_url 均为空，可能为 AList 缓存或夸克直链生成问题"
+        )
+    folder_id = config_store.get("quark_default_folder", settings.QUARK_DEFAULT_FOLDER)
     try:
         entries = await alist.list_dir("/quark")
         logger.warning(

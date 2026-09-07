@@ -14,6 +14,8 @@ import {
   mediaTypeLabel,
   queueStatusLabel,
   queueStatusType,
+  seriesStatusLabel,
+  seriesStatusType,
   taskStatusLabel,
   taskStatusType,
 } from '../utils/format'
@@ -123,6 +125,13 @@ async function onDelete() {
               {{ mediaStatusLabel(detail.status) }}
             </el-tag>
             <el-tag effect="plain">{{ mediaTypeLabel(detail.media_type) }}</el-tag>
+            <el-tag
+              v-if="detail.series_status"
+              :type="seriesStatusType(detail.series_status, detail.media_type)"
+              effect="plain"
+            >
+              {{ seriesStatusLabel(detail.series_status, detail.media_type) }}
+            </el-tag>
             <el-tag v-if="detail.in_emby" type="success" effect="plain">已在 Emby</el-tag>
           </div>
           <div class="lc-muted" style="margin-top: 8px">
@@ -146,9 +155,18 @@ async function onDelete() {
       </div>
 
       <el-row :gutter="16">
-        <!-- 遗漏集 -->
+        <!-- 影视状态（电影：无集数概念） -->
         <el-col :xs="24" :md="14">
-          <div class="lc-panel">
+          <div v-if="detail.media_type === 'movie'" class="lc-panel">
+            <h3 class="lc-panel-title">影视状态</h3>
+            <el-tag :type="seriesStatusType(detail.series_status, 'movie')" effect="plain">
+              {{ seriesStatusLabel(detail.series_status, 'movie') }}
+            </el-tag>
+            <p class="lc-muted" style="margin-top: 8px; font-size: 12px">电影无集数概念，状态以 TMDB 为准</p>
+          </div>
+
+          <!-- 遗漏集 -->
+          <div v-if="detail.media_type !== 'movie'" class="lc-panel">
             <h3 class="lc-panel-title">集数状态（{{ episodes.length }}）</h3>
             <el-empty v-if="episodes.length === 0" description="暂无集数记录，触发一次巡检后会建立基线" :image-size="80" />
             <el-table v-else :data="episodes" size="small" max-height="480">

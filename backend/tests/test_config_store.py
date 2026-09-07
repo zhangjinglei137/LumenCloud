@@ -105,19 +105,22 @@ def test_load_failure_warns_and_keeps_fallback(monkeypatch):
 # ---- 敏感键集合覆盖（settings GET 不回显值的键）----
 
 def test_sensitive_keys_covered():
+    # Q5 收紧：仅系统内部密钥遮蔽（JWT 签名密钥 / 初始管理员密码），
+    # 其余服务凭据键（token/password/api_key/内部地址/默认目录）明文回显。
+    for key in ("jwt_secret", "init_admin_password"):
+        assert config_store.is_sensitive(key), key
+    # 服务凭据键明文回显（Q5：地址/令牌/用户/密码/token 全部明文显示）
     for key in (
-        "alist_base_url", "alist_token",              # alist 统一处理（内部地址 + token）
+        "alist_base_url", "alist_token",
         "cloudsaver_password",
-        "aria2_rpc_url", "aria2_token",               # aria2 统一处理（RPC 端点 + token）
+        "aria2_rpc_url", "aria2_token",
         "nastools_password",
         "emby_api_key",
         "tmdb_api_key",
         "pushplus_token",
         "quark_default_folder",
-        "jwt_secret",
-        "init_admin_password",
     ):
-        assert config_store.is_sensitive(key), key
+        assert not config_store.is_sensitive(key), key
     # URL 类键（base_url / proxy）不算敏感，可回显
     for key in ("cloudsaver_base_url", "emby_base_url", "nastools_base_url", "tmdb_proxy"):
         assert not config_store.is_sensitive(key), key

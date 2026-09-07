@@ -459,6 +459,35 @@ async def _attach_tmdb_series_status(items: list[dict[str, Any]]) -> None:
             item["series_status"] = mapped
 
 
+async def _fetch_items(params: dict[str, Any]) -> list[dict[str, Any]]:
+    """分页拉取 /Items（StartIndex+Limit 翻页，含 _LIST_MAX_PAGES 防御）。
+
+    P2-8 分页逻辑抽为独立辅助：list_library 主流程与 Q2 媒体库白名单
+    （逐库 ParentId 查询）两条路径共用，保证分页口径一致。
+    """
+    items: list[dict[str, Any]] = []
+    start_index = 0
+    page = 0
+    while True:
+        page += 1
+        if page > _LIST_MAX_PAGES:
+            logger.warning(
+                "Emby 影视库分页超过 %d 页上限，提前停止（已收集 %d 条）",
+                _LIST_MAX_PAGES, len(items),
+            )
+            break
+        page_params = dict(params)
+        page_params["StartIndex"] = str(start_index)
+        payload = await _get("/Items", page_params)
+        chunk = payload.get("Items", []) or []
+        items.extend(chunk)
+        # 当前页条数 < 单页 → 已到最后一页（含 0 条），停止分页
+        if len(chunk) < _LIST_PAGE_SIZE:
+            break
+        start_index += len(chunk)
+    return items
+
+
 async def list_library(
     item_type: Optional[str] = None,
     status: Optional[str] = None,
@@ -474,6 +503,10 @@ async def list_library(
         anime:     True 时限定动漫库（按 Name 关键词匹配 VirtualFolder，取 ItemId 作
                    ParentId）；忽略 item_type 过滤（动漫库通常为剧集，亦有剧场版电影）；
                    找不到动漫库则返回空列表（前端显示空态，不算错误）
+        emby_series_library_ids: 仅当 anime=False 且 item_type="series" 且该配置非空时
+                   生效：按逗号分隔的 Emby VirtualFolder ItemId 白名单逐库（ParentId）
+                   拉取 /Items 并合并去重；其余场景（item_type 为空/movie、anime=True、
+                   配置为空）不受影响，保持原行为（向后兼容）
     返回:
         归一化条目列表，每项含 emby_id/title/type/year/poster_url/
         community_rating/tmdb_id/emby_web_url、series_status（连载判定 TMDB 优先：
@@ -509,29 +542,32 @@ async def list_library(
     if status:
         params["SeriesStatus"] = status
 
-    # P2-8：分页拉取全部（Emby /Items 支持 StartIndex+Limit）——原硬编码 Limit=500 会
-    # 截断大库（>500 条）导致筛选/展示与遗漏判定不完整。模式对齐 alist.list_dir：当前
-    # 页满单页就 StartIndex 翻页，直到少于单页（含 0 条）或达到页数上限防御。
+    # Q2 媒体库白名单：仅「剧集」Tab 且非动漫模式且配置非空时，按 Emby VirtualFolder
+    # ItemId 白名单逐库拉取合并（基础 params 复用，仅追加 ParentId）；其余场景走原有
+    # 全量分页拉取，行为不变（向后兼容）。
+    lib_ids: list[str] = []
+    if not anime and item_type == "series":
+        raw = (config_store.get("emby_series_library_ids") or "").strip()
+        lib_ids = [x.strip() for x in raw.split(",") if x.strip()]
+
     items: list[dict[str, Any]] = []
-    start_index = 0
-    page = 0
-    while True:
-        page += 1
-        if page > _LIST_MAX_PAGES:
-            logger.warning(
-                "Emby 影视库分页超过 %d 页上限，提前停止（已收集 %d 条）",
-                _LIST_MAX_PAGES, len(items),
-            )
-            break
-        page_params = dict(params)
-        page_params["StartIndex"] = str(start_index)
-        payload = await _get("/Items", page_params)
-        chunk = payload.get("Items", []) or []
-        items.extend(chunk)
-        # 当前页条数 < 单页 → 已到最后一页（含 0 条），停止分页
-        if len(chunk) < _LIST_PAGE_SIZE:
-            break
-        start_index += len(chunk)
+    if lib_ids:
+        # P2-8 分页逻辑见 _fetch_items：逐库 ParentId 查询后合并去重，仅做一次后续处理
+        seen: set[str] = set()
+        for lib_id in lib_ids:
+            page_params = dict(params)
+            page_params["ParentId"] = lib_id
+            for item in await _fetch_items(page_params):
+                item_id = item.get("Id")
+                if item_id is None or item_id in seen:
+                    continue
+                seen.add(item_id)
+                items.append(item)
+    else:
+        # P2-8：分页拉取全部（Emby /Items 支持 StartIndex+Limit）——原硬编码 Limit=500 会
+        # 截断大库（>500 条）导致筛选/展示与遗漏判定不完整。模式对齐 alist.list_dir：当前
+        # 页满单页就 StartIndex 翻页，直到少于单页（含 0 条）或达到页数上限防御。
+        items = await _fetch_items(params)
 
     base = _base_url()
     api_key = config_store.get("emby_api_key", settings.EMBY_API_KEY)

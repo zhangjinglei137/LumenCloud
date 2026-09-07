@@ -8,6 +8,7 @@ import type {
   ChangePasswordResponse,
   EmbyLibraryQuery,
   EmbyLibraryResponse,
+  EmbyLibrariesResponse,
   InviteCode,
   LogItem,
   LoginResponse,
@@ -203,6 +204,16 @@ export function listEmbyLibraryApi(params?: EmbyLibraryQuery) {
       params: Object.keys(query).length ? query : undefined,
     })
     .then((r) => r.data)
+}
+
+/**
+ * 获取 Emby 媒体库列表（设置页「剧集页可见的 Emby 媒体库」多选下拉选项来源）。
+ * 契约：GET /api/emby/libraries
+ *   200 → EmbyLibrariesResponse（libraries: EmbyLibraryFolder[]，含 item_id/name/collection_type）
+ *   503 → 后端 emby 未配置/不可达时由 http 拦截器统一提示
+ */
+export async function listEmbyLibrariesApi(): Promise<EmbyLibrariesResponse> {
+  return http.get<EmbyLibrariesResponse>('/emby/libraries').then((r) => r.data)
 }
 
 // ---------- 日志 ----------

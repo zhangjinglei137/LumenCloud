@@ -130,8 +130,9 @@ async def _read_cache(tmdb_id: str | int, media_type: str) -> dict[str, Any] | N
             "media_type": row.media_type,
             "poster_path": row.poster_path,
             "year": year,
-            # TV 连载状态（TMDB /3/tv/{id} 的 status 字段原值；movie/旧缓存行 → None）
+            # 影视状态原值（TMDB movie/tv 详情 status 字段；无 → None）
             "tv_status": row.tv_status,
+            "status": row.tv_status,
         }
     except Exception as exc:  # noqa: BLE001 缓存不可用降级回源
         logger.warning("tmdb_cache 读取失败（降级回源）: %s", exc)
@@ -150,8 +151,10 @@ async def _upsert_cache(
 
     - tmdb_id 字符串化（P3 契约）；
     - year 转 int（可空）：int("2023") → 2023，缺失/非法 → None；
-    - tv_status 仅在非 None 时覆盖（search_multi 等无 status 来源的调用传 None，
-      不覆盖 get_by_tmdb_id 已落库的连载状态，防误清）；
+    - tv_status 参数语义为「影视状态原值」（movie/tv 通用，即 TMDB 详情响应的
+      status 字段，列名沿用 tv_status 不动，无需迁移）：仅非 None 时覆盖
+      （search_multi 等无 status 来源的调用传 None，不覆盖 get_by_tmdb_id
+      已落库的状态，防误清）；
     - 缓存层纯优化：失败仅告警（表未建 / DB 不可用等），不阻断调用方。
     """
     try:
@@ -196,9 +199,11 @@ async def get_by_tmdb_id(tmdb_id: str | int, media_type: str) -> dict[str, Any]:
        复用 _client_kwargs 出口代理与 config_store api_key 读取）→ 归一化
        title / poster_path / year → upsert 缓存（updated_at=now）→ 返回。
 
-    返回 dict：{tmdb_id, title, media_type, poster_path, year, tv_status}。
-    tv_status：仅 tv 条目解析 payload 的 status 字段（连载判定 TMDB 优先，
-    'Returning Series'/'Ended'/'Canceled'/'Pilot'）；movie 或无该字段 → None。
+    返回 dict：{tmdb_id, title, media_type, poster_path, year, status, tv_status}。
+    status / tv_status 同值：TMDB movie/tv 详情响应的 status 字段原值
+    （movie: Released/In Production/Post Production/Rumored/Planned/Canceled；
+    tv: Returning Series/Ended/Canceled/Pilot）；无该字段 → None。
+    tv_status 键保留，兼容 emby.py _attach_tmdb_series_status 的读取。
 
     异常:
         TMDBUnavailable: 未配置 key / 请求失败 / 响应异常
@@ -241,9 +246,11 @@ async def get_by_tmdb_id(tmdb_id: str | int, media_type: str) -> dict[str, Any]:
             "first_air_date": payload.get("first_air_date"),
         }
     )
-    # 连载判定 TMDB 优先：tv 条目解析 status 字段（movie 响应无该字段 → None）
-    tv_status = payload.get("status") if media_type == "tv" else None
-    await _upsert_cache(tmdb_id, media_type, title, poster_path, year, tv_status=tv_status)
+    # 影视状态原值（movie/tv 通用）：TMDB 详情响应的 status 字段。
+    # movie: Released/In Production/Post Production/Rumored/Planned/Canceled；
+    # tv: Returning Series/Ended/Canceled/Pilot；无该字段 → None。
+    status = payload.get("status")
+    await _upsert_cache(tmdb_id, media_type, title, poster_path, year, tv_status=status)
 
     return {
         "tmdb_id": str(tmdb_id),
@@ -251,7 +258,8 @@ async def get_by_tmdb_id(tmdb_id: str | int, media_type: str) -> dict[str, Any]:
         "media_type": media_type,
         "poster_path": poster_path,
         "year": year,
-        "tv_status": tv_status,
+        "status": status,
+        "tv_status": status,  # 兼容 emby.py _attach_tmdb_series_status 读取
     }
 
 

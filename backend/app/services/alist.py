@@ -263,15 +263,20 @@ async def remove(names: list[str], dir: str) -> dict[str, Any]:
 async def get_link(path: str) -> str:
     """取直链（POST /api/fs/get，供 aria2 addUri 下载）。
 
+    url 优先、raw_url 回退：部分驱动（如夸克）在 AList 缓存命中时
+    data.url 可能为空，但 data.raw_url 仍返回原始直链（n8n 旧版
+    「Aria下载」节点即取 getResponse.data.raw_url），二者其一非空
+    即视为取链成功。
+
     参数:
         path: 文件在 alist 的完整路径
     返回:
-        可直接下载的直链 URL（data.url）
+        可直接下载的直链 URL（data.url，缺失时回退 data.raw_url）
     异常:
-        AlistUnavailable
+        AlistUnavailable（url 与 raw_url 均为空时）
     """
     data = await _post("/api/fs/get", {"path": path})
-    link = data.get("url")
+    link = data.get("url") or data.get("raw_url")
     if not link:
-        raise AlistUnavailable(f"AList 未返回直链: {path}")
+        raise AlistUnavailable(f"AList 未返回直链（url 与 raw_url 均为空）: {path}")
     return str(link)

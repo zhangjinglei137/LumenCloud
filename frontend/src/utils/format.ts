@@ -181,3 +181,36 @@ export function mediaTypeLabel(t: string | null | undefined): string {
   if (t === 'movie') return '电影'
   return t || '—'
 }
+
+/** 影视状态（TMDB 为准）→ [中文标签, Element Plus tag type] */
+const SERIES_STATUS_MAP: Record<string, [string, string]> = {
+  // 剧集归一化值
+  continuing: ['更新中', 'success'],
+  ended: ['已完结', 'info'],
+  'returning series': ['更新中', 'success'],
+  // 电影 TMDB 原值（归一化后小写）
+  released: ['已上映', 'success'],
+  'in production': ['制作中', 'warning'],
+  'post production': ['后期制作', 'warning'],
+  rumored: ['筹备中', 'info'],
+  planned: ['计划中', 'info'],
+  canceled: ['已取消', 'danger'],
+  cancelled: ['已取消', 'danger'], // 英式拼写兜底
+}
+
+/** 归一化：trim + 小写 + 下划线/连字符 → 空格（兼容 "Returning Series" / "in_production" 等形态） */
+function normalizeSeriesStatus(status: string): string {
+  return status.trim().toLowerCase().replace(/[_-]/g, ' ')
+}
+
+/** 影视状态中文标签；空值时 movie→'已上映'（电影兜底），tv→'—'；未知值回退原值 */
+export function seriesStatusLabel(status: string | null | undefined, mediaType?: string | null): string {
+  if (!status) return mediaType === 'movie' ? '已上映' : '—'
+  return SERIES_STATUS_MAP[normalizeSeriesStatus(status)]?.[0] ?? status
+}
+
+/** 影视状态 tag type；空值时 movie→'success'，tv→'info'；未知值回退 'info' */
+export function seriesStatusType(status: string | null | undefined, mediaType?: string | null): string {
+  if (!status) return mediaType === 'movie' ? 'success' : 'info'
+  return SERIES_STATUS_MAP[normalizeSeriesStatus(status)]?.[1] ?? 'info'
+}
