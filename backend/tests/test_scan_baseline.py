@@ -229,3 +229,71 @@ def test_scan_one_tv_missing_required_skips(db, monkeypatch):
     assert "scan_baseline_required=True" in tr.message
     assert dq is None  # 未入队（download_queue 无行）
     assert rid == tr.id
+
+
+# ---------------------------------------------------------------------------
+# 统一巡检调度（queue-flow-rework Task 1）：移除 per-media 冷却
+# ---------------------------------------------------------------------------
+
+def test_scan_all_media_scans_within_interval_cooldown(db, monkeypatch):
+    """未到 per-media 冷却也巡检：last_scan_at=now（旧逻辑未到期）的 media 仍被扫描。
+
+    queue-flow-rework Task 1：scan_all_media 不再按 per-media
+    `last_scan_at + 周期` 到期过滤，全局巡检间隔仅由 job 触发周期控制——
+    每轮 tick 遍历全部 tracking/downloading 影视逐一巡检。
+    media.scan_interval_minutes 字段仅作兼容读取保留，不再参与调度。
+    """
+    from app.tasks import scan as scan_mod
+
+    monkeypatch.setattr(scan_mod, "async_session", db)
+    routed: list[int] = []
+
+    async def fake_scan_one(media_id, *, manual=False):
+        routed.append(media_id)
+        return 1
+
+    monkeypatch.setattr(scan_mod, "_scan_one", fake_scan_one)
+
+    async def seed():
+        async with db() as s:
+            media = Media(
+                title="测试剧", media_type="tv", status="tracking",
+                scan_interval_minutes=60, last_scan_at=_now(),  # 刚巡检过（旧逻辑未到期）
+            )
+            s.add(media)
+            await s.commit()
+            return media.id
+
+    mid = run(seed())
+    run(scan_mod.scan_all_media())
+
+    # 未到 per-media 冷却也被巡检（不在旧到期过滤分支跳过）
+    assert routed == [mid]
+
+
+def test_scan_all_media_scans_only_tracking_downloading(db, monkeypatch):
+    """统一调度只遍历 tracking/downloading：paused/error 状态不触及（状态预检在 _scan_one）。"""
+    from app.tasks import scan as scan_mod
+
+    monkeypatch.setattr(scan_mod, "async_session", db)
+    routed: list[int] = []
+
+    async def fake_scan_one(media_id, *, manual=False):
+        routed.append(media_id)
+        return 1
+
+    monkeypatch.setattr(scan_mod, "_scan_one", fake_scan_one)
+
+    async def seed():
+        async with db() as s:
+            a = Media(title="A 跟踪中", media_type="tv", status="tracking", last_scan_at=None)
+            b = Media(title="B 下载中", media_type="tv", status="downloading", last_scan_at=None)
+            c = Media(title="C 暂停", media_type="tv", status="paused", last_scan_at=None)
+            s.add_all([a, b, c])
+            await s.commit()
+            return [m.id for m in (a, b, c)]
+
+    ids = run(seed())
+    run(scan_mod.scan_all_media())
+
+    assert sorted(routed) == sorted(ids[:2])  # 只巡检 tracking + downloading

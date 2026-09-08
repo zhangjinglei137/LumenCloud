@@ -191,9 +191,9 @@ export const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
     default: '默认 5.0 GB',
   },
   scan_interval_minutes: {
-    label: '扫描间隔（分钟）',
-    desc: '系统轮询检查更新、下载与转存状态的间隔时间。',
-    default: '默认 60 分钟',
+    label: '扫描间隔（分钟）（已废弃）',
+    desc: '遗留配置：巡检已改为全局统一调度，全局间隔由定时任务的触发周期控制，该配置不再生效，无需修改；仅为兼容历史数据保留，后续版本可能移除。',
+    default: '已废弃，不再生效',
   },
   nastools_sync_cooldown_minutes: {
     label: 'NasTools 同步冷却（分钟）',

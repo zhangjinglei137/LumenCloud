@@ -1246,21 +1246,12 @@ async def scan_media(media_id: int, *, manual: bool = False) -> int | None:
                 _scan_locks.pop(media_id, None)
 
 
-def _scan_interval_minutes(raw) -> float:
-    """解析单部 media 巡检周期（分钟）。缺失/非法回落全局默认 settings.SCAN_INTERVAL_MINUTES。
-
-    输入可为 media.scan_interval_minutes（int/None）或 system_config 字符串值（"60" 等）。
-    """
-    if raw not in (None, ""):
-        try:
-            return float(raw)
-        except (TypeError, ValueError):
-            logger.warning("[scan] scan_interval_minutes 非法值 %r，回落默认 %.0f", raw, settings.SCAN_INTERVAL_MINUTES)
-    return float(settings.SCAN_INTERVAL_MINUTES)
-
-
 async def scan_all_media_job() -> None:
-    """定时 tick 包装（B 定时：每分钟；内部按 last_scan_at 到期过滤）。
+    """定时 tick 包装（B 定时：每分钟；全局巡检间隔由本 job 触发周期控制）。
+
+    queue-flow-rework Task 1：全局间隔不再由 per-media last_scan_at + 周期过滤，
+    也不再读取 scan_interval_minutes 配置——每轮 tick 由 scan_all_media 遍历全部
+    tracking/downloading 影视，调度粒度收敛到本 job 的 APScheduler IntervalTrigger。
 
     M1（Oracle Gate2）：与同模块其它 job 一致（transfer.process_transfer_queue_job 等），
     DB 读取/执行异常时记录 task_run(error) 兜底而不是静默抛出——APScheduler 会吞
@@ -1287,37 +1278,21 @@ async def scan_all_media_job() -> None:
 async def scan_all_media(force: bool = False) -> None:
     """遍历全部 tracking/downloading 影视巡检（downloading 不跳过，防卡死，§3.1）。
 
-    B 定时（阶段 4，§4.2 flow 2）：定时 tick（scan_all_media_job）默认按各 media
-    `last_scan_at IS NULL OR last_scan_at + 周期 < now` 到期过滤——从未巡检
-    （last_scan_at IS NULL）立即巡检；未到期跳过（不巡检、不写 task_run）。
+    统一巡检调度（queue-flow-rework Task 1）：**移除 per-media 冷却过滤**——
+    不再按各 media `last_scan_at + 周期` 到期判断，每轮 tick 直接遍历全部
+    tracking/downloading 影视逐一巡检；全局巡检间隔仅由 job 触发周期
+    （scan_all_media_job 的 APScheduler IntervalTrigger）控制。
+    media.scan_interval_minutes / system_config "scan_interval_minutes" /
+    settings.SCAN_INTERVAL_MINUTES 字段仅作兼容读取保留，不再参与调度。
 
-    force=True（手动全量/CLI 入口）：跳过到期过滤，全部触及 media 一律巡检。
-
-    周期取值优先级：media.scan_interval_minutes 覆盖值
-    or system_config "scan_interval_minutes" or settings.SCAN_INTERVAL_MINUTES(60)。
-    全局默认在短 session 中与 media 一次读取（detached 属性安全使用）。
-
-    到期过滤仅作用于本全量遍历；scan_media 单部手动触发不做过期检查，语义不变。
+    force（手动全量/CLI 入口）参数保留以兼容既有调用契约；因本函数已无到期
+    过滤，force 不再改变遍历行为——全部 tracking/downloading 影视一律巡检。
     """
     async with async_session() as s:
         rows = (
             await s.execute(select(Media).where(Media.status.in_(("tracking", "downloading"))))
         ).scalars().all()
-        # 全局默认巡检周期：system_config 优先，settings 兜底（media 各自可覆盖）
-        global_interval = await get_config_value(
-            s, "scan_interval_minutes", settings.SCAN_INTERVAL_MINUTES
-        )
-    now = _now()
     for media in rows:
-        # B 定时到期检查：默认按 last_scan_at 到期过滤；force=True 全量不过滤（全部巡检）
-        interval = _scan_interval_minutes(
-            media.scan_interval_minutes
-            if media.scan_interval_minutes is not None
-            else global_interval
-        )
-        if not force and media.last_scan_at is not None \
-                and media.last_scan_at + timedelta(minutes=interval) > now:
-            continue
         try:
             await scan_media(media.id)
         except Exception:
