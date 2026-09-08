@@ -242,18 +242,17 @@ def test_scan_one_success_phases_all_done_and_scan_detail(db, monkeypatch):
     # §4.1：unmatched_marked 键存在（本轮未匹配集未被标静默，matched 全命中）
     assert "unmatched_marked" in detail
 
-    # 两队列入队落库（download_queue pending + task_queue done，§4.1 promote 双写；
-    # 同步探测 promote 完成即 task_queue 终态 done）
+    # 入队只写 task_queue（queue-flow-rework Task 2：status='ready'，凭据收集完毕；
+    # 同步 promote 双写 download_queue 已移除，下载队列后续从 task_queue 取件）
     async def _read_tables():
         async with db() as s:
             dq = (await s.execute(select(DownloadQueue).where(DownloadQueue.media_id == mid))).scalars().all()
             tq = (await s.execute(select(TaskQueue).where(TaskQueue.media_id == mid))).scalars().all()
             return dq, tq
     dq, tq = run(_read_tables())
-    assert {d.episode for d in dq} == {"S01E01", "S01E02"}
-    assert all(d.status == "pending" for d in dq)
-    assert len(tq) == 2
-    assert all(t.status == "done" for t in tq)
+    assert {t.episode for t in tq} == {"S01E01", "S01E02"}
+    assert all(t.status == "ready" for t in tq)
+    assert dq == []  # 不再同步写 download_queue
 
 
 def test_scan_one_emby_failure_failed_phase_check(db, monkeypatch):

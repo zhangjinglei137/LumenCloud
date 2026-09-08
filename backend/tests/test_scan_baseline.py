@@ -197,12 +197,51 @@ def test_scan_one_tv_missing_default_full_mode_enqueues(db, monkeypatch):
 
     assert tr.status == "success"
     assert "已入队 1 个资源" in tr.message
-    # 全量模式（tv 未收录默认 soft 全量）：episode=文件名，具体文件被视为缺失集入队
-    # （§4.1 promote 双写；task_queue 置 done——同步探测 promote 完成即终态）
-    assert dq.episode == "S01E01.mkv"
-    assert dq.status == "pending"
-    assert tq.status == "done"
+    # 全量模式（tv 未收录默认 soft 全量）：具体文件被视为缺失集入队
+    # （queue-flow-rework Task 2：巡检只写 task_queue(ready)，不再同步双写 download_queue）
+    assert tq.episode == "S01E01"
+    assert tq.status == "ready"
+    assert dq is None  # download_queue 无行（同步 promote 双写已移除）
     assert rid == tr.id
+
+
+def test_scan_one_enqueue_only_writes_task_queue(db, monkeypatch):
+    """巡检入队只写 task_queue（queue-flow-rework Task 2）：_scan_one 入队后
+    task_queue 有该键行（status='ready'，转存凭据收集完毕），download_queue 无该键行
+    ——同步 promote 双写已移除，下载队列后续从 task_queue 取件（Task 4）。"""
+    from app.tasks import scan as scan_mod
+
+    search = [{
+        "title": "测试剧 S01",
+        "cloud_links": [{"cloud_type": "quark", "link": "https://pan.quark.cn/s/abc123"}],
+    }]
+    share_list = {"list": [{
+        "fileName": "S01E01.mkv", "fileId": "f1", "fileIdToken": "ft1",
+        "isFolder": False, "size": 1024,
+    }]}
+    _mock_baseline_config(monkeypatch, None)  # 默认 False：软处理放行
+    scan_mod = _patch_scan_env(monkeypatch, db, find_emby_id=None, search=search,
+                               share_list=share_list)
+
+    mid = run(_seed_media(db))
+    rid = run(scan_mod._scan_one(mid))
+
+    async def _read_tables():
+        async with db() as s:
+            tq = (await s.execute(
+                select(TaskQueue).where(TaskQueue.media_id == mid)
+            )).scalars().all()
+            dq = (await s.execute(
+                select(DownloadQueue).where(DownloadQueue.media_id == mid)
+            )).scalars().all()
+            return tq, dq
+    tq_rows, dq_rows = run(_read_tables())
+
+    # task_queue：该键行存在且 status='ready'（凭据收集完毕，等待下载队列取件）
+    assert [t.episode for t in tq_rows] == ["S01E01"]
+    assert all(t.status == "ready" for t in tq_rows)
+    # download_queue：无该键行（不再同步 promote 双写）
+    assert dq_rows == []
 
 
 def test_scan_one_tv_missing_required_skips(db, monkeypatch):

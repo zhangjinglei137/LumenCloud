@@ -59,10 +59,11 @@ def _is_video_file(file_name: str) -> bool:
 _RE_SXXEXX = re.compile(r"[Ss](\d{1,2})[Ee](\d{1,3})")
 _RE_CN_EP = re.compile(r"第\s*(\d{1,3})\s*[集话]")
 
-# 影视下载两队列重设计后防重权威源 = download_queue.UNIQUE(media_id, episode)：
-# scan 探测阶段由 _enqueue 事务内先查同键记录（存在即跳过），不再用状态集合判断
-# （done 在 Emby 二次确认前仍保留在表内参与防重，由 _resolve_done_states 解除；
-#  failed 需人工 retry，不可被 scan 自动重新入队——撞 UNIQUE 即跳过）。
+# queue-flow-rework Task 2 起：巡检入队只写 task_queue（status='ready'，转存凭据收集
+# 完毕），不再同步 promote 双写 download_queue——下载队列随后从 task_queue 取件（Task 4）。
+# scan 探测阶段由 _enqueue 事务内先查 task_queue 同键记录（存在即跳过）防重，不再用
+# 状态集合判断（unmatched 静默由 _mark_unmatched 管理；failed 需人工 retry，不可被
+# scan 自动重新入队——撞 task_queue UNIQUE(media_id, episode) 即跳过）。
 
 # 巡检 5 阶段键（契约固定，前端按此渲染进度）：
 #   check → Emby 基线（查缺/Emby 基线）；search → cloudSaver 搜索；
@@ -948,47 +949,24 @@ def _json_dumps(v):
 
 async def _enqueue(media_id: int, episode_key: str, file_name: str, file_size: int,
                    share_code: str, payload: dict) -> str:
-    """task_queue(done) + download_queue(pending) 双写（影视下载两队列重设计 §4.1 promote 链路）。
+    """巡检入队只写 task_queue（queue-flow-rework Task 2：只写队列，移除同步 promote 双写）。
 
     探测完成即产出：scan 搜索/匹配/大小过滤通过后，把探测结果快照写 task_queue
-    （探测层视图，status=done——同步探测已完成「探测→promote」整链路，§4.1
-    promote 后即 done），并在同一事务内产出 download_queue(pending)（执行层，
-    防重权威源 = 其 UNIQUE(media_id, episode)）。下载队列消费端只读 download_queue。
-    manual 入队/promote 路径（queue.py）才会让 task_queue 停在 ready 等待用户确认。
+    （status='ready'——转存凭据收集完毕，等待下载队列取件）。同步 promote 双写
+    download_queue 已移除（下载队列后续从 task_queue 取件，Task 4）；download_name
+    落盘名生成一并移除（迁移至 Task 7）。
 
-    幂等：事务内先查 download_queue 同键记录，命中则跳过；写入撞 UNIQUE(media_id, episode)
-    则捕获 IntegrityError 判定为并发冲突。返回 'enqueued' / 'existing' / 'conflict'。
+    幂等：事务内先查 task_queue 同键记录，命中则跳过；写入撞
+    UNIQUE(media_id, episode) 则捕获 IntegrityError 判定为并发冲突。
+    返回 'enqueued' / 'existing' / 'conflict'。
     """
-    # download_name（aria2 落盘名，§7）生成需 media.title / media_type；单独短查询，
-    # 失败回退 None（transfer 消费时按原文件名兜底，不阻断入队）
-    media_title = media_type = None
-    try:
-        async with async_session() as s2:
-            m = await s2.get(Media, media_id)
-            if m is not None:
-                media_title, media_type = m.title, m.media_type
-    except Exception:  # noqa: BLE001
-        logger.warning("[scan] media=%s 标题查询失败，download_name 回退空", media_id)
-    download_name = None
-    if media_title and media_type:
-        try:
-            from app.tasks.transfer import _format_download_name  # 延迟导入，防循环
-
-            # episode_key 兜底：分享文件为纯数字命名（190.mkv）时也规范化为
-            # 「剧名 - S01E190 - 第 190 集.mkv」（对齐 n8n 下载落盘带集号标识）
-            download_name = _format_download_name(
-                file_name, media_title, media_type, episode_key=episode_key
-            )
-        except Exception:  # noqa: BLE001
-            download_name = None
-
     async with async_session() as tx:
         async with tx.begin():
             has = (
                 await tx.execute(
-                    select(DownloadQueue.id).where(
-                        DownloadQueue.media_id == media_id,
-                        DownloadQueue.episode == episode_key,
+                    select(TaskQueue.id).where(
+                        TaskQueue.media_id == media_id,
+                        TaskQueue.episode == episode_key,
                     )
                 )
             ).first()
@@ -1001,7 +979,7 @@ async def _enqueue(media_id: int, episode_key: str, file_name: str, file_size: i
                 file_name=file_name,
                 file_size=file_size,
                 share_code=share_code,
-                status="done",  # 同步探测 promote 完成即 done（§4.1）
+                status="ready",  # 凭据收集完毕，等待下载队列取件（queue-flow-rework Task 2）
                 pwd_id=payload.get("pwd_id") or payload.get("pwdId"),
                 stoken=payload.get("stoken"),
                 receive_code=payload.get("receive_code") or payload.get("receiveCode"),
@@ -1014,53 +992,27 @@ async def _enqueue(media_id: int, episode_key: str, file_name: str, file_size: i
                 created_at=_now(),
                 updated_at=_now(),
             ))
-            tx.add(DownloadQueue(
-                media_id=media_id,
-                episode=episode_key,
-                task_queue_id=None,  # promote 链路：task_queue 本行刚插入，回填由消费端无
-                #                   需（快照已整体拷贝，独立成执行任务）
-                file_name=file_name,
-                file_size=file_size,
-                share_code=share_code,
-                # G4（Q3 双语义）：本字段存的是「提取码」（share-info 端点里的 passcode），
-                # 来自 payload["receive_code"]；而 save 端点（POST /api/quark/save）的
-                # receiveCode 语义 = **stoken**（阶段 1 实证）。transfer lane 消费时须取
-                # 上面的 stoken 字段作为 save 的 receiveCode，勿将本字段直接透传 save。
-                pwd_id=payload.get("pwd_id") or payload.get("pwdId"),
-                stoken=payload.get("stoken"),
-                receive_code=payload.get("receive_code") or payload.get("receiveCode"),
-                fids=_json_dumps(payload.get("fids")),
-                fid_tokens=_json_dumps(payload.get("fid_tokens") or payload.get("fidTokens")),
-                folder_id=payload.get("folder_id") or payload.get("folderId")
-                or config_store.get("quark_default_folder", settings.QUARK_DEFAULT_FOLDER)
-                or None,
-                download_name=download_name,
-                status="pending",
-                enqueued_at=_now(),
-                updated_at=_now(),
-            ))
             try:
                 await tx.commit()
                 return "enqueued"
             except IntegrityError:
                 await tx.rollback()
-                # P3-6（Oracle 审查 迁移）：并发冲突后补查 download_queue 记录，
-                # 双表不一致风险告警（不做自动修复）
+                # 并发冲突后补查 task_queue 记录（只写表，同键即已有任务；不做自动修复）
                 try:
-                    has_dq = (
+                    has_tq = (
                         await tx.execute(
-                            select(DownloadQueue.id).where(
-                                DownloadQueue.media_id == media_id,
-                                DownloadQueue.episode == episode_key,
+                            select(TaskQueue.id).where(
+                                TaskQueue.media_id == media_id,
+                                TaskQueue.episode == episode_key,
                             )
                         )
                     ).first() is not None
                 except Exception:  # noqa: BLE001
-                    has_dq = None
+                    has_tq = None
                 logger.warning(
-                    "[scan] media=%s episode=%s 并发冲突（UNIQUE），本轮跳过；download_queue 记录%s",
+                    "[scan] media=%s episode=%s 并发冲突（UNIQUE），本轮跳过；task_queue 记录%s",
                     media_id, episode_key,
-                    "存在（promote 可能已并发完成，正常）" if has_dq else "不存在（请人工核查）",
+                    "存在（并发入队已完成，正常）" if has_tq else "不存在（请人工核查）",
                 )
                 return "conflict"
 
