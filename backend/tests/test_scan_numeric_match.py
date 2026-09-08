@@ -22,7 +22,7 @@ from sqlalchemy.pool import StaticPool
 
 import app.models  # noqa: F401
 from app.database import Base
-from app.models import DownloadQueue, Media, TaskRun
+from app.models import Media, TaskQueue, TaskRun
 
 
 def run(coro):
@@ -288,16 +288,17 @@ def test_scan_one_skips_dead_candidates_reaches_valid_share(db, monkeypatch):
     assert detail["share_info_ok"] == 5     # 越过 20 失效码，5 个有效全验证
     assert detail["share_info_fail"] == 20
     assert detail["search_status"] == "ok"
-    # 入队落库（两队列：download_queue 为防重权威源）
-    async def _read_dq():
+    # 入队落库（Task 2：扫描只写 task_queue，status='ready'，待下载队列取件）
+    async def _read_tq():
         from sqlalchemy import select
         async with db() as s:
             return (await s.execute(
-                select(DownloadQueue).where(DownloadQueue.media_id == mid)
+                select(TaskQueue).where(TaskQueue.media_id == mid)
             )).scalars().all()
-    dq = run(_read_dq())
-    assert len(dq) == 1 and dq[0].episode == "S01E190"
-    assert dq[0].status == "pending"  # 入队即排队（探测已完成）
+    tq = run(_read_tq())
+    assert len(tq) == 1 and tq[0].episode == "S01E190"
+    assert tq[0].file_name == "190.mkv"  # 凭据快照携带分享原始文件名
+    assert tq[0].status == "ready"  # 入队即就绪（探测已完成、凭据已收集）
 
 
 def test_scan_one_share_try_limit_stops_when_all_dead(db, monkeypatch):

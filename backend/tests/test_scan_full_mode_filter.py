@@ -28,7 +28,7 @@ from sqlalchemy.pool import StaticPool
 
 import app.models  # noqa: F401
 from app.database import Base
-from app.models import DownloadQueue, Media, TaskRun
+from app.models import Media, TaskQueue, TaskRun
 
 
 def run(coro):
@@ -107,12 +107,13 @@ def _patch_tv_full_mode_env(monkeypatch, db, *, files, total_episodes: int | Non
     return scan_mod
 
 
-async def _read_downloads(db, mid):
+async def _read_task_queue(db, mid):
+    """读取扫描入队落库的 task_queue（Task 2：扫描只写 task_queue，status='ready'）。"""
     async with db() as s:
         return (
             await s.execute(
-                select(DownloadQueue).where(DownloadQueue.media_id == mid)
-                .order_by(DownloadQueue.episode.asc())
+                select(TaskQueue).where(TaskQueue.media_id == mid)
+                .order_by(TaskQueue.episode.asc())
             )
         ).scalars().all()
 
@@ -264,12 +265,15 @@ def test_scan_tv_full_mode_filters_unrelated_files(db, monkeypatch):
     detail = json.loads(tr.scan_detail)
     assert detail["enqueued"] == 2
     assert detail["unrelated_filtered"] == 3
-    # 落库的 download_queue 只有通过校验的 2 个文件；
+    # 落库的 task_queue 只有通过校验的 2 个文件（Task 2：只写 task_queue，status='ready'）；
     # 标准 SxxExx 文件（少帅.S01E01.mkv）归一化为集号键 S01E01；
     # 中文「第30集」无季号 → 保留文件名键（P9 防跨季冲突权衡）
-    dq = run(_read_downloads(db, mid))
-    assert [row.episode for row in dq] == ["S01E01", "少帅 第30集.mkv"]
-    assert all(row.status == "pending" for row in dq)
+    tq = run(_read_task_queue(db, mid))
+    assert [(row.episode, row.file_name) for row in tq] == [
+        ("S01E01", "少帅.S01E01.mkv"),
+        ("少帅 第30集.mkv", "少帅 第30集.mkv"),
+    ]
+    assert all(row.status == "ready" for row in tq)
 
 
 def test_scan_tv_full_mode_all_rejected_skipped(db, monkeypatch):
@@ -286,7 +290,7 @@ def test_scan_tv_full_mode_all_rejected_skipped(db, monkeypatch):
     detail = json.loads(tr.scan_detail)
     assert detail["enqueued"] == 0
     assert detail["unrelated_filtered"] == 3
-    assert run(_read_downloads(db, mid)) == []
+    assert run(_read_task_queue(db, mid)) == []
 
 
 def test_scan_tv_full_mode_limit_batch(db, monkeypatch):
@@ -304,8 +308,11 @@ def test_scan_tv_full_mode_limit_batch(db, monkeypatch):
     assert "已达全量模式单轮入队上限 2" in tr.message
     detail = json.loads(tr.scan_detail)
     assert detail["enqueued"] == 2
-    dq = run(_read_downloads(db, mid))
-    assert [row.episode for row in dq] == ["S01E01", "S01E02"]
+    tq = run(_read_task_queue(db, mid))
+    assert [(row.episode, row.file_name) for row in tq] == [
+        ("S01E01", "少帅.S01E01.mkv"),
+        ("S01E02", "少帅.S01E02.mkv"),
+    ]
 
 
 def test_scan_tv_full_mode_total_none_still_filters_pure_numeric(db, monkeypatch):
@@ -320,10 +327,13 @@ def test_scan_tv_full_mode_total_none_still_filters_pure_numeric(db, monkeypatch
     assert tr.id == rid and tr.status == "success"
     assert "已入队 2 个资源" in tr.message
     assert "1 个无关/超集号文件过滤" in tr.message
-    dq = run(_read_downloads(db, mid))
+    tq = run(_read_task_queue(db, mid))
     # 少帅.S01E01.mkv（标准 SxxExx）→ 归一化集号键 S01E01；「少帅 9.mp4」
     # 无 SxxExx（纯数字+剧名）→ 保留文件名键
-    assert [row.episode for row in dq] == ["S01E01", "少帅 9.mp4"]
+    assert [(row.episode, row.file_name) for row in tq] == [
+        ("S01E01", "少帅.S01E01.mkv"),
+        ("少帅 9.mp4", "少帅 9.mp4"),
+    ]
 
 
 def test_scan_tv_full_mode_same_episode_multiple_names_dedup(db, monkeypatch):
@@ -349,8 +359,11 @@ def test_scan_tv_full_mode_same_episode_multiple_names_dedup(db, monkeypatch):
     assert tr.id == rid and tr.status == "success"
     assert "已入队 1 个资源" in tr.message
     assert "2 个已有任务跳过" in tr.message
-    dq = run(_read_downloads(db, mid))
-    assert [row.episode for row in dq] == ["S01E04"]
+    tq = run(_read_task_queue(db, mid))
+    # 三命名版本共享集号键 S01E04 → 只入队 1 条（file_name 取首个通过校验的版本）
+    assert [(row.episode, row.file_name) for row in tq] == [
+        ("S01E04", "The.Affair.Was.Just.The.Beginning.S01E04.2026.1080p.friDay.WEB-DL.H264.AAC.mkv"),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -391,6 +404,9 @@ def test_scan_movie_full_mode_unchanged(db, monkeypatch):
     assert "已入队 1 个资源" in tr.message
     assert "1 个已有任务跳过" in tr.message
     assert "无关/超集号" not in tr.message  # movie 不套用 A2 过滤
-    dq = run(_read_downloads(db, mid))
-    assert [row.episode for row in dq] == ["movie:大话西游"]
-    assert dq[0].status == "pending"
+    tq = run(_read_task_queue(db, mid))
+    # movie 全量：episode=归一化键 movie:<title>，file_name 取首个文件（第二个同键去重）
+    assert [(row.episode, row.file_name) for row in tq] == [
+        ("movie:大话西游", "大话西游.2020.2160p.mkv"),
+    ]
+    assert tq[0].status == "ready"  # Task 2：探测完成即 ready，等待下载队列取件
