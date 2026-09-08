@@ -759,7 +759,10 @@ async def _media_total_episodes(media) -> int | None:
     if media.tmdb_id is None or (media.media_type or "") != "tv":
         return None
     try:
-        meta = await tmdb.get_by_tmdb_id(media.tmdb_id, "tv")
+        # force_refresh：tmdb_cache 行可能被 search_multi 写入的不完整数据占据
+        # （缺 number_of_episodes），缓存命中会拿到 None 导致集号范围校验失效——
+        # 强制回源补全（少帅误匹配根因之一）。
+        meta = await tmdb.get_by_tmdb_id(media.tmdb_id, "tv", force_refresh=True)
         return meta.get("number_of_episodes")
     except Exception as exc:  # noqa: BLE001
         logger.warning("[scan] media=%s TMDB 总集数获取失败（全量模式不做集号上限）: %s",

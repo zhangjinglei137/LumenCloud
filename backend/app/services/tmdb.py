@@ -197,7 +197,7 @@ async def _upsert_cache(
         logger.warning("tmdb_cache upsert 失败（忽略，不影响返回）: %s", exc)
 
 
-async def get_by_tmdb_id(tmdb_id: str | int, media_type: str) -> dict[str, Any]:
+async def get_by_tmdb_id(tmdb_id: str | int, media_type: str, force_refresh: bool = False) -> dict[str, Any]:
     """按 TMDB id 取单条元数据（P3 元数据缓存逻辑）。
 
     流程：
@@ -207,6 +207,10 @@ async def get_by_tmdb_id(tmdb_id: str | int, media_type: str) -> dict[str, Any]:
        复用 _client_kwargs 出口代理与 config_store api_key 读取）→ 归一化
        title / poster_path / year / number_of_episodes → upsert 缓存
        （updated_at=now）→ 返回。
+
+    force_refresh=True：跳过缓存直接回源（scan A3 集号范围校验用——tmdb_cache
+    行可能被 search_multi 写入的不完整数据占据（缺 number_of_episodes 等详情
+    字段），缓存命中会拿到 None 导致集号范围校验失效；强制回源补全并刷新缓存）。
 
     返回 dict：{tmdb_id, title, media_type, poster_path, year, status, tv_status,
     number_of_episodes}。
@@ -220,10 +224,11 @@ async def get_by_tmdb_id(tmdb_id: str | int, media_type: str) -> dict[str, Any]:
     异常:
         TMDBUnavailable: 未配置 key / 请求失败 / 响应异常
     """
-    cached = await _read_cache(tmdb_id, media_type)
-    if cached is not None:
-        logger.info("tmdb_cache 命中 tmdb_id=%s media_type=%s", tmdb_id, media_type)
-        return cached
+    if not force_refresh:
+        cached = await _read_cache(tmdb_id, media_type)
+        if cached is not None:
+            logger.info("tmdb_cache 命中 tmdb_id=%s media_type=%s", tmdb_id, media_type)
+            return cached
 
     api_key = config_store.get("tmdb_api_key", settings.TMDB_API_KEY)
     if not api_key:
