@@ -126,11 +126,11 @@ git commit -m "feat(transfer): 下载队列按 FIFO 从 task_queue 取件生成 
 - Consumes: `aria2.client.tell_active()/tell_waiting()`、`DownloadQueue.aria2_gid`。
 - Produces: 陌生 aria2 任务 → `_record_alert(category="gid", ...)` 后返回（跳过本轮），不再作为整批停摆原因。行为从 fail-closed 改为「告警 + 本轮跳过 + 下轮续跑」。
 
-- [ ] **Step 1: 写失败测试**：在 `test_transfer.py` 修改 GID 校验用例：断言陌生任务时 `_admit_batch` 返回（非抛错挂起），且后续轮次在陌生任务消失后可继续准入。
-- [ ] **Step 2: 运行确认失败**：`cd backend && python -m pytest tests/test_transfer.py -q -k gid`
-- [ ] **Step 3: 修改实现**：GID 校验循环中命中陌生 gid 时保留 `_record_alert` + `return`（跳过本轮），移除「视为整批失败停摆」的路径注释与 fail-closed 语义；逻辑主体不变。
-- [ ] **Step 4: 全量运行** `tests/test_transfer.py` 通过。
-- [ ] **Step 5: Commit**
+- [x] **Step 1: 写失败测试**：在 `test_transfer.py` 修改 GID 校验用例：断言陌生任务时 `_admit_batch` 返回（非抛错挂起），且后续轮次在陌生任务消失后可继续准入。
+- [x] **Step 2: 运行确认失败**：`cd backend && python -m pytest tests/test_transfer.py -q -k gid`
+- [x] **Step 3: 修改实现**：GID 校验循环中命中陌生 gid 时保留 `_record_alert` + `return`（跳过本轮），移除「视为整批失败停摆」的路径注释与 fail-closed 语义；逻辑主体不变。
+- [x] **Step 4: 全量运行** `tests/test_transfer.py` 通过。
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/app/tasks/transfer.py backend/tests/test_transfer.py

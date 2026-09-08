@@ -11,7 +11,7 @@
 
 ## 3. 容量准入与排队续跑
 
-- [ ] 3.1 GID 来源校验从 fail-closed 整批停摆降级为「告警 + 跳过本轮」；验证 test_transfer.py 中 GID 校验用例更新后通过（陌生任务不再永久卡死）
+- [x] 3.1 GID 来源校验从 fail-closed 整批停摆降级为「告警 + 跳过本轮」；验证 test_transfer.py 中 GID 校验用例更新后通过（陌生任务不再永久卡死）
 - [ ] 3.2 巡检入队 + 下载完成两处事件触发「下载队列消费尝试」（任务产生即触发）；容量判断保留「已用 + 在途 + 新任务 ≤ 容量」，不足 quota_wait 排队；验证 test_capacity.py / test_capacity_alert.py 通过
 - [ ] 3.3 下载完成释放容量后自动续跑等待队列（重复容量判断）；验证容量释放→续跑集成用例（test_library_check 或新增）
 
