@@ -647,9 +647,10 @@ def test_fetch_from_task_queue_fifo_generates_pending_and_done(db, env, transfer
             return dqs, tqs
     dqs, tqs = run(_rows())
 
-    # 源行终态：取件的 ready 任务全部置 done（同键已有 DQ 的跳过行一并 done 收尾，
-    # 防每轮取件重复扫描占用 FIFO 名额）
-    assert [t.id for t in tqs] == [t1, t2, t3, t4] and {t.status for t in tqs} == {"done"}
+    # 源行终态（review R1 语义）：被取件的 ready 任务置 done；同键已有 DQ 的跳过行
+    # （t4）保持 ready——SQL 层排除不置 done，既有 DQ 行消失后下轮可补取，重试路径保留
+    assert [t.id for t in tqs] == [t1, t2, t3, t4]
+    assert {t.status for t in tqs[:3]} == {"done"} and tqs[3].status == "ready"
 
     # FIFO 顺序生成 pending：3 条新行按 (created_at, id) 顺序（task_queue_id 溯源）
     new_dqs = [d for d in dqs if d.task_queue_id is not None]
@@ -709,3 +710,72 @@ def test_fetch_from_task_queue_only_ready_and_num_limit(db, env, transfer_env):
     # 默认 num=10：剩余 5 条 ready 全部取走
     assert run(_fetch()) == 5
     assert len(run(_chk())[0]) == 10
+
+
+def test_fetch_from_task_queue_repicks_after_dq_row_removed(db, env, transfer_env):
+    """Task 4 review R1：同键跳过行保持 ready（不置 done），既有 DQ 行消失后下轮补取。
+
+    覆盖 SQL 层排除方案的语义核心：跳过只是「本轮不取」，不消费 TaskQueue 源行终态
+    ——当同键 DQ 行被删（入库删除/运维清理）后，下轮取件自然重新生成，重试路径保留。
+    """
+    mid = run(seed_media(db))
+    tq_id = run(seed_tq(db, mid, status="ready"))
+    dq_id = run(seed_dq(db, mid, status="pending"))
+
+    async def _fetch():
+        return await transfer_mod._fetch_from_task_queue()
+    async def _tq():
+        async with db() as s:
+            return await s.get(TaskQueue, tq_id)
+
+    # 第一轮：同键已有 DQ → 不取件；源行保持 ready（绝不被置 done）
+    assert run(_fetch()) == 0
+    assert run(_tq()).status == "ready"
+
+    # DQ 行消失（入库删除/运维清理）→ 下轮取件自动补生成
+    async def _del_dq():
+        async with db() as s:
+            dq = await s.get(DownloadQueue, dq_id)
+            await s.delete(dq)
+            await s.commit()
+    run(_del_dq())
+
+    assert run(_fetch()) == 1
+    assert run(_tq()).status == "done"
+    async def _dqs():
+        async with db() as s:
+            return (await s.execute(select(DownloadQueue))).scalars().all()
+    dqs = run(_dqs())
+    assert len(dqs) == 1 and dqs[0].task_queue_id == tq_id and dqs[0].status == "pending"
+
+
+def test_admit_batch_fetches_ready_before_early_exit(db, env, transfer_env, monkeypatch):
+    """Task 4 review R2：_admit_batch 在 has_pending 空跑早退之前先取件。
+
+    空 DownloadQueue + 一条 TaskQueue(ready)：若阶段 1 先做 has_pending=0 早退，
+    则 ready 任务永不取件（下载停摆）。断言调用 _admit_batch（_try_admit_one 短路
+    为 no_pending，GID 校验 fake 空队列）后 DQ pending 行已生成、源行置 done。
+    """
+    mid = run(seed_media(db))
+    tq_id = run(seed_tq(db, mid, status="ready", share_code="AdmItAa111111"))
+
+    fake_aria2 = types.SimpleNamespace(client=types.SimpleNamespace(
+        tell_active=AsyncMock(return_value=[]),
+        tell_waiting=AsyncMock(return_value=[]),
+    ))
+    monkeypatch.setattr(transfer_mod, "aria2", fake_aria2)
+    monkeypatch.setattr(transfer_mod, "_try_admit_one", AsyncMock(return_value="no_pending"))
+
+    async def _run():
+        await transfer_mod._admit_batch()
+    run(_run())
+
+    async def _chk():
+        async with db() as s:
+            dqs = (await s.execute(select(DownloadQueue))).scalars().all()
+            tq = await s.get(TaskQueue, tq_id)
+            return dqs, tq
+    dqs, tq = run(_chk())
+    assert len(dqs) == 1 and dqs[0].status == "pending"
+    assert dqs[0].task_queue_id == tq_id and dqs[0].share_code == "AdmItAa111111"
+    assert tq.status == "done"

@@ -60,7 +60,8 @@ import re
 import time as _time
 from datetime import timedelta
 
-from sqlalchemy import func, select, update
+from sqlalchemy import exists, func, select, update
+from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
 from app.database import async_session
@@ -1180,17 +1181,18 @@ async def _fetch_from_task_queue(num: int = 10) -> int:
     queue-flow-rework Task 4：下载队列从巡检队列取件（巡检只写 task_queue，
     DownloadQueue 由准入端按序取件生成，D2「取件源双轨」①）。
 
-    取件契约（Task 2 review Imp#1 收敛裁决）：
+    取件契约（Task 2 review Imp#1 收敛 + Task 4 review R1 裁决）：
     - **只取 status='ready'**：pending/probing/error 无完整转存凭据绝不提升
       （防无凭据行 promote）；done 为源行终态不重复取件。
-    - **跳过同 (media_id, episode) 已有 DownloadQueue 行的任务**（任意状态，含
-      Task 2 前存量 promote 遗留 / 人工 skip 补写防重终态 / 并发取件产物；防重
-      权威源 = download_queue UNIQUE(media_id, episode)）。被跳过行的源 TaskQueue
-      同步置 done——该键已由执行层行接管，置终态防每轮重复扫描占用取件名额
-      （FIFO 饿死防护）。
-    - 同事务：INSERT DownloadQueue(status='pending') + UPDATE TaskQueue→done
-      （源行终态防重复取件）；行级 CAS = 条件更新 WHERE status='ready' 捕获并发
-      冲突（rowcount=0 → 并发方已取件，跳过），与 _enqueue 的 UNIQUE 捕获协同。
+    - **同 (media_id, episode) 已有 DownloadQueue 行的任务直接 SQL 层排除**
+      （NOT EXISTS，任意状态含 Task 2 前存量 promote 遗留 / 人工 skip 补写防重
+      终态 / 并发取件产物；防重权威源 = download_queue UNIQUE(media_id, episode)）。
+      被排除行**保持 ready、不置 done、不占 LIMIT num 名额**（FIFO 不饿死）；
+      既有 DQ 行消失（入库删除/运维清理）后下轮自然补取，重试路径保留。
+    - 同事务：CAS 抢占源行（UPDATE WHERE status='ready'，rowcount=0 → 并发方已取
+      件，跳过）+ INSERT DownloadQueue(status='pending')（保存点内逐行捕获
+      IntegrityError 兜底，防御未来其他 DQ 写入路径撞 UNIQUE）；源行终态 done
+      防重复取件，与 _enqueue 的 UNIQUE 捕获协同。
     - download_name 暂不填（Task 7 转存成功后置格式化，避免与分享原始名分叉）。
     - 返回本次生成的行数。
     """
@@ -1201,39 +1203,25 @@ async def _fetch_from_task_queue(num: int = 10) -> int:
             rows = (
                 await s.execute(
                     select(TaskQueue)
-                    .where(TaskQueue.status == "ready")
+                    .where(
+                        TaskQueue.status == "ready",
+                        # SQL 层排除（review R1）：同键已有任意 DQ 行的 ready 任务
+                        # 不进入取件批次（也不占 LIMIT num），源行保持 ready 等待
+                        # 既有 DQ 消失后补取——不写终态、不消耗源行。
+                        ~exists(
+                            select(DownloadQueue.id).where(
+                                DownloadQueue.media_id == TaskQueue.media_id,
+                                DownloadQueue.episode == TaskQueue.episode,
+                            )
+                        ),
+                    )
                     .order_by(TaskQueue.created_at.asc(), TaskQueue.id.asc())
                     .limit(num)
                 )
             ).scalars().all()
             if not rows:
                 return 0
-            # 预查同键已有 DQ 行（任意状态）：命中 → 不生成新行。按 media_id/episode
-            # 双列 IN 取超集后按 (media_id, episode) 精确匹配（行值表达式对 SQLite
-            # 不是必需的，避免方言差异）。
-            mid_list = [r.media_id for r in rows]
-            ep_list = [r.episode for r in rows]
-            existing_keys = {
-                (mid, ep)
-                for (mid, ep) in (
-                    await s.execute(
-                        select(DownloadQueue.media_id, DownloadQueue.episode).where(
-                            DownloadQueue.media_id.in_(mid_list),
-                            DownloadQueue.episode.in_(ep_list),
-                        )
-                    )
-                ).all()
-            }
             for r in rows:
-                if (r.media_id, r.episode) in existing_keys:
-                    # 同键已有 DQ 行（防重权威源）→ 不生成新 DQ 行，仅源行置 done
-                    # 收尾（防每轮重复取件扫描；对既有 DQ 无任何影响）。
-                    await s.execute(
-                        update(TaskQueue)
-                        .where(TaskQueue.id == r.id, TaskQueue.status == "ready")
-                        .values(status="done", updated_at=now)
-                    )
-                    continue
                 # CAS 抢占源行：仅 status='ready' 可置 done；rowcount=0 → 并发方已
                 # 取件（本轮跳过，其 DQ 行由并发事务负责）。
                 res = await s.execute(
@@ -1243,15 +1231,37 @@ async def _fetch_from_task_queue(num: int = 10) -> int:
                 )
                 if res.rowcount != 1:
                     continue
-                # 拷贝 Task 2 快照字段 → DQ 同名字段（pwd_id 即设计文档的 pwd）
-                s.add(DownloadQueue(
-                    media_id=r.media_id, episode=r.episode, task_queue_id=r.id,
-                    file_name=r.file_name or "", file_size=r.file_size or 0,
-                    share_code=r.share_code or "",
-                    pwd_id=r.pwd_id, stoken=r.stoken, receive_code=r.receive_code,
-                    fids=r.fids, fid_tokens=r.fid_tokens, folder_id=r.folder_id,
-                    status="pending", enqueued_at=now, updated_at=now,
-                ))
+                # Minor#2：ready 行凭据本应完整（enqueue 探测收集），兜底真实触发
+                # 即数据缺陷，告警留痕便于排查。
+                file_name = r.file_name or ""
+                file_size = r.file_size or 0
+                share_code = r.share_code or ""
+                if not (r.file_name and r.file_size and r.share_code):
+                    logger.warning(
+                        "[transfer] task_queue id=%s media=%s episode=%s 凭据快照不完整"
+                        "（file_name/file_size/share_code 缺失），按空值兜底拷贝",
+                        r.id, r.media_id, r.episode,
+                    )
+                # 拷贝 Task 2 快照字段 → DQ 同名字段（pwd_id 即设计文档的 pwd）。
+                # Minor#1：保存点内逐行 INSERT，撞 UNIQUE(media_id, episode)（未来
+                # 其他 DQ 写入路径抢先）→ 跳过该行、事务继续，不影响本批其余任务。
+                try:
+                    async with s.begin_nested():
+                        s.add(DownloadQueue(
+                            media_id=r.media_id, episode=r.episode, task_queue_id=r.id,
+                            file_name=file_name, file_size=file_size,
+                            share_code=share_code,
+                            pwd_id=r.pwd_id, stoken=r.stoken, receive_code=r.receive_code,
+                            fids=r.fids, fid_tokens=r.fid_tokens, folder_id=r.folder_id,
+                            status="pending", enqueued_at=now, updated_at=now,
+                        ))
+                except IntegrityError:
+                    logger.warning(
+                        "[transfer] task_queue id=%s media=%s episode=%s 生成 DQ 撞"
+                        " UNIQUE（同键已存在），跳过该行",
+                        r.id, r.media_id, r.episode,
+                    )
+                    continue
                 fetched += 1
     return fetched
 
@@ -1268,8 +1278,9 @@ async def _admit_batch() -> None:
          统计 wait_since 超 24h 行数，>0 发一次 flow_error 通知，_record_alert
          category="capacity" 沿用 P2-2 节流）；真正能准入多少由后续容量 check 把关。
       0.75 取件（queue-flow-rework Task 4）：TaskQueue(ready) 按 (created_at, id)
-         FIFO 生成 DownloadQueue(pending)，源行同事务置 done——有 ready 任务先取件
-         再准入（null pending 时若先空跑返回，ready 任务将永不取件，下载停摆）。
+         FIFO 生成 DownloadQueue(pending)，源行同事务置 done（同键已有 DQ 行在
+         SQL 层排除，见 _fetch_from_task_queue）——有 ready 任务先取件再准入
+         （null pending 时若先空跑返回，ready 任务将永不取件，下载停摆）。
       1. 准入唯一约束 = 网盘容量（不再设并发数上限）：每轮准入数量 = 容量可容纳数；
          容量不足 → quota_wait 按网盘空间排队（空间释放后由下轮入口唤醒重试）。
       2. GID 来源校验（§12.2 简化版）整批一次：存在陌生 aria2 活动/等待任务 → 整批
