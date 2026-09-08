@@ -495,18 +495,19 @@ def test_save_success_commits_download(db, env, monkeypatch):
     assert params["fids"] == ["f1"]
     assert params["fidTokens"] == ["ft1"]
     assert params["folderId"] == "folder-1"
-    # aria2 提交：out=落盘名（download_name 缺失回退原始名），comment=lumencloud:<media>:<episode>
+    # aria2 提交：out=转存后生成的 download_name（Task 7 后置生成，不再缺失回退原始名）
     assert len(env["aria2"].add_uri_calls) == 1
     uri, kwargs = env["aria2"].add_uri_calls[0]
     assert uri == env["alist"].link
-    assert kwargs["out"] == "ep.mkv"  # download_name 为 None → 回退原始名
+    assert kwargs["out"] == "测试剧 - S01E01 - 第 1 集.mkv"  # 落盘后按媒体信息生成
     assert kwargs["comment"] == "lumencloud:1:S01E01"
 
     dq = run(read_row(db, DownloadQueue, dq_id))
     assert dq.status == "downloading"
     assert dq.aria2_gid == "gid-1"
-    assert dq.quark_path == "/quark/ep.mkv"
-    assert dq.local_path == "/downloads/ep.mkv"
+    assert dq.download_name == "测试剧 - S01E01 - 第 1 集.mkv"  # 已落库
+    assert dq.quark_path == "/quark/测试剧 - S01E01 - 第 1 集.mkv"  # 落盘后改名（原名 ep.mkv）
+    assert dq.local_path == "/downloads/测试剧 - S01E01 - 第 1 集.mkv"
     assert dq.node_attempt == 0  # 进入 downloading 节点重新计数
     assert dq.node_error is None
 
@@ -553,16 +554,18 @@ def test_transfer_renames_quark_after_save(db, env, monkeypatch):
     assert dq.local_path == "/downloads/测试剧 - S01E02 - 第 2 集.mkv"
 
 
-def test_transfer_keeps_original_name_without_download_name(db, env, monkeypatch):
-    """download_name 缺失（旧数据/异常）→ 不改名，quark_path 用原始名。"""
+def test_transfer_keeps_original_name_when_unformattable(db, env, monkeypatch):
+    """download_name 为空且文件名/集号均无法格式化（无 SxxExx + 非 SxxExx 集键）
+    → 沿用原名：不改名、quark_path 用原始名；格式化结果=原名仍落库（命名一致）。"""
     patch_db(monkeypatch, db)
-    mid, dq_id = run(seed_pending(db, file_name="ep.mkv", download_name=None))
+    mid, dq_id = run(seed_pending(db, file_name="movie-xyz.mkv", episode="movie:测试剧"))
 
     run(transfer_mod.process_transfer_queue())
 
-    assert env["alist"].rename_calls == []  # 无 download_name → 不触发改名
+    assert env["alist"].rename_calls == []  # 格式化结果=原名 → 无实际改名
     dq = run(read_row(db, DownloadQueue, dq_id))
-    assert dq.quark_path == "/quark/ep.mkv"
+    assert dq.download_name == "movie-xyz.mkv"  # 落库名 = 原名（保持命名一致）
+    assert dq.quark_path == "/quark/movie-xyz.mkv"
 
 
 def test_admit_processes_multiple_pending(db, env, monkeypatch):
@@ -984,3 +987,56 @@ def test_transfer_out_uses_download_name_or_original(db, env, monkeypatch):
     dq = run(read_row(db, DownloadQueue, dq_id))
     assert dq.quark_path == "/quark/Show.S01E02.1080p.mkv"  # 夸克侧原始名，防重键不受影响
     assert dq.local_path == "/downloads/测试剧 - S01E02 - 第 2 集.mkv"
+
+
+def test_transfer_formats_download_name_after_save(db, env, monkeypatch):
+    """Task 7 后置生成：取件时 DQ 行 download_name 为 NULL，转存落盘成功后
+    （_get_link_wait_visible 改名 前）按媒体信息生成并落库；aria2 out / quark_path /
+    local_path 全链路沿用同一名字。"""
+    patch_db(monkeypatch, db)
+    mid, dq_id = run(seed_pending(db, file_name="ep.mkv", episode="S01E02"))
+
+    # 转存前（取件生成 pending 行）：download_name 保持 NULL（Task 4 取件不填）
+    dq_before = run(read_row(db, DownloadQueue, dq_id))
+    assert dq_before.download_name is None
+
+    run(transfer_mod.process_transfer_queue())
+
+    dq = run(read_row(db, DownloadQueue, dq_id))
+    assert dq.status == "downloading"
+    # 落盘后生成并写入 DQ
+    assert dq.download_name == "测试剧 - S01E02 - 第 2 集.mkv"
+    # quark 落盘真实名 ep.mkv 被改名为 download_name
+    assert env["alist"].rename_calls == [
+        ("/quark/ep.mkv", "测试剧 - S01E02 - 第 2 集.mkv", True)
+    ]
+    # aria2 out 沿用 download_name
+    assert len(env["aria2"].add_uri_calls) == 1
+    _, kwargs = env["aria2"].add_uri_calls[0]
+    assert kwargs["out"] == "测试剧 - S01E02 - 第 2 集.mkv"
+    # 提交落库同样用最终名
+    assert dq.quark_path == "/quark/测试剧 - S01E02 - 第 2 集.mkv"
+    assert dq.local_path == "/downloads/测试剧 - S01E02 - 第 2 集.mkv"
+
+
+def test_transfer_retry_reuses_persisted_download_name(db, env, monkeypatch):
+    """重试幂等：上一轮已生成 download_name（重试快照带入）→ 本轮不再重新格式化/
+    改名（CAS 防重写），沿用已落库名；即使文件名可格式化出不同结果也不覆盖。"""
+    patch_db(monkeypatch, db)
+    mid, dq_id = run(seed_pending(
+        db, file_name="ep.mkv", episode="S01E02", download_name="旧轮保留名.mkv",
+    ))
+
+    run(transfer_mod.process_transfer_queue())
+
+    # 不用本轮可格式化出的新名（测试剧 - S01E02 - 第 2 集.mkv）
+    assert len(env["aria2"].add_uri_calls) == 1
+    _, kwargs = env["aria2"].add_uri_calls[0]
+    assert kwargs["out"] == "旧轮保留名.mkv"
+    # quark 仍以已落库名改名（幂等，不重复改名到新名）
+    assert env["alist"].rename_calls == [
+        ("/quark/ep.mkv", "旧轮保留名.mkv", True)
+    ]
+    dq = run(read_row(db, DownloadQueue, dq_id))
+    assert dq.download_name == "旧轮保留名.mkv"
+    assert dq.quark_path == "/quark/旧轮保留名.mkv"

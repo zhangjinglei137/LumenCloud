@@ -5,7 +5,8 @@
 §5（容量预算并发）/ §6.2（aria2 回调链路）。
 
 消费对象为 download_queue 单表（防重权威源 = UNIQUE(media_id, episode)，由 scan
-探测 promote 产出：全部分享快照 + download_name 已落库）。本模块替换旧
+探测 → task_queue 取件生成：全部分享快照；download_name 取件时为空，转存落盘后
+由 _ensure_download_name 后置生成落库，Task 7）。本模块替换旧
 episode_state + transfer_queue + download_task 三表联动实现，保留全部既有逻辑
 语义（GID 来源校验 / /quark 挂载预检 / 容量模型 B fail-closed / save 幂等
 P2-10·P0-1 / _get_link_wait_visible / addUri / 失败回退 CAS / 节点级状态机）。
@@ -94,12 +95,13 @@ _IMPLEMENTED = True
 _COMMENT_PREFIX = "lumencloud:"
 # P2（影视下载两队列重设计 §7）：aria2 落盘名格式化正则（对齐 n8n formatFileName，
 # SxxExx 命中 → 「剧名 - SxxExx - 第 N 集.ext」；SxxExxx 三位集数保留）。
-# scan.py 延迟导入本函数生成 download_queue.download_name（本模块消费时直接用
-# dq.download_name，不再二次格式化）。
+# queue-flow-rework Task 7：download_name 改为转存落盘后置生成（_ensure_download_name），
+# 不再由 scan enqueue / 取件时计算——DQ 行创建时该列为空，转存链中首次格式化落库，
+# 之后消费（aria2 out / quark_path / local_path / 入库）直接复用 dq.download_name。
 _RE_FORMAT_SE = re.compile(r"(S\d+)E(\d+).*\.([^.]+)$", re.IGNORECASE)
 
 
-def _format_download_name(file_name: str, title: str, media_type: str | None,
+def _format_download_name(file_name: str, title: str | None, media_type: str | None,
                           episode_key: str | None = None) -> str:
     """aria2 落盘名（out 参数）格式化（影视下载两队列重设计 §7，对齐 n8n formatFileName）。
 
@@ -115,7 +117,7 @@ def _format_download_name(file_name: str, title: str, media_type: str | None,
 
     注意：只影响 aria2 本地落盘名，quark 网盘原文件与 episode 防重键均不动
     （§7「防重键与落盘名分离」，改名永不回写防重键）。
-    调用方：scan.py / queue.py（promote 时生成 download_name 落库）；本模块消费
+    调用方：_ensure_download_name（转存后置生成落库，Task 7）；本模块消费
     dq.download_name 作为 addUri out，不再二次格式化。
     """
     if not file_name:
@@ -140,6 +142,49 @@ def _format_download_name(file_name: str, title: str, media_type: str | None,
             base = f"{title} - {se} - 第 {int(m2.group(2))} 集"
             return f"{base}.{ep_ext}" if ep_ext else base
     return file_name
+
+
+async def _ensure_download_name(dq_id: int, media_id: int, episode: str,
+                                file_name: str) -> str | None:
+    """为 DQ 行生成并落库 download_name（转存后置生成，Task 7，CAS 幂等）。
+
+    背景（queue-flow-rework Task 2/4）：download_name 不再在入队/取件时生成——
+    DownloadQueue 行创建时该列为空，由本函数在转存链中**落盘可见/改名 前**首次
+    计算并落库（设计 D5「下载名称后置生成」）。
+
+    - 计算源：media.title / media.media_type + episode_key，规则原样复用
+      _format_download_name（「影视名 - SxxExx - 第 N 集」，对齐 n8n）；
+    - 落库用条件更新 WHERE status='transferring'（rowcount 门控，CAS 防重写）：
+      并发方（recovery 超时回退 / 人工 retry）已变动 → 命中 0 行 → 返回 None，
+      沿用原始名继续（后续 _commit_downloading 的同类 CAS 会兜底冲突处理）；
+    - 重试幂等：调用方仅在 download_name 为空时调用本函数；已生成则跳过——
+      绝不重复格式化/改名（改名动作由 _get_link_wait_visible(rename_to=...) 完成，
+      这里只负责计算与落库）。
+
+    返回格式化结果（CAS 命中）或 None（CAS 未命中 / 无可格式化名）。
+    """
+    async with async_session() as s:
+        media = await s.get(Media, media_id)
+    formatted = _format_download_name(
+        file_name,
+        media.title if media is not None else None,
+        media.media_type if media is not None else None,
+        episode,
+    )
+    if not formatted:
+        return None
+    now = _now()
+    async with async_session() as s:
+        async with s.begin():
+            r = await s.execute(
+                update(DownloadQueue)
+                .where(DownloadQueue.id == dq_id, DownloadQueue.status == "transferring")
+                .values(download_name=formatted, updated_at=now)
+            )
+    if r.rowcount != 1:
+        return None
+    logger.info("[transfer] 转存后生成 download_name: %s", formatted)
+    return formatted
 
 
 # 确定性失败 / 超时回退消耗 retry_count 的上限：≥3 转 failed，需人工 retry（§4.5）
@@ -884,8 +929,10 @@ async def _transfer_chain(dq_id, media_id, episode, file_name, share_code, stoke
       **仅成功路径保持幂等**——失败回退路径清空 save_task_id（P0-1 防盲等）；
     - stale 兜底（P0-1）：save_task_id 存在但受理超 _SAVE_ATTEMPT_MAX_SECONDS（或
       时间为空）→ 强制清空重新 save（任何清空路径漏清也会超时自动恢复）；
-    - P2（§7）：aria2 out = dq.download_name（scan promote 已生成格式化落盘名），
-      缺失回退原始名；comment = lumencloud:<media_id>:<episode>（GID 来源校验标记）；
+    - P2（§7）/Task 7：aria2 out = dq.download_name——取件时该列为空，转存落盘
+      可见/改名 前由 _ensure_download_name 按媒体信息生成并 CAS 落库（后置生成，
+      重试幂等：已生成则跳过），缺失/无可格式化名回退原始名；
+      comment = lumencloud:<media_id>:<episode>（GID 来源校验标记）；
     - 任一步失败 → _fail_transfer 节点级重试（清理夸克残留 + 计数 + 回退 pending/failed）。
 
     返回状态（供主循环决策）：'admitted' / 'retry' / 'terminal_failed' / 'conflict'。
@@ -955,12 +1002,22 @@ async def _transfer_chain(dq_id, media_id, episode, file_name, share_code, stoke
                                 updated_at=now_save,
                             )
                         )
+        # Task 7（queue-flow-rework）：download_name 后置生成 + 幂等。
+        # 取件时 DQ 行 download_name 为空（Task 4 不填），转存落盘可见/改名 前按
+        # 媒体信息生成并 CAS 落库（WHERE status='transferring' 防重写）——重试时
+        # download_name 已存在则跳过，不重复格式化/改名；_get_link_wait_visible
+        # 用该名改 quark 文件，后续 aria2 out / quark_path / local_path 沿用，
+        # 命名端到端一致（设计 D5）。
+        if not download_name:
+            download_name = await _ensure_download_name(
+                dq_id, media_id, episode, file_name
+            )
         link, final_quark_path = await _get_link_wait_visible(
             file_name, timeout=_LINK_WAIT_TIMEOUT, rename_to=download_name
         )
-        # P2（§7）：out = scan promote 已生成的 download_name（格式化落盘名）；
-        # 为 None（旧数据/异常）时回退原始名。quark 原文件已在转存落盘后被改名
-        # （_get_link_wait_visible rename_to），此处 out 与 quark 新名保持一致。
+        # P2（§7）：out = 转存后生成的 download_name（格式化落盘名）；为 None
+        # （CAS 未命中/无可格式化名）时回退原始名。quark 原文件已在转存落盘后被
+        # 改名（_get_link_wait_visible rename_to），此处 out 与 quark 新名保持一致。
         out_name = download_name or file_name
         gid = await aria2.client.add_uri(
             link,
