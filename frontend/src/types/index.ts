@@ -127,7 +127,27 @@ export interface QueueItem {
   share_code_tail?: string | null
 }
 
-// ---------- 任务队列（五节点流程，影视任务树） ----------
+// ---------- 扁平任务列表（Task 9 契约：TaskQueue 活跃行 ∪ DownloadQueue 活跃行） ----------
+/** 任务队列扁平行：影视名 - SxxExx 的直接展示单位 */
+export interface QueueTaskItem {
+  id: number
+  media_id: number | null
+  /** 影视标题（media 已删时可能为 null） */
+  title: string | null
+  episode: string | null
+  /** 任务状态（TaskQueue 或 DownloadQueue 活跃态） */
+  status: string
+  /** 执行视图节点；探测视图（TaskQueue）为 null，执行视图（DownloadQueue）与 status 同值 */
+  node: string | null
+  file_name: string | null
+  /** 字节 */
+  file_size: number | null
+  updated_at: string | null
+  enqueued_at: string | null
+  [key: string]: unknown
+}
+
+// ---------- 任务队列（五节点流程，影视任务树；已废弃，仅作历史兼容） ----------
 /**
  * 子任务节点（线性状态机）：
  * idle（待开始）→ transfer（转存）→ download（已推送 aria2）→ downloading（下载中）

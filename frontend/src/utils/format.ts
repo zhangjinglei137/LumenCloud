@@ -127,7 +127,6 @@ const TASK_QUEUE_STATUS_MAP: Record<string, [string, string, string | null]> = {
   pending: ['待探测', 'info', null],
   probing: ['探测中', 'primary', null],
   ready: ['就绪', 'success', '#0e9f9f'],
-  unmatched: ['未匹配', 'info', '#8b87a8'],
   error: ['异常', 'danger', null],
   done: ['已完成', 'success', null],
 }

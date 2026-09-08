@@ -20,8 +20,8 @@ import type {
   MediaPatch,
   NotificationList,
   PauseState,
-  QueueMediaTask,
   QueueSortDirection,
+  QueueTaskItem,
   QuarkVerifyResult,
   ScanTaskDetail,
   SettingsResponse,
@@ -98,12 +98,13 @@ export function searchTmdbApi(q: string) {
 // ---------- 队列与容量 ----------
 /**
  * 任务队列。
- * 新契约为「影视任务树」（QueueMediaTask[]，父级含 children 分集子任务）。
- * 后端未完成改造前仍返回旧扁平 QueueItem[]，由 store 归一化，二者均可进入。
+ * 新契约：GET /api/queue → QueueTaskItem[]（TaskQueue 活跃行 ∪ DownloadQueue 活跃行），
+ * 每行为 {id, media_id, title, episode, status, node, file_name, file_size, updated_at, enqueued_at}；
+ * 终态（done/failed/skipped）已被后端剔除。
  */
 export function listQueueApi(limit = 50, offset = 0) {
   return http
-    .get<QueueMediaTask[]>('/queue', { params: { limit, offset } })
+    .get<QueueTaskItem[]>('/queue', { params: { limit, offset } })
     .then((r) => r.data)
 }
 
