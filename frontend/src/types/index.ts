@@ -148,6 +148,12 @@ export interface QueueChildTask {
   /** 字节 */
   file_size?: number | null
   updated_at?: string | null
+  /** 两队列新契约：探测层状态（pending/probing/ready/unmatched/error/done）；存在时优先于 node 展示 */
+  tq_status?: TaskQueueStatus | null
+  /** unmatched 静默到期时间（相对倒计时「2 天后重试」的数据源） */
+  silent_until?: string | null
+  /** 探测到的分享码（12 位；缩略展示由前端处理） */
+  share_code?: string | null
   /** 旧扁平结构兼容字段（后端未完成改造时由前端映射） */
   status?: string | null
   error?: string | null
@@ -248,6 +254,8 @@ export interface QueueMediaTask {
   done_count?: number | null
   /** 分集子任务列表 */
   children?: QueueChildTask[]
+  /** 两队列新契约：探测层聚合计数（待探/就绪/静默）；缺省时前端按 children.tq_status 推算 */
+  probe_counts?: { pending?: number; ready?: number; unmatched?: number } | null
   /** 最近巡检记录（后端取最近 1 条；无记录时缺省/空数组） */
   scan_tasks?: ScanTaskSummary[]
   /** 前端内部表格行 key */
@@ -260,7 +268,93 @@ export interface Capacity {  total_gb: number
   source: string
   checked_at: string | null
   pending_estimate: number | null
+  /** §8.2 容量展示增强：队列预留中（GB）；后端未增强时缺省，前端回退 pending_estimate */
+  reserved_gb?: number | null
+  /** §8.2 容量展示增强：可用预测（GB）；缺省时前端按 total - used - reserved 推算 */
+  available_gb?: number | null
 }
+
+// ---------- 两队列重设计（docs/影视下载两队列重设计.md §3/§4/§8） ----------
+
+/** TaskQueue 探测层状态：pending 待探测 / probing 探测中 / ready 就绪 / unmatched 静默 / error 异常 / done 完成 */
+export type TaskQueueStatus =
+  | 'pending'
+  | 'probing'
+  | 'ready'
+  | 'unmatched'
+  | 'error'
+  | 'done'
+  | string
+
+/** DownloadQueue 执行层状态机（§4.2） */
+export type DownloadQueueStatus =
+  | 'pending'
+  | 'transferring'
+  | 'downloading'
+  | 'scrape'
+  | 'library'
+  | 'quota_wait'
+  | 'done'
+  | 'skipped'
+  | 'failed'
+  | string
+
+/**
+ * 下载队列扁平条目（GET /api/queue?type=download 元素）。
+ * 字段对齐 download_queue 表 + 展示所需的影视标题。
+ */
+export interface DownloadQueueItem {
+  id: number
+  media_id?: number | null
+  /** 影视标题（join media；展示用） */
+  media_title?: string | null
+  /** SxxExx / movie:<title> */
+  episode?: string | null
+  file_name?: string | null
+  /** 字节 */
+  file_size?: number | null
+  /** 分享码（12 位）；缩略展示由前端处理 */
+  share_code?: string | null
+  status?: DownloadQueueStatus | null
+  node_attempt?: number | null
+  node_error?: string | null
+  retry_count?: number | null
+  /** quota_wait 排队原因（后端可选直出，如「还差 3.2G」）；缺省时前端按容量推算 */
+  quota_hint?: string | null
+  aria2_gid?: string | null
+  enqueued_at?: string | null
+  updated_at?: string | null
+  [key: string]: unknown
+}
+
+/** 全局暂停状态（GET /api/queue/download/state，后端已实现） */
+export interface PauseState {
+  paused: boolean
+  /** 暂停时在途继续完成的任务数（横幅文案用） */
+  in_flight?: number | null
+}
+
+/** downloading 行实时进度（GET /api/queue/download/progress 元素） */
+export interface DownloadProgressEntry {
+  /** download_queue.id（或 gid 二选一，后端契约以 id 为准） */
+  id?: number | null
+  gid?: string | null
+  /** 字节/秒 */
+  speed?: number | null
+  /** 0~100 */
+  progress?: number | null
+  [key: string]: unknown
+}
+
+/** 手动加集请求体（POST /api/queue/tasks） */
+export interface AddQueueTaskRequest {
+  media_id: number
+  /** SxxExx（剧集）或 movie:<title>（电影） */
+  episode: string
+}
+
+/** 排序方向（POST /api/queue/{id}/sort；移动端降级上下移按钮的语义） */
+export type QueueSortDirection = 'up' | 'down' | 'top'
 
 export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | string
 

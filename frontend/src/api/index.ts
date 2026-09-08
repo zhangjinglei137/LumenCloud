@@ -2,10 +2,13 @@ import http from './http'
 import { getToken } from './http'
 import axios from 'axios'
 import type {
+  AddQueueTaskRequest,
   ApprovalItem,
   Capacity,
   ChangePasswordRequest,
   ChangePasswordResponse,
+  DownloadProgressEntry,
+  DownloadQueueItem,
   EmbyLibraryQuery,
   EmbyLibraryResponse,
   EmbyLibrariesResponse,
@@ -16,7 +19,9 @@ import type {
   MediaItem,
   MediaPatch,
   NotificationList,
+  PauseState,
   QueueMediaTask,
+  QueueSortDirection,
   QuarkVerifyResult,
   ScanTaskDetail,
   SettingsResponse,
@@ -104,6 +109,83 @@ export function listQueueApi(limit = 50, offset = 0) {
 
 export function retryQueueItemApi(id: number) {
   return http.post(`/queue/${id}/retry`).then((r) => r.data)
+}
+
+// ---------- 队列人工控制面（docs/影视下载两队列重设计.md §8.2；后端已全部落地） ----------
+
+/**
+ * 下载队列扁平列表（下载队列 Tab）。
+ * 契约：GET /api/queue?type=download&limit&offset → DownloadQueueItem[]
+ */
+export function listDownloadQueueApi(limit = 50, offset = 0) {
+  return http
+    .get<DownloadQueueItem[]>('/queue', { params: { type: 'download', limit, offset } })
+    .then((r) => r.data)
+}
+
+/** 整条下载队列暂停（暂停=不取新+在途继续，§8.2 语义） */
+export function pauseDownloadQueueApi() {
+  return http.post<{ paused: boolean }>('/queue/download/pause').then((r) => r.data)
+}
+
+/** 整条下载队列恢复 */
+export function resumeDownloadQueueApi() {
+  return http.post<{ paused: boolean }>('/queue/download/resume').then((r) => r.data)
+}
+
+/**
+ * 查询暂停状态。
+ * 契约：GET /api/queue/download/state → { paused, in_flight }（后端已实现）。
+ */
+export function getDownloadQueueStateApi() {
+  return http.get<PauseState>('/queue/download/state').then((r) => r.data)
+}
+
+/** 取消单任务（不可逆：删 aria2 任务 + 清理夸克残留 + 释放预留容量） */
+export function cancelQueueItemApi(id: number) {
+  return http.post(`/queue/${id}/cancel`).then((r) => r.data)
+}
+
+/** 置顶/优先（提升 pending 的准入顺序） */
+export function prioritizeQueueItemApi(id: number) {
+  return http.post(`/queue/${id}/prioritize`).then((r) => r.data)
+}
+
+/** 跳过某集（写 skipped 防重终态，防 scan 重新入队） */
+export function skipQueueItemApi(id: number) {
+  return http.post(`/queue/${id}/skip`).then((r) => r.data)
+}
+
+/**
+ * 手动入队（ready → promote 进下载队列）。
+ * 契约：POST /api/queue/{id}/promote（后端已实现，§8.1 操作可用性约定的落地端点）。
+ */
+export function promoteQueueItemApi(id: number) {
+  return http.post(`/queue/${id}/promote`).then((r) => r.data)
+}
+
+/** 手动触发单影视探测（TaskQueue 补集） */
+export function probeMediaApi(mediaId: number) {
+  return http.post(`/queue/probe/${mediaId}`).then((r) => r.data)
+}
+
+/** 手动加集（admin 直接指定 SxxExx 入 TaskQueue） */
+export function addQueueTaskApi(body: AddQueueTaskRequest) {
+  return http.post('/queue/tasks', body).then((r) => r.data)
+}
+
+/** 排序（调整准入顺序；direction=up/down/top，移动端降级上下移按钮同源） */
+export function sortQueueItemApi(id: number, direction: QueueSortDirection) {
+  return http.post(`/queue/${id}/sort`, { direction }).then((r) => r.data)
+}
+
+/**
+ * downloading 行实时进度（2-3s 局部轮询用）。
+ * 契约：GET /api/queue/download/progress → DownloadProgressEntry[]（tellStatus 聚合，后端已实现）。
+ * 失败由调用方静默忽略，不影响列表渲染。
+ */
+export function getDownloadProgressApi() {
+  return http.get<DownloadProgressEntry[]>('/queue/download/progress').then((r) => r.data)
 }
 
 /**

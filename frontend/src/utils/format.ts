@@ -115,6 +115,110 @@ export function queueNodeType(node: string | null | undefined): string {
   return QUEUE_NODE_MAP[node]?.[1] ?? 'info'
 }
 
+// ---------- 两队列状态文案（docs/影视下载两队列重设计.md §8.1 状态色约定） ----------
+
+/**
+ * TaskQueue 探测层状态 → [中文标签, tag type, 自定义色]
+ * 状态色约定：pending 灰 / probing 蓝 / ready 青 / unmatched 灰紫（弱化）/ error 红 / done 绿。
+ * Element tag type 无法表达「青」「灰紫」，第三元素为自定义 hex，
+ * 由视图层 el-tag color 属性应用（designer Top-5 约定）。
+ */
+const TASK_QUEUE_STATUS_MAP: Record<string, [string, string, string | null]> = {
+  pending: ['待探测', 'info', null],
+  probing: ['探测中', 'primary', null],
+  ready: ['就绪', 'success', '#0e9f9f'],
+  unmatched: ['未匹配', 'info', '#8b87a8'],
+  error: ['异常', 'danger', null],
+  done: ['已完成', 'success', null],
+}
+
+export function taskQueueStatusLabel(status: string | null | undefined): string {
+  if (!status) return '—'
+  return TASK_QUEUE_STATUS_MAP[status]?.[0] ?? status
+}
+
+export function taskQueueStatusType(status: string | null | undefined): string {
+  if (!status) return 'info'
+  return TASK_QUEUE_STATUS_MAP[status]?.[1] ?? 'info'
+}
+
+/** 自定义状态色（无则 null，用 Element 默认配色） */
+export function taskQueueStatusColor(status: string | null | undefined): string | null {
+  if (!status) return null
+  return TASK_QUEUE_STATUS_MAP[status]?.[2] ?? null
+}
+
+/**
+ * DownloadQueue 执行层状态 → [中文标签, tag type, 自定义色]
+ * 状态色约定：pending 灰 / transferring 蓝 / downloading 主色 / quota_wait 琥珀 /
+ * unmatched 灰紫 / failed 红 / done/skipped 绿。
+ * quota_wait 的用户化文案（「等待容量：还差 X G」）由视图层拼装（需要容量数据）。
+ */
+const DOWNLOAD_QUEUE_STATUS_MAP: Record<string, [string, string, string | null]> = {
+  pending: ['排队中', 'info', null],
+  transferring: ['转存中', 'primary', null],
+  downloading: ['下载中', 'primary', null],
+  scrape: ['刮削中', 'primary', null],
+  library: ['入库确认', 'primary', null],
+  quota_wait: ['等待容量', 'warning', '#d9822b'],
+  done: ['已完成', 'success', null],
+  skipped: ['已跳过', 'success', null],
+  failed: ['失败', 'danger', null],
+}
+
+export function downloadQueueStatusLabel(status: string | null | undefined): string {
+  if (!status) return '—'
+  return DOWNLOAD_QUEUE_STATUS_MAP[status]?.[0] ?? status
+}
+
+export function downloadQueueStatusType(status: string | null | undefined): string {
+  if (!status) return 'info'
+  return DOWNLOAD_QUEUE_STATUS_MAP[status]?.[1] ?? 'info'
+}
+
+export function downloadQueueStatusColor(status: string | null | undefined): string | null {
+  if (!status) return null
+  return DOWNLOAD_QUEUE_STATUS_MAP[status]?.[2] ?? null
+}
+
+/** 下载队列「活跃」状态集合（「仅看活跃」开关过滤用） */
+export const DOWNLOAD_ACTIVE_STATUSES: readonly string[] = [
+  'transferring',
+  'downloading',
+  'scrape',
+  'library',
+  'quota_wait',
+]
+
+/** 未来时间的相对倒计时（unmatched 静默「2 天后重试」）；已过期返回 null */
+export function timeUntil(iso: string | null | undefined): string | null {
+  if (!iso) return null
+  const diff = new Date(iso).getTime() - Date.now()
+  if (Number.isNaN(diff) || diff <= 0) return null
+  const min = Math.ceil(diff / 60000)
+  if (min < 60) return `${min} 分钟后`
+  const hour = Math.floor(min / 60)
+  if (hour < 24) return `${hour} 小时后`
+  const day = Math.floor(hour / 24)
+  if (day < 30) return `${day} 天后`
+  return formatTime(iso).slice(0, 10)
+}
+
+/** 下载速度（字节/秒 → 可读） */
+export function formatSpeed(bytesPerSec: number | null | undefined): string {
+  if (typeof bytesPerSec !== 'number' || Number.isNaN(bytesPerSec) || bytesPerSec < 0) return '—'
+  if (bytesPerSec >= 1024 ** 2) return `${(bytesPerSec / 1024 ** 2).toFixed(1)} MB/s`
+  if (bytesPerSec >= 1024) return `${(bytesPerSec / 1024).toFixed(0)} KB/s`
+  return `${bytesPerSec} B/s`
+}
+
+/** 分享码缩略（12 位 → 前 4…后 4；无值返回 null） */
+export function shareCodeShort(code: string | null | undefined): string | null {
+  if (!code) return null
+  if (code.length <= 8) return code
+  return `${code.slice(0, 4)}…${code.slice(-4)}`
+}
+
 /** 影视任务聚合状态 → [中文标签, tag type] */
 const QUEUE_AGGREGATE_MAP: Record<string, [string, string]> = {
   all_done: ['全部完成', 'success'],
