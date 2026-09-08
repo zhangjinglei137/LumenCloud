@@ -195,3 +195,63 @@ def test_tmdb_priority_canceled_pilot_and_no_tmdb_id(library_get, _db_maker, mon
 
     result = run(emby_mod.list_library())
     assert [it["series_status"] for it in result] == ["ended", "continuing", "continuing"]
+
+
+# ---------------------------------------------------------------------------
+# Task 8：refresh_library（POST /Library/Refresh 全库扫描触发）
+# ---------------------------------------------------------------------------
+
+class _FakePostResponse:
+    """最小 fake httpx 响应（refresh_library 只读 status_code）。"""
+
+    def __init__(self, status_code: int):
+        self.status_code = status_code
+
+
+class _FakePostClient:
+    """最小 fake httpx.AsyncClient：记录 post 调用，返回可配置状态码。"""
+
+    def __init__(self, status_code: int = 204):
+        self.status_code = status_code
+        self.calls: list[tuple[str, dict]] = []  # (url, params)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def post(self, url: str, params: dict | None = None, **kwargs):
+        self.calls.append((url, params or {}))
+        return _FakePostResponse(self.status_code)
+
+
+def test_refresh_library_posts_library_refresh_with_auth(monkeypatch):
+    """refresh_library → POST {base}/Library/Refresh 且带 api_key 认证参数。"""
+    client = _FakePostClient(status_code=204)
+    monkeypatch.setattr(emby_mod.httpx, "AsyncClient", lambda **kw: client)
+    monkeypatch.setattr(cs, "_cache", {
+        "emby_base_url": "http://emby.test",
+        "emby_api_key": "test-key",
+    })
+
+    result = run(emby_mod.refresh_library())
+
+    assert result is None  # 成功返回 None（全库扫描异步执行，无响应体解析）
+    assert len(client.calls) == 1
+    url, params = client.calls[0]
+    assert url == "http://emby.test/Library/Refresh"
+    assert params.get("api_key") == "test-key"
+
+
+def test_refresh_library_non_2xx_raises_emby_unavailable(monkeypatch):
+    """refresh_library 非 2xx → 抛 EmbyUnavailable（调用方降级，轮询兜底）。"""
+    client = _FakePostClient(status_code=500)
+    monkeypatch.setattr(emby_mod.httpx, "AsyncClient", lambda **kw: client)
+    monkeypatch.setattr(cs, "_cache", {
+        "emby_base_url": "http://emby.test",
+        "emby_api_key": "test-key",
+    })
+
+    with pytest.raises(emby_mod.EmbyUnavailable):
+        run(emby_mod.refresh_library())

@@ -10,6 +10,8 @@ Emby 防重基线 / 遗漏集 / 已有集 / 影视库展示服务。
                       series 条目连载判定 TMDB 优先（有 tmdb_id → /3/tv/{id}
                       status 字段，无 → Emby SeriesStatus 兜底，见 _attach_tmdb_series_status）
 - list_libraries    ：查 Emby 媒体库列表（/Library/VirtualFolders），供动漫库识别
+- refresh_library   ：触发 Emby 全库扫描（POST /Library/Refresh），NasTools 转移/刮削
+                      完成后调用，加速新文件入库（library_check 轮询兜底确认）
 
 契约参照 n8n 旧流程（docs/新系统设计.md §10）：
     GET {base}/Items?api_key=...&Recursive=true&HasTmdbId=true&Fields=ProviderIds
@@ -35,6 +37,9 @@ from app.services.tmdb import TMDBUnavailable, get_by_tmdb_id
 logger = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT = httpx.Timeout(30.0)   # Emby 为慢端点（/Shows/Missing 实测 7s+），超时须充足
+# Task 8：全库扫描触发端点（/Library/Refresh）扫描异步执行，请求本身应快速返回；
+# 但 Emby 调度扫描时可能短暂阻塞，超时放宽到 60s（对比常规 30s）。
+REFRESH_TIMEOUT = httpx.Timeout(60.0)
 
 # 动漫库名称关键词（大小写不敏感）：Emby 没有 CollectionType=anime，
 # 动漫库只能靠 VirtualFolderInfo.Name 匹配或库白名单判定（des-3 增强 C）
@@ -150,6 +155,38 @@ async def _get_server_id() -> Optional[str]:
         logger.warning("[emby] 获取 serverId 失败，详情链接降级为 None: %s", exc)
         _SERVER_ID = None
     return _SERVER_ID
+
+
+async def refresh_library() -> None:
+    """触发 Emby 全库扫描（POST /Library/Refresh，管理端 Admin 认证）。
+
+    Task 8：NasTools 转移/刮削完成后调用，让 Emby 尽快入库新文件；
+    library_check 轮询仍是收录确认的兜底。
+
+    /Library/Refresh 为官方唯一全库扫描端点（无按目录扫描端点，经 dev.emby.media
+    验证）；扫描异步执行，成功/失败均返回。认证沿用本模块 api_key 查询参数约定
+    （与 _get 的 _check_config/_base_url 逻辑一致）；非 2xx / 网络异常 → EmbyUnavailable
+    （调用方降级为告警，不阻断主链路）。
+
+    异常:
+        EmbyUnavailable: 配置缺失 / 请求失败 / 非 2xx 响应
+    """
+    _check_config()
+    url = f"{_base_url()}/Library/Refresh"
+    params = {"api_key": config_store.get("emby_api_key", settings.EMBY_API_KEY)}
+
+    async with httpx.AsyncClient(timeout=REFRESH_TIMEOUT) as client:
+        try:
+            resp = await client.post(url, params=params)
+        except httpx.HTTPError as exc:
+            logger.warning("Emby 全库扫描触发失败 %s: %s", url, exc)
+            raise EmbyUnavailable(f"Emby 请求失败: {exc}") from exc
+
+    if resp.status_code >= 400:
+        logger.warning("Emby 全库扫描非 2xx 响应: %s", resp.status_code)
+        raise EmbyUnavailable(f"Emby 返回 HTTP {resp.status_code}")
+
+    logger.info("Emby 全库扫描已触发（%s）", url)
 
 
 async def find_emby_id(tmdb_id: int, title: Optional[str] = None) -> Optional[str]:

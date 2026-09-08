@@ -5,7 +5,8 @@
 
 - `transfer.finished`（整理完成）：NasTools 已把文件整理进 Emby 媒体库目录 →
   该 media 的 download_queue `scrape` 行推进为 `library` → fire-and-forget 触发
-  `library_check()`（Emby 入库确认 → done + 删夸克 + 释放容量预留）。
+  `library_check()`（Emby 入库确认 → done + 删夸克 + 释放容量预留），并同步触发
+  Emby 全库 Refresh（Task 8，加速新文件入库；失败仅告警，轮询兜底）。
 - `transfer.fail` / `download.fail`：flow_error 通知（节流沿用）。
 - 其它事件：记录后忽略（返回 ok）。
 
@@ -136,6 +137,14 @@ async def _handle_transfer_finished(data: dict) -> "tuple[int, str]":
         task = asyncio.create_task(_check_library_background(media))
         _background.add(task)
         task.add_done_callback(_background.discard)
+        # Task 8：推进成功后同样触发 Emby 全库 Refresh（fire-and-forget + 互斥锁在
+        # library_check 内；失败仅告警，Emby 收录由 library_check 轮询兜底确认）
+        try:
+            from app.tasks import library_check as lc
+
+            lc.trigger_emby_refresh()
+        except Exception as exc:  # noqa: BLE001  触发失败不阻断应答（轮询兜底）
+            logger.warning("[nastools] media=%s 触发 Emby 全库扫描失败（轮询兜底）: %s", media, exc)
         return advanced, f"推进 {advanced} 条 scrape→library 并触发入库确认"
     return 0, "无 scrape 状态任务待推进（可能已推进/已在库）"
 

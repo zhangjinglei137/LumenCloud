@@ -497,6 +497,43 @@ def test_scrape_only_promotes_scrape_status(db, env, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Task 8：刮削成功 → 触发 Emby 全库 Refresh（trigger_emby_refresh）
+# ---------------------------------------------------------------------------
+
+def test_scrape_success_triggers_emby_refresh(db, env, monkeypatch):
+    """刮削成功推进 scrape→library 后，fire-and-forget 触发 Emby 全库 Refresh。"""
+    patch_db(monkeypatch, db)
+    mid, dq_id = run(seed_scrape(db))
+
+    run(library_check_mod.scrape_runner())
+
+    # env 夹具把 _spawn monkeypatch 为记录调用 → 收到 _emby_refresh_impl（fire-and-forget）
+    assert env["spawn_calls"] == [library_check_mod._emby_refresh_impl]
+
+
+def test_emby_refresh_mutex_skip_and_failure_tolerant(db, env, monkeypatch):
+    """全库扫描互斥（锁占用时跳过）+ refresh_library 失败仅告警不抛异常（轮询兜底）。"""
+    patch_db(monkeypatch, db)
+    fired = []
+
+    async def scenario():
+        # 1) refresh_library 抛异常 → 不向调用方抛（Emby 收录由 library_check 轮询兜底）
+        env["emby"].refresh_library = AsyncMock(side_effect=RuntimeError("Emby 挂"))
+        await library_check_mod._emby_refresh_impl()
+
+        # 2) 锁被占用 → 本轮跳过（不重复全库扫描）
+        env["emby"].refresh_library = AsyncMock(side_effect=lambda: fired.append(1))
+        async with library_check_mod._emby_refresh_lock:
+            await library_check_mod._emby_refresh_impl()
+
+        # 3) 锁释放 → 正常触发一次
+        await library_check_mod._emby_refresh_impl()
+
+    run(scenario())
+    assert fired == [1]  # 仅第 3 步真正触发
+
+
+# ---------------------------------------------------------------------------
 # P2-8 emby.list_library 分页拉取全部（>500 条不截断）
 # ---------------------------------------------------------------------------
 

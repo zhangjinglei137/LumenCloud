@@ -15,12 +15,14 @@ fake sessionmaker（对齐 test_transfer.py 的 fake 风格）；library_check /
 """
 import json
 import types
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import app.routers.nastools_notify as nn_mod
+import app.tasks.library_check as lc_mod  # trigger_emby_refresh 的宿主模块（monkeypatch 用）
 
 _TOKEN = "test-nastools-token-0123456789abcdef"
 _ENDPOINT = "/internal/nastools/notify"
@@ -198,7 +200,7 @@ def test_non_object_body_returns_400(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_transfer_finished_advances_and_triggers_library_check(monkeypatch):
-    """transfer.finished → scrape→library 推进 + 后台触发 library_check。"""
+    """transfer.finished → scrape→library 推进 + 后台触发 library_check + Emby 全库 Refresh。"""
     cli = make_client(_TOKEN, monkeypatch)
     # select(Media.id).scalars().first() → int（真实返回 media_id）
     async_session_fake = FakeSession(execute_result=FakeResult(88))
@@ -216,6 +218,10 @@ def test_transfer_finished_advances_and_triggers_library_check(monkeypatch):
     async def fake_check_library_background(media_id):
         triggered.append(media_id)
 
+    # Task 8：成功推进 → 同样触发 Emby 全库 Refresh（fire-and-forget）
+    refresh_calls = []
+    monkeypatch.setattr(lc_mod, "trigger_emby_refresh", lambda: refresh_calls.append(1))
+
     monkeypatch.setattr(nn_mod, "_advance_scrape_to_library", fake_advance)
     monkeypatch.setattr(nn_mod, "_check_library_background", fake_check_library_background)
 
@@ -226,6 +232,22 @@ def test_transfer_finished_advances_and_triggers_library_check(monkeypatch):
     assert body["advanced"] == 1
     assert advanced_rec == {"media_id": 88}
     assert triggered == [88]
+    assert refresh_calls == [1]
+
+
+def test_transfer_finished_no_advance_skips_emby_refresh(monkeypatch):
+    """无 scrape 任务可推进 → 不触发 Emby 全库 Refresh（避免无谓全库扫描）。"""
+    cli = make_client(_TOKEN, monkeypatch)
+    monkeypatch.setattr(nn_mod, "async_session", lambda: FakeSession(execute_result=FakeResult(88)))
+    monkeypatch.setattr(nn_mod, "_advance_scrape_to_library", AsyncMock(return_value=0))
+    refresh_calls = []
+    monkeypatch.setattr(lc_mod, "trigger_emby_refresh", lambda: refresh_calls.append(1))
+
+    resp = cli.post(f"{_ENDPOINT}?token={_TOKEN}", json=media_payload())
+
+    assert resp.status_code == 200
+    assert resp.json()["advanced"] == 0
+    assert refresh_calls == []
 
 
 def test_transfer_finished_tmdb_not_in_library_ignored(monkeypatch):

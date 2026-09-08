@@ -80,6 +80,10 @@ _background_tasks: set[asyncio.Task] = set()
 # nastools_sync 内部 _sync_lock 已防 NasTools 双重启；此锁进一步避免重复的全量
 # 同步（下载完成事件刚落，job 兜底又同步一轮属浪费）。
 _scrape_lock = asyncio.Lock()
+# Task 8：Emby 全库扫描互斥——transfer.finished 事件与 scrape 成功两条触发路径并发
+# 时只允许一轮全库扫描在跑（全库扫描耗资源且重复触发无意义；并发触发还可能在 Emby
+# 正在扫描时叠加请求）。锁在 _emby_refresh_impl 内公平持有，后到者直接跳过不排队。
+_emby_refresh_lock = asyncio.Lock()
 
 
 def _spawn(coro_factory) -> None:
@@ -96,6 +100,39 @@ def _download_queue_consume(transfer_mod) -> object:
     return getattr(transfer_mod, "trigger_transfer_consume", None) or \
         getattr(transfer_mod, "process_download_queue", None) or \
         getattr(transfer_mod, "process_transfer_queue", None)
+
+
+# ---------------------------------------------------------------------------
+# Task 8：Emby 全库 Refresh 触发（NasTools 转移/刮削完成后加速入库）
+# ---------------------------------------------------------------------------
+
+async def _emby_refresh_impl() -> None:
+    """执行 Emby 全库 Refresh（公平持 _emby_refresh_lock；并发时后到者跳过）。
+
+    失败仅记告警不抛异常——Emby 扫描触发失败不阻断主链路，新文件收录仍由
+    library_check 轮询兜底确认（对外 HTTP 失败面收敛在告警内，调用方不受影响）。
+    """
+    if _emby_refresh_lock.locked():
+        logger.info("[emby-refresh] 另一轮全库扫描进行中，本轮跳过")
+        return
+    async with _emby_refresh_lock:
+        try:
+            await emby.refresh_library()
+        except Exception as exc:  # noqa: BLE001  触发失败仅告警（library_check 轮询兜底确认入库）
+            logger.warning("[emby-refresh] Emby 全库扫描触发失败（library_check 轮询兜底）: %s", exc)
+
+
+def trigger_emby_refresh() -> None:
+    """触发 Emby 全库 Refresh（fire-and-forget + 互斥锁防并发全库扫描）。
+
+    调用方：_scrape_impl 刮削成功推进 scrape→library 后（本模块），与
+    nastools_notify 的 transfer.finished 成功推进后（跨模块复用本函数）。
+    触发失败仅告警，不阻断调用方主链路——Emby 收录确认仍由 library_check 轮询兜底。
+    """
+    try:
+        _spawn(_emby_refresh_impl)
+    except Exception as exc:  # noqa: BLE001  后台任务创建失败不阻断调用方
+        logger.warning("[emby-refresh] 后台任务创建失败: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +194,9 @@ async def _scrape_impl() -> None:
                 )
             )
     logger.info("[scrape] Nastools 刮削完成，%d 个任务推进 status='library'", len(pending))
+    # Task 8：刮削成功推进 → fire-and-forget 触发 Emby 全库 Refresh，加速新文件入库
+    # （互斥锁防并发全库扫描；失败仅告警，library_check 轮询兜底确认收录）
+    trigger_emby_refresh()
 
 
 async def _count_scrape_failure(pending, exc) -> None:
