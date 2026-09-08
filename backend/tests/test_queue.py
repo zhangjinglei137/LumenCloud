@@ -4,8 +4,8 @@
 外部服务（aria2/alist/scan 触发）一律 monkeypatch；in-memory SQLite。
 
 覆盖：
-- GET /api/queue 树：download_queue + task_queue 聚合、probe_counts、aggregate_status、
-  children 新契约字段（tq_status / silent_until / share_code_tail）；type=download 扁平
+- GET /api/queue 扁平任务列表：TaskQueue ∪ DownloadQueue 活跃行合一、终态剔除、
+  凭据脱敏、同集去重（promote 遗留探测快照）；type=download 下载队列扁平列表
 - 整条暂停：POST /queue/download/pause|resume + GET state（in_flight）
 - 单任务：cancel（dq 清 aria2+删夸克+failed+tq done / tq done）、prioritize、skip
   （dq 行 / tq 行补写防重终态）、retry（dq failed/skipped→pending、tq error→pending、
@@ -154,12 +154,11 @@ async def read_config(db, key):
 
 
 # ---------------------------------------------------------------------------
-# GET /api/queue 树（download_queue + task_queue 聚合，§8.1 契约）
+# GET /api/queue 扁平任务列表（TaskQueue ∪ DownloadQueue 活跃行，终态剔除）
 # ---------------------------------------------------------------------------
 
-def test_list_tree_groups_dq_tq_with_probe_counts(db, env):
-    """树：同 media 的 dq+tq 聚合为一个父级；probe_counts 按 task_queue 计数；
-    children 呈现两队列子任务。"""
+def test_list_flat_union_dq_tq_with_fields(db, env):
+    """扁平列表：TaskQueue ∪ DownloadQueue 活跃行合一；每行含 title/episode/status/node。"""
     mid = run(seed_media(db))
     dq_id = run(seed_dq(db, mid, episode="S01E01", status="pending"))
     tq_ready = run(seed_tq(db, mid, episode="S01E02", status="ready"))
@@ -168,88 +167,102 @@ def test_list_tree_groups_dq_tq_with_probe_counts(db, env):
     async def _case():
         async with db() as s:
             return await queue_mod.list_queue(user=_admin(), session=s)
-    tree = run(_case())
+    rows = run(_case())
 
-    assert len(tree) == 1
-    parent = tree[0]
-    assert parent["media_id"] == mid and parent["title"] == "测试剧"
-    assert parent["total_count"] == 3 and parent["done_count"] == 0
-    # 探测层聚合计数（{pending,probing,ready,unmatched,error}）
-    assert parent["probe_counts"] == {"pending": 0, "probing": 0, "ready": 1,
-                                      "unmatched": 1, "error": 0}
-    # dq pending（排队）+ tq ready/unmatched（进行中/静默） → running
-    assert parent["aggregate_status"] == "running"
-    by_ep = {c["episode"]: c for c in parent["children"]}
-    assert by_ep["S01E01"]["node"] == "pending" and by_ep["S01E01"]["tq_status"] is None
-    assert by_ep["S01E02"]["tq_status"] == "ready" and by_ep["S01E02"]["node"] is None
-    assert by_ep["S01E03"]["tq_status"] == "unmatched"
+    assert len(rows) == 3
+    by_ep = {r["episode"]: r for r in rows}
+    # 扁平行：无 children / 聚合字段（非影视分组树）
+    assert all("children" not in r and "aggregate_status" not in r for r in rows)
+    for r in rows:
+        assert r["media_id"] == mid and r["title"] == "测试剧"
+        assert r["file_name"] == "ep.mkv" and r["file_size"] == 1024
+        assert r["updated_at"] is not None and r["enqueued_at"] is not None
+    # DQ 行：status=node=执行状态
+    assert by_ep["S01E01"]["status"] == "pending" and by_ep["S01E01"]["node"] == "pending"
+    # TQ 行：status=探测状态，node 无节点概念 → None
+    assert by_ep["S01E02"]["status"] == "ready" and by_ep["S01E02"]["node"] is None
+    assert by_ep["S01E03"]["status"] == "unmatched"
 
 
-def test_list_tree_child_contract_fields(db, env):
-    """§8.1 契约字段：tq_status / silent_until / share_code_tail（敏感网盘凭据不返回）。"""
+def test_list_flat_excludes_terminal_states(db, env):
+    """终态剔除：done/failed/skipped 不出现在显示列表；活跃态（含 quota_wait/error/probing）保留。"""
     mid = run(seed_media(db))
-    dq_id = run(seed_dq(db, mid, status="downloading", share_code="AbCd1234XyZq"))
-    silence = _now() + timedelta(days=2)
-    tq_id = run(seed_tq(db, mid, episode="S01E02", status="unmatched", silent_until=silence))
+    run(seed_dq(db, mid, episode="S01E01", status="done"))
+    run(seed_dq(db, mid, episode="S01E02", status="failed"))
+    run(seed_dq(db, mid, episode="S01E03", status="skipped"))
+    run(seed_dq(db, mid, episode="S01E04", status="pending"))
+    run(seed_dq(db, mid, episode="S01E05", status="quota_wait"))
+    run(seed_dq(db, mid, episode="S01E06", status="transferring"))
+    run(seed_dq(db, mid, episode="S01E07", status="downloading"))
+    run(seed_dq(db, mid, episode="S01E08", status="scrape"))
+    run(seed_dq(db, mid, episode="S01E09", status="library"))
+    run(seed_tq(db, mid, episode="S01E10", status="done"))
+    run(seed_tq(db, mid, episode="S01E11", status="error"))
+    run(seed_tq(db, mid, episode="S01E12", status="probing"))
 
     async def _case():
         async with db() as s:
             return await queue_mod.list_queue(user=_admin(), session=s)
-    tree = run(_case())
-    children = tree[0]["children"]
-    # 注意：download_queue / task_queue 各自独立自增，id 可能重叠 → 按 episode 匹配
-    dq_child = next(c for c in children if c["episode"] == "S01E01")
-    tq_child = next(c for c in children if c["episode"] == "S01E02")
-    # dq 执行视图：node=status，share_code_tail 缩略，无完整凭据
-    assert dq_child["node"] == "downloading"
-    assert dq_child["node_started_at"] is not None
-    assert dq_child["share_code_tail"] == "XyZq"
-    for f in ("share_code", "stoken", "receive_code", "fid_tokens", "pwd_id", "folder_id", "fids"):
-        assert f not in dq_child and f not in tq_child
-    # tq 探测视图：tq_status 优先语义 + silent_until 静默倒计时
-    assert tq_child["tq_status"] == "unmatched"
-    assert tq_child["silent_until"] == silence.isoformat()
+    rows = run(_case())
+
+    episodes = {r["episode"] for r in rows}
+    assert episodes == {"S01E04", "S01E05", "S01E06", "S01E07", "S01E08", "S01E09",
+                        "S01E11", "S01E12"}
+    for term in ("S01E01", "S01E02", "S01E03", "S01E10"):
+        assert term not in episodes
 
 
-def test_list_tree_aggregate_all_done_and_scan_tasks(db, env):
-    """全 done → all_done；scan_tasks 注入最近巡检摘要。"""
+def test_list_flat_dedup_promoted_snapshot(db, env):
+    """扁平去重（延续树视图 Playwright 修复）：同 (media, episode) 已有 DQ 活跃行
+    → 不展示 task_queue 探测快照（防「同集显示两条」）。"""
     mid = run(seed_media(db))
-    dq1 = run(seed_dq(db, mid, episode="S01E01", status="done"))
-    dq2 = run(seed_dq(db, mid, episode="S01E02", status="done"))
-
-    from app.models import TaskRun
-    now = _now()
-
-    async def _seed_scan():
-        async with db() as s:
-            s.add(TaskRun(task_type="scan_media", media_id=mid, status="success",
-                          message="已入队 2 集", started_at=now - timedelta(minutes=5),
-                          duration_seconds=3.0))
-            await s.commit()
-    run(_seed_scan())
+    dq_id = run(seed_dq(db, mid, episode="S01E01", status="pending"))
+    run(seed_tq(db, mid, episode="S01E01", status="ready"))  # promote 后遗留探测快照
 
     async def _case():
         async with db() as s:
             return await queue_mod.list_queue(user=_admin(), session=s)
-    tree = run(_case())
-    parent = tree[0]
-    assert parent["aggregate_status"] == "all_done"
-    assert parent["done_count"] == 2
-    assert parent["scan_tasks"] and parent["scan_tasks"][0]["message"] == "已入队 2 集"
+    rows = run(_case())
+
+    assert len(rows) == 1
+    assert rows[0]["id"] == dq_id and rows[0]["episode"] == "S01E01"
+    assert rows[0]["status"] == "pending"
+
+
+def test_list_flat_contract_fields_and_no_credentials(db, env):
+    """扁平行契约：恰好 10 字段定界；敏感凭据与树字段一律不返回。"""
+    mid = run(seed_media(db))
+    run(seed_dq(db, mid, episode="S01E01", status="downloading", share_code="AbCd1234XyZq"))
+    run(seed_tq(db, mid, episode="S01E02", status="unmatched", share_code="TqXxYyZz1234"))
+
+    async def _case():
+        async with db() as s:
+            return await queue_mod.list_queue(user=_admin(), session=s)
+    rows = run(_case())
+
+    assert len(rows) == 2
+    for r in rows:
+        assert set(r.keys()) == {"id", "media_id", "title", "episode", "status", "node",
+                                 "file_name", "file_size", "updated_at", "enqueued_at"}
+        for f in ("share_code", "stoken", "receive_code", "fid_tokens", "pwd_id",
+                  "folder_id", "fids", "tq_status", "silent_until", "share_code_tail",
+                  "error", "children", "aggregate_status", "probe_counts", "scan_tasks"):
+            assert f not in r
 
 
 def test_list_download_flat_type_download(db, env):
-    """?type=download → 下载队列扁平列表（§8.1 下载队列 Tab）。"""
+    """?type=download → 下载队列扁平列表（§8.1 下载队列 Tab，含终态可选/全量）。"""
     mid = run(seed_media(db))
     dq_id = run(seed_dq(db, mid, episode="S01E01", status="downloading"))
+    run(seed_dq(db, mid, episode="S01E02", status="done"))  # 终态仍返回（下载队列 Tab 全量）
 
     async def _case():
         async with db() as s:
             return await queue_mod.list_queue(user=_admin(), session=s, type="download")
     rows = run(_case())
-    assert len(rows) == 1
-    row = rows[0]
-    assert row["id"] == dq_id and row["media_title"] == "测试剧"
+    assert len(rows) == 2
+    row = next(r for r in rows if r["id"] == dq_id)
+    assert row["media_title"] == "测试剧"
     assert row["status"] == "downloading" and row["enqueued_at"] is not None
     assert row["node_attempt"] == 0
 

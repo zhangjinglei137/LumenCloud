@@ -1,11 +1,11 @@
 """队列 API（影视下载两队列重设计 §8.2 控制面 + §8.1 树结构契约）。
 
-- GET  /api/queue                       影视任务树（登录用户）：
-                                         父级 = 影视（按 media 分组，aggregate_status
-                                         聚合 + probe_counts 探测层计数 + scan_tasks 巡检摘要），
-                                         子级 = download_queue（执行视图，node=status）+
-                                         task_queue（探测视图，tq_status）+ 新契约字段
-                                         （silent_until/share_code_tail）。
+- GET  /api/queue                       扁平任务列表（登录用户）：TaskQueue(活跃探测态)
+                                         ∪ DownloadQueue(活跃执行态) 合一，每行
+                                         {id, media_id, title, episode, status, node,
+                                         file_name, file_size, updated_at, enqueued_at}；
+                                         终态（tq done / dq done|skipped|failed）剔除；
+                                         同集已有 DQ 活跃行时去重 task_queue 探测快照。
                                          ?type=download → 下载队列扁平列表（DownloadQueueItem[]，
                                          §8.1 下载队列 Tab：按准入顺序、支持仅看活跃/取消/排序）。
 - POST /api/queue/download/pause|resume 整条下载队列暂停/恢复（system_config 开关，
@@ -44,7 +44,6 @@ from app.models import (
     Media,
     SystemConfig,
     TaskQueue,
-    TaskRun,
     User,
 )
 from app.routers.deps import get_current_admin, get_current_user, get_session
@@ -60,11 +59,9 @@ _IN_FLIGHT_STATUSES = ("transferring", "downloading", "scrape", "library")
 # 全局暂停开关 system_config 键（§8.2：暂停=不取新+在途继续）
 _PAUSE_CONFIG_KEY = "download_queue_paused"
 
-# 父级聚合状态判定集合（§8.1 树聚合）
-_DQ_RUNNING = ("transferring", "downloading", "scrape", "library", "quota_wait")
-_TQ_RUNNING = ("probing", "ready")
-_DQ_FAILED = ("failed",)
-_TQ_FAILED = ("error",)
+# 扁平显示列表活跃态集合（终态剔除：tq done / dq done|skipped|failed 一律不返回）
+_TQ_ACTIVE = ("pending", "probing", "ready", "unmatched", "error")
+_DQ_ACTIVE = ("pending", "transferring", "downloading", "scrape", "library", "quota_wait")
 
 
 def _now() -> datetime:
@@ -73,13 +70,6 @@ def _now() -> datetime:
 
 def _iso(dt: Optional[datetime]) -> Optional[str]:
     return dt.isoformat() if dt else None
-
-
-def _share_code_tail(code: Optional[str]) -> Optional[str]:
-    """分享码末 4 位缩略（缩略展示，不泄露完整凭据）。"""
-    if not code:
-        return None
-    return str(code)[-4:]
 
 
 # 兼容旧模块名（其他 lane / capacity.py 仍可能按此名导入该 helper）
@@ -94,129 +84,19 @@ def _load_transfer_queue_model():
     return TransferQueue
 
 
-def _scan_task_dto(run: TaskRun) -> dict:
-    """父级挂载的最近巡检摘要（scan_tasks 元素，非敏感字段）。"""
-    return {
-        "id": run.id,
-        "status": run.status,
-        "message": run.message,
-        "started_at": _iso(run.started_at),
-        "duration_seconds": run.duration_seconds,
-    }
-
-
-def _dq_child_dto(dq: DownloadQueue) -> dict:
-    """下载队列（执行视图）子任务 DTO：node=dq.status，无 tq_status（前端回退 node 展示）。"""
-    return {
-        "id": dq.id,
-        "episode": dq.episode,
-        "node": dq.status,
-        "node_attempt": dq.node_attempt,
-        "node_error": dq.node_error,
-        "file_name": dq.file_name,
-        "file_size": dq.file_size,
-        "updated_at": _iso(dq.updated_at),
-        "node_started_at": _iso(dq.node_started_at),
-        "node_finished_at": _iso(dq.node_finished_at),
-        # 两队列新契约：tq_status 存在时优先于 node 展示；本行无对应探测视图 → None
-        "tq_status": None,
-        "silent_until": None,
-        "share_code_tail": _share_code_tail(dq.share_code),
-        # 兼容旧扁平结构字段
-        "status": dq.status,
-        "error": dq.error,
-        "enqueued_at": _iso(dq.enqueued_at),
-        "quota_reject_count": dq.quota_reject_count,
-        "media_id": dq.media_id,
-    }
-
-
-def _tq_child_dto(tq: TaskQueue) -> dict:
-    """任务队列（探测视图）子任务 DTO：tq_status 优先展示；node 空/无节点概念。"""
-    return {
-        "id": tq.id,
-        "episode": tq.episode,
-        "node": None,
-        "node_attempt": tq.probe_attempt,
-        "node_error": tq.error,
-        "file_name": tq.file_name,
-        "file_size": tq.file_size,
-        "updated_at": _iso(tq.updated_at),
-        "node_started_at": None,
-        "node_finished_at": None,
-        "tq_status": tq.status,
-        "silent_until": _iso(tq.silent_until),   # unmatched 静默倒计时数据源
-        "share_code_tail": _share_code_tail(tq.share_code),
-        # 兼容旧扁平结构字段
-        "status": tq.status,
-        "error": tq.error,
-        "enqueued_at": _iso(tq.created_at),
-        "media_id": tq.media_id,
-    }
-
-
-def _child_status_key(c: dict) -> str:
-    """子任务展示状态键（tq_status 优先，否则 node；前端同口径）。"""
-    return c.get("tq_status") or c.get("node") or ""
-
-
-def _aggregate_status(children: list[dict]) -> str:
-    """父级聚合状态（§8.1，按优先级依次判定）：
-    - 空                                  → waiting
-    - 全部 done（dq done / tq done）        → all_done
-    - 任一失败（dq failed / tq error）      → partial_failed
-    - 任一进行中（dq 在途/quota_wait、tq probing/ready）→ running
-    - 其余（dq pending、tq pending/unmatched 等排队/静默）→ waiting
-    """
-    if not children:
-        return "waiting"
-    statuses = [_child_status_key(c) for c in children]
-    if all(s == "done" for s in statuses):
-        return "all_done"
-    if any(s in _DQ_FAILED or s in _TQ_FAILED for s in statuses):
-        return "partial_failed"
-    if any(s in _DQ_RUNNING or s in _TQ_RUNNING for s in statuses):
-        return "running"
-    return "waiting"
-
-
-def _parent_dto(group: dict) -> dict:
-    """父级 DTO（影视）：分组内子任务 + 聚合指标 + probe_counts。"""
-    children = group["children"]
-    done_count = sum(1 for c in children if _child_status_key(c) == "done")
-    return {
-        "media_id": group["media_id"],
-        "title": group["title"],
-        "media_type": group["media_type"],
-        "aggregate_status": _aggregate_status(children),
-        "total_count": len(children),
-        "done_count": done_count,
-        # §8.1 新契约：探测层聚合计数（{pending,probing,ready,unmatched,error}，传空计 0）
-        "probe_counts": {
-            "pending": group["probe_counts"].get("pending", 0),
-            "probing": group["probe_counts"].get("probing", 0),
-            "ready": group["probe_counts"].get("ready", 0),
-            "unmatched": group["probe_counts"].get("unmatched", 0),
-            "error": group["probe_counts"].get("error", 0),
-        },
-        "children": children,
-    }
-
-
-async def _list_tree(
-    session: AsyncSession, limit: int, offset: int,
-) -> list[dict]:
-    """影视任务树（§8.1）：父级=影视分组；children=download_queue 执行视图 + task_queue
-    探测视图（两队列聚合）。父级按组内最近 updated_at 倒序，children 内同口径倒序；
-    media 已删除的行归入合成孤儿父级。分页作用于父级切片。
+async def _list_flat(session: AsyncSession, limit: int, offset: int) -> list[dict]:
+    """扁平任务列表（Task 9 契约）：TaskQueue(活跃探测态) ∪ DownloadQueue(活跃执行态)
+    合一，join Media 取 title，终态（tq done / dq done|skipped|failed）剔除；同
+    (media_id, episode) 已有 DQ 活跃行时不展示 task_queue 探测快照（promote 遗留快照
+    去重，延续树视图 Playwright 修复）。跨表按 updated_at 倒序 + id 倒序决胜，
+    limit/offset 分页作用于扁平行切片。
     """
     dq_rows = (
         (
             await session.execute(
-                select(DownloadQueue).order_by(
-                    DownloadQueue.media_id.asc(), DownloadQueue.updated_at.desc(),
-                    DownloadQueue.id.desc(),
-                )
+                select(DownloadQueue)
+                .where(DownloadQueue.status.in_(_DQ_ACTIVE))
+                .order_by(DownloadQueue.updated_at.desc(), DownloadQueue.id.desc())
             )
         )
         .scalars()
@@ -225,17 +105,16 @@ async def _list_tree(
     tq_rows = (
         (
             await session.execute(
-                select(TaskQueue).order_by(
-                    TaskQueue.media_id.asc(), TaskQueue.updated_at.desc(),
-                    TaskQueue.id.desc(),
-                )
+                select(TaskQueue)
+                .where(TaskQueue.status.in_(_TQ_ACTIVE))
+                .order_by(TaskQueue.updated_at.desc(), TaskQueue.id.desc())
             )
         )
         .scalars()
         .all()
     )
 
-    # media 一次性批量查询（避免 N+1）
+    # media 一次性批量查询（避免 N+1）；行内 title 缺失（media 已删）降级 None
     media_ids = {r.media_id for r in dq_rows} | {r.media_id for r in tq_rows}
     media_map: dict[int, Media] = {}
     if media_ids:
@@ -245,91 +124,44 @@ async def _list_tree(
             ).scalars().all()
         }
 
-    # Playwright 验证修复：同一 (media_id, episode) 同时存在 task_queue(探测完成已
-    # promote) 与 download_queue(执行任务) 时，只展示 download_queue 执行视图——
-    # task_queue 是 promote 后遗留的探测快照，重复展示会造成「同集显示两条」。
-    # 仅当该集无 download_queue 行（探测中/未匹配/手动入队等待 promote）时才展示
-    # task_queue 探测视图。
-    dq_key_set = {
-        (dq.media_id, dq.episode) for dq in dq_rows
-    }
+    # 去重：该集已有 DQ 活跃行（执行视图）→ 不重复展示 task_queue 探测快照
+    dq_key_set = {(dq.media_id, dq.episode) for dq in dq_rows}
 
-    # 按 media_id 分组（保序）；孤儿用统一哨兵 key 合成一个父级
-    orphan_key: object = object()
-    groups: dict[object, dict] = {}
-
-    def _group_for(media_id: int, title_fb: Optional[str]) -> dict:
-        media = media_map.get(media_id)
-        key: object = media_id if media is not None else orphan_key
-        g = groups.get(key)
-        if g is None:
-            if media is not None:
-                title, media_type = media.title, media.media_type
-            else:
-                title = title_fb or "未关联影视"
-                media_type = None
-            g = {
-                "media_id": media_id if media is not None else None,
-                "title": title,
-                "media_type": media_type,
-                "children": [],
-                "latest": datetime.min,
-                "probe_counts": {},
-            }
-            groups[key] = g
-        return g
-
+    rows: list[dict] = []
     for tq in tq_rows:
-        # Playwright 修复：该集已有 download_queue 执行行 → 跳过 tq 探测快照节点
-        # （probe_counts 仍累计；只有无 dq 的探测态才作为子节点展示）
         if (tq.media_id, tq.episode) in dq_key_set:
             continue
-        g = _group_for(tq.media_id, tq.file_name)
-        if tq.updated_at and tq.updated_at > g["latest"]:
-            g["latest"] = tq.updated_at
-        g["children"].append(_tq_child_dto(tq))
-        # probe_counts 聚合（探测视图计数；done 等不做探测计数）
-        if tq.status in ("pending", "probing", "ready", "unmatched", "error"):
-            g["probe_counts"][tq.status] = g["probe_counts"].get(tq.status, 0) + 1
-
+        media = media_map.get(tq.media_id)
+        rows.append({
+            "id": tq.id,
+            "media_id": tq.media_id,
+            "title": media.title if media is not None else None,
+            "episode": tq.episode,
+            "status": tq.status,
+            "node": None,  # 探测视图无节点概念
+            "file_name": tq.file_name,
+            "file_size": tq.file_size,
+            "updated_at": _iso(tq.updated_at),
+            "enqueued_at": _iso(tq.created_at),
+        })
     for dq in dq_rows:
-        g = _group_for(dq.media_id, dq.file_name)
-        if dq.updated_at and dq.updated_at > g["latest"]:
-            g["latest"] = dq.updated_at
-        g["children"].append(_dq_child_dto(dq))
+        media = media_map.get(dq.media_id)
+        rows.append({
+            "id": dq.id,
+            "media_id": dq.media_id,
+            "title": media.title if media is not None else None,
+            "episode": dq.episode,
+            "status": dq.status,
+            "node": dq.status,  # 执行视图：node=status（与树子节点同口径）
+            "file_name": dq.file_name,
+            "file_size": dq.file_size,
+            "updated_at": _iso(dq.updated_at),
+            "enqueued_at": _iso(dq.enqueued_at),
+        })
 
-    # 巡检可见性：批量取各真实 media 最近 1 条巡检记录（task_type='scan_media'），
-    # 一次 IN 查询 + 按 (media_id, started_at) 分组取每组第一条（started_at 倒序）；
-    # 孤儿父级（media 不存在）不在 media_ids 中 → 空列表。
-    real_ids = [g["media_id"] for g in groups.values()
-                if isinstance(g["media_id"], int)]
-    scan_by_media: dict[int, list[dict]] = {}
-    if real_ids:
-        scan_rows = (
-            await session.execute(
-                select(TaskRun)
-                .where(
-                    TaskRun.task_type == "scan_media",
-                    TaskRun.media_id.in_(real_ids),
-                )
-                .order_by(TaskRun.media_id.asc(), TaskRun.started_at.desc(), TaskRun.id.desc())
-            )
-        ).scalars().all()
-        for run in scan_rows:
-            if run.media_id is not None and run.media_id not in scan_by_media:
-                scan_by_media[run.media_id] = [_scan_task_dto(run)]
-
-    # 父级按子任务最近 updated_at 倒序 → 分页切片
-    ordered = sorted(groups.values(), key=lambda g: g["latest"], reverse=True)
-    result: list[dict] = []
-    for g in ordered[offset: offset + limit]:
-        dto = _parent_dto(g)
-        if isinstance(g["media_id"], int):
-            dto["scan_tasks"] = scan_by_media.get(g["media_id"], [])
-        else:
-            dto["scan_tasks"] = []
-        result.append(dto)
-    return result
+    # 跨表合并排序：最新 updated_at 倒序（空值置后），id 倒序决胜
+    rows.sort(key=lambda r: (r["updated_at"] or "", r["id"]), reverse=True)
+    return rows[offset: offset + limit]
 
 
 async def _list_download(
@@ -375,10 +207,10 @@ async def list_queue(
     offset: Annotated[int, Query(ge=0)] = 0,
     type: Annotated[Optional[str], Query()] = None,
 ) -> list[dict]:
-    """影视任务树列表（§8.1 树结构契约）或 ?type=download 下载队列扁平列表。"""
+    """扁平任务列表（Task 9 契约：两队列活跃行合一 + 终态剔除）或 ?type=download 下载队列扁平列表。"""
     if type == "download":
         return await _list_download(session, limit, offset)
-    return await _list_tree(session, limit, offset)
+    return await _list_flat(session, limit, offset)
 
 
 # ---------------------------------------------------------------------------
