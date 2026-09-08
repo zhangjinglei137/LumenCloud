@@ -216,11 +216,11 @@ git commit -m "feat(emby): 转移完成后触发 Emby 全库 Refresh 加速入�
 - Consumes: `DownloadQueue`、`TaskQueue`、`Media`。
 - Produces: `GET /api/queue` → 扁平列表，每行 `{id, media_id, title, episode, status, node, file_name, file_size, updated_at, enqueued_at}`；**终态（done/failed/skipped）不返回**；排序按最新 updated_at 倒序（或保留 FIFO 语义）。`type=download` 分支保留现有扁平 DQ 列表。
 
-- [ ] **Step 1: 写失败测试**：在 `test_queue.py` 改写 list 用例：断言返回扁平行（含 title/episode/status）、终态行被剔除、`type=download` 仍返回 DQ 全量（含终态可选）。
-- [ ] **Step 2: 运行确认失败**：`cd backend && python -m pytest tests/test_queue.py -q -k list`
-- [ ] **Step 3: 修改实现**：`list_queue` 主分支改查扁平合并视图：`TaskQueue`(pending/ready/error) ∪ `DownloadQueue`(活跃态：pending/transferring/downloading/scrape/library/quota_wait)，join Media 取 title，终态剔除；返回扁平 dict 列表。保留 `limit/offset` 分页。
-- [ ] **Step 4: 适配前端 API 契约引用**：确认 `frontend/src/types/index.ts` QueueMediaTask 兼容扁平行（保留 `[key:string]:unknown`）。全量运行 `test_queue.py` 通过。
-- [ ] **Step 5: Commit**
+- [x] **Step 1: 写失败测试**：在 `test_queue.py` 改写 list 用例：断言返回扁平行（含 title/episode/status）、终态行被剔除、`type=download` 仍返回 DQ 全量（含终态可选）。
+- [x] **Step 2: 运行确认失败**：`cd backend && python -m pytest tests/test_queue.py -q -k list`
+- [x] **Step 3: 修改实现**：`list_queue` 主分支改查扁平合并视图：`TaskQueue`(pending/ready/error) ∪ `DownloadQueue`(活跃态：pending/transferring/downloading/scrape/library/quota_wait)，join Media 取 title，终态剔除；返回扁平 dict 列表。保留 `limit/offset` 分页。
+- [x] **Step 4: 适配前端 API 契约引用**：确认 `frontend/src/types/index.ts` QueueMediaTask 兼容扁平行（保留 `[key:string]:unknown`）。全量运行 `test_queue.py` 通过。
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/app/routers/queue.py backend/tests/test_queue.py
