@@ -248,19 +248,27 @@ def _find_real_name(entries: list[dict], file_name: str) -> str | None:
     return None
 
 
-async def _get_link_wait_visible(file_name: str, timeout: float = _LINK_WAIT_TIMEOUT) -> str:
-    """save 受理后轮询等待转存文件在 alist /quark 可见，返回直链。
+async def _get_link_wait_visible(file_name: str, timeout: float = _LINK_WAIT_TIMEOUT,
+                                 *, rename_to: str | None = None) -> tuple[str, str]:
+    """save 受理后轮询等待转存文件在 alist /quark 可见，返回 (直链, 最终 quark 路径)。
 
     阶段 3 实证：cloudSaver save 返回 task_id 受理后转存**异步落盘**，alist 同步存在
     延迟（阶段 1 实测 164KB srt 约 15s 落盘；实证 1.5-2.6G 文件落盘耗时 60-180s，
     n8n 用「Wait(10s)」节点兜底但大文件不够）。立即 get_link 会 object not found。
+
+    rename_to（用户需求：转存后立即在 alist/quark 改名，下载前即规范化集号命名）：
+      落盘真实名确认后、取直链前，把 `/quark/{真实名}` 重命名为 rename_to
+      （如 `凡人修仙传 - S01E190 - 第 190 集.mkv`）；成功则轮询目标切换为新名、
+      直链取新名路径；失败仅告警（fail-open，沿用原名继续，不阻断下载）。
+      返回的第二项 = 最终 quark 路径（改名成功为新名，否则原名）——调用方需据此
+      同步 download_queue.quark_path（后续清理/删除以最终名定位）。
 
     L4（五节点模型，oracle 决策「转存全失败」根因修复）：原实现每 5s 直接
     `alist.get_link(f"/quark/{file_name}")` 轮询 300s——get_link 调 /api/fs/get
     不带 refresh，吃 AList 缓存索引，且文件名可能被夸克规范化改名，导致文件实际
     落盘却永远拿不到直链。改造后每轮：
       1) 先 `alist.list_dir("/quark")`（该函数带 refresh=True 即时刷新）拿真实目录；
-      2) 精确匹配 file_name → 用真实名 `alist.get_link(f"/quark/{真实名}")`；
+      2) 精确匹配当前目标名（file_name 或改名后的 rename_to）→ 用真实名直链；
       3) 精确不中 → 模糊匹配（_find_real_name：去空格 / 全半角括号统一 / 去扩展名
          差异），命中用真实名取直链；
       4) 仍不中（或 list_dir 异常）→ 退化按原路径 get_link 再试一次——目录列表可能
@@ -275,6 +283,7 @@ async def _get_link_wait_visible(file_name: str, timeout: float = _LINK_WAIT_TIM
     import time as _time
 
     path = f"/quark/{file_name}"
+    expected = file_name  # 轮询目标名；改名成功后切换到新名（否则改名后按旧名找不到）
     deadline = _time.monotonic() + timeout
     last_exc: Exception | None = None
     last_entries: list[dict] = []
@@ -285,12 +294,27 @@ async def _get_link_wait_visible(file_name: str, timeout: float = _LINK_WAIT_TIM
             last_exc = exc
             entries = []
         last_entries = entries or []
-        real_name = _find_real_name(last_entries, file_name)
+        real_name = _find_real_name(last_entries, expected)
         try:
             if real_name is not None:
-                return await alist.get_link(f"/quark/{real_name}")
+                final_name = real_name
+                if rename_to and rename_to != real_name:
+                    try:
+                        await alist.rename(f"/quark/{real_name}", rename_to, overwrite=True)
+                        expected = rename_to
+                        final_name = rename_to
+                        logger.info(
+                            "[transfer] 转存落盘后改名 %s → %s",
+                            real_name, rename_to,
+                        )
+                    except Exception as exc:  # noqa: BLE001 改名失败 fail-open 沿用原名
+                        logger.warning(
+                            "[transfer] quark 改名 %s → %s 失败（沿用原名继续）: %s",
+                            real_name, rename_to, exc,
+                        )
+                return await alist.get_link(f"/quark/{final_name}"), f"/quark/{final_name}"
             # 退化兜底：原文件名直链（缓存可能已可见）；失败进入下一轮等待
-            return await alist.get_link(path)
+            return await alist.get_link(path), path
         except Exception as exc:  # noqa: BLE001  直链暂不可用（未同步/瞬时失败）→ 继续等待
             last_exc = exc
             await asyncio.sleep(5)
@@ -787,7 +811,7 @@ class _DownloadStateChanged(Exception):
 
 
 async def _commit_downloading(dq_id, media_id, episode, file_name, out_name, gid,
-                              save_task_id, t0) -> str:
+                              save_task_id, t0, quark_path: str | None = None) -> str:
     """addUri 成功 → CAS 落 downloading（aria2_gid / quark_path / local_path 落库）。
 
     条件更新 WHERE status='transferring'（rowcount 门控）：转存链（save → 落盘等待，
@@ -799,7 +823,8 @@ async def _commit_downloading(dq_id, media_id, episode, file_name, out_name, gid
     返回 'admitted'（成功）/'conflict'（状态已被并发方变动，主循环换下一个 pending）。
     """
     now = _now()
-    quark_path = f"/quark/{file_name}"
+    # quark_path 由转存链传入（已含落盘后改名的新名）；缺省回退原始名（旧数据/异常）
+    quark_path = quark_path or f"/quark/{file_name}"
     try:
         async with async_session() as s:
             async with s.begin():
@@ -878,6 +903,10 @@ async def _transfer_chain(dq_id, media_id, episode, file_name, share_code, stoke
 
     返回状态（供主循环决策）：'admitted' / 'retry' / 'terminal_failed' / 'conflict'。
     """
+    # quark 最终路径：转存落盘后可能被 _get_link_wait_visible(rename_to=download_name)
+    # 改名（用户需求：下载前 quark 即规范化集号命名），成功后此处切到新名；
+    # 失败路径与提交落库均以最终名定位（清理/删除才删得到正确文件）。
+    final_quark_path = quark_path
     try:
         # P0-1（council 兜底）：save_task_id 存在但受理超时（或该列为空）→ 视为 stale，
         # 先清 save_task_id 再走 save 分支，强制重新 save（杜绝「已受理未落盘」盲等）。
@@ -939,9 +968,12 @@ async def _transfer_chain(dq_id, media_id, episode, file_name, share_code, stoke
                                 updated_at=now_save,
                             )
                         )
-        link = await _get_link_wait_visible(file_name, timeout=_LINK_WAIT_TIMEOUT)
+        link, final_quark_path = await _get_link_wait_visible(
+            file_name, timeout=_LINK_WAIT_TIMEOUT, rename_to=download_name
+        )
         # P2（§7）：out = scan promote 已生成的 download_name（格式化落盘名）；
-        # 为 None（旧数据/异常）时回退原始名。quark 原文件与防重键均不动。
+        # 为 None（旧数据/异常）时回退原始名。quark 原文件已在转存落盘后被改名
+        # （_get_link_wait_visible rename_to），此处 out 与 quark 新名保持一致。
         out_name = download_name or file_name
         gid = await aria2.client.add_uri(
             link,
@@ -950,13 +982,13 @@ async def _transfer_chain(dq_id, media_id, episode, file_name, share_code, stoke
         )
     except Exception as exc:  # noqa: BLE001
         # 任一步失败（含转存成功但直链/aria2 提交失败）→ 节点级重试路径（L2）；
-        # 清理可能已转存的夸克残留（避免残留占用中转空间）。
+        # 清理可能已转存的夸克残留（避免残留占用中转空间；以最终名定位——若已改名）。
         return await _fail_transfer(
-            dq_id, media_id, episode, file_name, quark_path,
+            dq_id, media_id, episode, file_name, final_quark_path,
             retry_snapshot, node_attempt_snapshot, exc, t0,
         )
     return await _commit_downloading(dq_id, media_id, episode, file_name, out_name, gid,
-                                     save_task_id, t0)
+                                     save_task_id, t0, quark_path=final_quark_path)
 
 
 async def _fail_transfer(dq_id, media_id, episode, file_name, quark_path,

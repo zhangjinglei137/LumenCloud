@@ -89,12 +89,17 @@ class FakeAlist:
 
     def __init__(self):
         self.remove_calls = []  # [(names, dir)]
+        self.rename_calls = []  # [(path, new_name, overwrite)]
         self.list_dir_calls = []  # [path]
         self.link = "http://alist.test/raw/ep.mkv"
 
     async def remove(self, names, dir):
         self.remove_calls.append((list(names), dir))
         return {"success": True}
+
+    async def rename(self, path, new_name, overwrite=True):
+        self.rename_calls.append((path, new_name, overwrite))
+        return {}
 
     async def get_link(self, path):
         return self.link
@@ -533,6 +538,39 @@ def test_download_started_notification_after_commit(db, env, monkeypatch):
     # 落盘名/本地路径与 download_name 对齐
     assert dq.quark_path == "/quark/Show.S01E02.1080p.mkv"
     assert dq.local_path == "/downloads/测试剧 - S01E02 - 第 2 集.mkv"
+
+
+def test_transfer_renames_quark_after_save(db, env, monkeypatch):
+    """用户需求：转存落盘后、取直链前，在 alist/quark 用 /api/fs/rename 改名
+    （download_name 提供且与落盘真实名不同 → 改名；quark_path 落库新名，
+    后续清理/删除按新名定位）。"""
+    patch_db(monkeypatch, db)
+    mid, dq_id = run(seed_pending(
+        db, file_name="ep.mkv", download_name="测试剧 - S01E02 - 第 2 集.mkv",
+    ))
+
+    run(transfer_mod.process_transfer_queue())
+
+    dq = run(read_row(db, DownloadQueue, dq_id))
+    assert dq.status == "downloading"
+    # 改名调用：/quark/ep.mkv → 测试剧 - S01E02 - 第 2 集.mkv
+    assert env["alist"].rename_calls == [
+        ("/quark/ep.mkv", "测试剧 - S01E02 - 第 2 集.mkv", True)
+    ]
+    assert dq.quark_path == "/quark/测试剧 - S01E02 - 第 2 集.mkv"
+    assert dq.local_path == "/downloads/测试剧 - S01E02 - 第 2 集.mkv"
+
+
+def test_transfer_keeps_original_name_without_download_name(db, env, monkeypatch):
+    """download_name 缺失（旧数据/异常）→ 不改名，quark_path 用原始名。"""
+    patch_db(monkeypatch, db)
+    mid, dq_id = run(seed_pending(db, file_name="ep.mkv", download_name=None))
+
+    run(transfer_mod.process_transfer_queue())
+
+    assert env["alist"].rename_calls == []  # 无 download_name → 不触发改名
+    dq = run(read_row(db, DownloadQueue, dq_id))
+    assert dq.quark_path == "/quark/ep.mkv"
 
 
 def test_admit_processes_multiple_pending(db, env, monkeypatch):

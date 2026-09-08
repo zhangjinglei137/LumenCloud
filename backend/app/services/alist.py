@@ -260,9 +260,23 @@ async def remove(names: list[str], dir: str) -> dict[str, Any]:
     return await _post("/api/fs/remove", {"dir": dir, "names": list(names)})
 
 
+async def rename(path: str, new_name: str, overwrite: bool = True) -> dict[str, Any]:
+    """重命名文件（POST /api/fs/rename；转存落盘后立即规范化集号命名，alist 目录整洁）。
+
+    参数:
+        path:     原文件完整路径（如 /quark/190.mkv）
+        new_name: 新文件名（如 凡人修仙传 - S01E190 - 第 190 集.mkv，不带路径）
+        overwrite: 目标已存在时是否覆盖（默认 True）
+    返回: alist data（业务失败抛 AlistUnavailable）。
+    """
+    return await _post(
+        "/api/fs/rename",
+        {"path": path, "overwrite": overwrite, "name": new_name},
+    )
+
+
 async def get_link(path: str) -> str:
     """取直链（POST /api/fs/get，供 aria2 addUri 下载）。
-
     url 优先、raw_url 回退：部分驱动（如夸克）在 AList 缓存命中时
     data.url 可能为空，但 data.raw_url 仍返回原始直链（n8n 旧版
     「Aria下载」节点即取 getResponse.data.raw_url），二者其一非空
