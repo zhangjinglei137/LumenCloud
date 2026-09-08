@@ -123,6 +123,41 @@ def test_capacity_pending_failure_keeps_200(monkeypatch):
         assert "reserved_gb" in body and "recent_snapshots" in body  # 其它增强字段未受影响
 
 
+def test_capacity_decimal_reserved_gb_no_500(monkeypatch):
+    """PG 回归（容量 500 真根因）：alist 就绪（total/used 为 float）时，若
+    reserved 返回 decimal.Decimal（PG 下 func.sum(file_size) 为 NUMERIC →
+    asyncpg 返回 Decimal；SQLite 返回 int 故本地测试不显），端点混合算术
+    float - Decimal 曾抛 TypeError → 生产 /api/capacity 500（前端 30s 轮询
+    持续刷错）。修复后统一转 float，available_gb 正常计算。
+    """
+    from decimal import Decimal
+
+    import app.routers.capacity as cap_mod
+
+    async def _usage_ok():
+        return {
+            "source": "alist",
+            "total_gb": 210.0,
+            "used_gb": 1.28,
+            "checked_at": "2026-09-08T05:00:00.000000",
+        }
+
+    async def _reserved_decimal(_session):
+        return Decimal("0.5")
+
+    monkeypatch.setattr(cap_mod, "_get_usage", _usage_ok)
+    monkeypatch.setattr(cap_mod, "_reserved_gb", _reserved_decimal)
+
+    with TestClient(app) as client:
+        headers = _auth(_login_admin(client))
+        r = client.get("/api/capacity", headers=headers)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert isinstance(body["available_gb"], float)
+        assert body["reserved_gb"] == 0.5
+        assert body["available_gb"] == round(210.0 - 1.28 - 0.5, 2)
+
+
 # ---------------------------------------------------------------------------
 # 2) deps.get_session：DB 不可用 → 503（而非裸 500）
 # ---------------------------------------------------------------------------

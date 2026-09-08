@@ -64,6 +64,11 @@ async def capacity(
     # 前端三段容量条（已用/预留中/可用）据此渲染（Playwright 验证修复：
     # 此前 capacity 未提供 reserved_gb，前端「预留中」显示 —）。
     reserved_gb = await _reserved_gb(session)
+    # PG 下 `_reserved_gb` 可能返回 decimal.Decimal（SUM(NUMERIC)）——统一转 float：
+    # ① 混合算术 total-used-reserved 不会 TypeError（float-Decimal 曾致生产 500）；
+    # ② JSON 序列化稳定为数字而非字符串（前端容量条渲染依赖数值）。
+    if reserved_gb is not None:
+        reserved_gb = float(reserved_gb)
     available_gb = None
     if total_gb is not None and used_gb is not None and reserved_gb is not None:
         available = round(total_gb - used_gb - reserved_gb, 2)
@@ -104,7 +109,10 @@ async def _reserved_gb(session: AsyncSession) -> float | None:
     except Exception as exc:  # noqa: BLE001  预留为增强字段，失败不 500
         logger.warning("[capacity] 读取 reserved 聚合失败（返回 None）: %s", exc)
         return None
-    return round(total_bytes / _GB, 2)
+    # PG 下 func.sum(NUMERIC) 返回 decimal.Decimal，必须转 float：端点做
+    # `total_gb - used_gb - reserved_gb` 混合算术，Decimal 混入会 TypeError
+    # （SQLite 返回 int 故测试不显，生产 alist 就绪后才触发——容量 500 根因）。
+    return round(float(total_bytes) / _GB, 2)
 
 
 # 阶段 4 生产化 / E：最近快照查询（交付 3，Q6 容量长期趋势数据）
@@ -207,4 +215,5 @@ async def _pending_estimate_gb(session: AsyncSession) -> float | None:
     except Exception as exc:  # noqa: BLE001  pending 预估为增强字段，失败不 500
         logger.warning("读取 pending 预估失败（返回 None）: %s", exc)
         return None
-    return round(total_bytes / _GB, 2)
+    # 同 _reserved_gb：PG 下 SUM(NUMERIC) 为 Decimal，统一转 float 保持契约类型
+    return round(float(total_bytes) / _GB, 2)
