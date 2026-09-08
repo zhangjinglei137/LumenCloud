@@ -23,7 +23,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import Base
 import app.models  # noqa: F401  注册全部 ORM 模型
-from app.models import EpisodeState, Media, TaskRun, TransferQueue
+from app.models import DownloadQueue, Media, TaskQueue, TaskRun
 
 
 def run(coro):
@@ -180,27 +180,28 @@ def test_scan_one_tv_missing_default_full_mode_enqueues(db, monkeypatch):
     mid = run(_seed_media(db))
     rid = run(scan_mod._scan_one(mid))
 
-    # task_run：success + 全量入队 1 条
+    # task_run：success + 全量入队 1 条（两队列：download_queue pending + task_queue ready）
     async def _read_run():
         async with db() as s:
             tr = (await s.execute(
                 select(TaskRun).where(TaskRun.media_id == mid)
             )).scalars().first()
-            es = (await s.execute(
-                select(EpisodeState).where(EpisodeState.media_id == mid)
+            dq = (await s.execute(
+                select(DownloadQueue).where(DownloadQueue.media_id == mid)
             )).scalars().first()
             tq = (await s.execute(
-                select(TransferQueue).where(TransferQueue.media_id == mid)
+                select(TaskQueue).where(TaskQueue.media_id == mid)
             )).scalars().first()
-            return tr, es, tq
-    tr, es, tq = run(_read_run())
+            return tr, dq, tq
+    tr, dq, tq = run(_read_run())
 
     assert tr.status == "success"
     assert "已入队 1 个资源" in tr.message
-    # 全量模式：episode=文件名，具体文件被视为缺失集入队
-    assert es.episode == "S01E01.mkv"
-    assert es.state == "queued"
-    assert tq.status == "pending"
+    # 全量模式（tv 未收录默认 soft 全量）：episode=文件名，具体文件被视为缺失集入队
+    # （§4.1 promote 双写；task_queue 置 done——同步探测 promote 完成即终态）
+    assert dq.episode == "S01E01.mkv"
+    assert dq.status == "pending"
+    assert tq.status == "done"
     assert rid == tr.id
 
 
@@ -217,14 +218,14 @@ def test_scan_one_tv_missing_required_skips(db, monkeypatch):
             tr = (await s.execute(
                 select(TaskRun).where(TaskRun.media_id == mid)
             )).scalars().first()
-            es = (await s.execute(
-                select(EpisodeState).where(EpisodeState.media_id == mid)
+            dq = (await s.execute(
+                select(DownloadQueue).where(DownloadQueue.media_id == mid)
             )).scalars().first()
-            return tr, es
-    tr, es = run(_read_run())
+            return tr, dq
+    tr, dq = run(_read_run())
 
     assert tr.status == "skipped"
     assert "防重基线强制" in tr.message
     assert "scan_baseline_required=True" in tr.message
-    assert es is None  # 未入队
+    assert dq is None  # 未入队（download_queue 无行）
     assert rid == tr.id

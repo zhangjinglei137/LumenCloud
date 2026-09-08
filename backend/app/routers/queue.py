@@ -1,45 +1,85 @@
-"""队列 API（L8 影视任务树）：JWT 鉴权 + 树结构 + 人工重试。
+"""队列 API（影视下载两队列重设计 §8.2 控制面 + §8.1 树结构契约）。
 
-- GET  /api/queue           影视任务树列表（登录用户）：
-                              父级 = 影视任务（按 media 分组，aggregate_status 聚合
-                              all_done/partial_failed/running/waiting，
-                              total_count / done_count），
-                              子级 = 分集五节点状态机（node/node_attempt/node_error）。
-                              §9.1 网盘凭据（stoken/fids/share_code 等）一律不返回，
-                              guest/admin 同构。
-- POST /api/queue/{id}/retry admin 人工重试 failed 子任务：
-                              task_id 优先为 episode_state.id（新树结构子任务 id），
-                              兼容旧扁平调用按 transfer_queue.id 传入；
-                              仅 node='failed'（或旧数据 state='failed'）可重试；
-                              重置节点字段 + 双表联动回 pending/queued +
-                              清空 transfer_queue 幂等标记（防盲等）；
-                              非 failed → 409，不存在 → 404，条件更新防并发，
-                              commit 后触发转存消费（失败仅告警不阻断）。
+- GET  /api/queue                       影视任务树（登录用户）：
+                                         父级 = 影视（按 media 分组，aggregate_status
+                                         聚合 + probe_counts 探测层计数 + scan_tasks 巡检摘要），
+                                         子级 = download_queue（执行视图，node=status）+
+                                         task_queue（探测视图，tq_status）+ 新契约字段
+                                         （silent_until/share_code_tail）。
+                                         ?type=download → 下载队列扁平列表（DownloadQueueItem[]，
+                                         §8.1 下载队列 Tab：按准入顺序、支持仅看活跃/取消/排序）。
+- POST /api/queue/download/pause|resume 整条下载队列暂停/恢复（system_config 开关，
+                                         语义：暂停=不取新+在途继续）。
+- GET  /api/queue/download/state        暂停状态 + 在途任务数（横幅文案数据源）。
+- POST /api/queue/{id}/cancel           取消单任务：清 aria2 任务 + 删夸克残留 +
+                                         status='failed'（reserved 由 DB 聚合自动释放）；
+                                         task_queue 对应行同步 done。
+- POST /api/queue/{id}/prioritize       置顶/优先（pending/quota_wait 的 enqueued_at 提前）。
+- POST /api/queue/{id}/skip             跳过某集（写 DownloadQueue(status='skipped') 防重终态
+                                         + TaskQueue done，防 scan 重新入队）。
+- POST /api/queue/{id}/retry            重试（兼容 DownloadQueue failed/skipped 与
+                                         TaskQueue error/unmatched；旧三表语义兼容回退）。
+- POST /api/queue/{id}/promote          task_queue ready → 手动产出 download_queue(pending)。
+- POST /api/queue/probe/{media_id}      手动触发单影视探测（scan_media 后台）。
+- POST /api/queue/tasks                 手动加集（body {media_id, episode} → task_queue pending）。
+- POST /api/queue/{id}/sort             调整 pending 顺序（body {direction: up|down|top}，
+                                         enqueued_at 交换）。
+- GET  /api/queue/download/progress     downloading 行实时进度（aria2.tellStatus 聚合；
+                                         失败行降级返回 null 字段，局部轮询用）。
+
+权限：除 GET /queue 树外均需 admin（§8.2）；网盘凭据（stoken/fids 等）一律不返回。
 """
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from typing import Annotated, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import or_, select, update
+from pydantic import BaseModel
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import EpisodeState, Media, TaskRun, TransferQueue, User
+from app.models import (
+    DownloadQueue,
+    EpisodeState,  # 旧三表兼容回退分支使用（只读归档）
+    Media,
+    SystemConfig,
+    TaskQueue,
+    TaskRun,
+    User,
+)
 from app.routers.deps import get_current_admin, get_current_user, get_session
+from app.services import alist, aria2
+from app.tasks import as_bool
 
 router = APIRouter()
 
 logger = logging.getLogger(__name__)
 
-# 父级聚合状态判定中的「进行中」节点集合（L8 oracles 决策）：idle 归「等待」。
-_RUNNING_NODES = frozenset({"transfer", "download", "downloading", "scrape", "library"})
+# 下载队列在途状态（暂停横幅 in_flight / 取消释放 reserved / progress 轮询集合）
+_IN_FLIGHT_STATUSES = ("transferring", "downloading", "scrape", "library")
+# 全局暂停开关 system_config 键（§8.2：暂停=不取新+在途继续）
+_PAUSE_CONFIG_KEY = "download_queue_paused"
+
+# 父级聚合状态判定集合（§8.1 树聚合）
+_DQ_RUNNING = ("transferring", "downloading", "scrape", "library", "quota_wait")
+_TQ_RUNNING = ("probing", "ready")
+_DQ_FAILED = ("failed",)
+_TQ_FAILED = ("error",)
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-def _iso(dt: datetime | None) -> str | None:
+def _iso(dt: Optional[datetime]) -> Optional[str]:
     return dt.isoformat() if dt else None
+
+
+def _share_code_tail(code: Optional[str]) -> Optional[str]:
+    """分享码末 4 位缩略（缩略展示，不泄露完整凭据）。"""
+    if not code:
+        return None
+    return str(code)[-4:]
 
 
 # 兼容旧模块名（其他 lane / capacity.py 仍可能按此名导入该 helper）
@@ -54,22 +94,6 @@ def _load_transfer_queue_model():
     return TransferQueue
 
 
-def _child_dto(es: EpisodeState) -> dict:
-    """子任务 DTO（分集五节点视图，§9.1 白名单）：仅返回非敏感字段。"""
-    return {
-        "id": es.id,  # 重试接口 POST /queue/{id}/retry 用（episode_state.id）
-        "episode": es.episode,
-        "node": es.node,
-        "node_attempt": es.node_attempt,
-        "node_error": es.node_error,
-        "file_name": es.file_name,
-        "file_size": es.file_size,
-        "updated_at": _iso(es.updated_at),
-        "node_started_at": _iso(es.node_started_at),
-        "node_finished_at": _iso(es.node_finished_at),
-    }
-
-
 def _scan_task_dto(run: TaskRun) -> dict:
     """父级挂载的最近巡检摘要（scan_tasks 元素，非敏感字段）。"""
     return {
@@ -81,31 +105,85 @@ def _scan_task_dto(run: TaskRun) -> dict:
     }
 
 
+def _dq_child_dto(dq: DownloadQueue) -> dict:
+    """下载队列（执行视图）子任务 DTO：node=dq.status，无 tq_status（前端回退 node 展示）。"""
+    return {
+        "id": dq.id,
+        "episode": dq.episode,
+        "node": dq.status,
+        "node_attempt": dq.node_attempt,
+        "node_error": dq.node_error,
+        "file_name": dq.file_name,
+        "file_size": dq.file_size,
+        "updated_at": _iso(dq.updated_at),
+        "node_started_at": _iso(dq.node_started_at),
+        "node_finished_at": _iso(dq.node_finished_at),
+        # 两队列新契约：tq_status 存在时优先于 node 展示；本行无对应探测视图 → None
+        "tq_status": None,
+        "silent_until": None,
+        "share_code_tail": _share_code_tail(dq.share_code),
+        # 兼容旧扁平结构字段
+        "status": dq.status,
+        "error": dq.error,
+        "enqueued_at": _iso(dq.enqueued_at),
+        "quota_reject_count": dq.quota_reject_count,
+        "media_id": dq.media_id,
+    }
+
+
+def _tq_child_dto(tq: TaskQueue) -> dict:
+    """任务队列（探测视图）子任务 DTO：tq_status 优先展示；node 空/无节点概念。"""
+    return {
+        "id": tq.id,
+        "episode": tq.episode,
+        "node": None,
+        "node_attempt": tq.probe_attempt,
+        "node_error": tq.error,
+        "file_name": tq.file_name,
+        "file_size": tq.file_size,
+        "updated_at": _iso(tq.updated_at),
+        "node_started_at": None,
+        "node_finished_at": None,
+        "tq_status": tq.status,
+        "silent_until": _iso(tq.silent_until),   # unmatched 静默倒计时数据源
+        "share_code_tail": _share_code_tail(tq.share_code),
+        # 兼容旧扁平结构字段
+        "status": tq.status,
+        "error": tq.error,
+        "enqueued_at": _iso(tq.created_at),
+        "media_id": tq.media_id,
+    }
+
+
+def _child_status_key(c: dict) -> str:
+    """子任务展示状态键（tq_status 优先，否则 node；前端同口径）。"""
+    return c.get("tq_status") or c.get("node") or ""
+
+
 def _aggregate_status(children: list[dict]) -> str:
-    """父级聚合状态规则（L8 oracles 决策，按优先级依次判定）：
+    """父级聚合状态（§8.1，按优先级依次判定）：
     - 空                                  → waiting
-    - 全部子任务 node='done'              → all_done
-    - 任一子任务 node='failed'            → partial_failed
-    - 任一进行中（transfer/download/downloading/scrape/library）→ running
-    - 其余（全部 idle / 未知节点）        → waiting
-    （idle 视为「等待开始」计入 waiting；「进行中」集合不含 idle，
-      否则「全部等待 → waiting」分支将永不命中。）
+    - 全部 done（dq done / tq done）        → all_done
+    - 任一失败（dq failed / tq error）      → partial_failed
+    - 任一进行中（dq 在途/quota_wait、tq probing/ready）→ running
+    - 其余（dq pending、tq pending/unmatched 等排队/静默）→ waiting
     """
     if not children:
         return "waiting"
-    if all(c["node"] == "done" for c in children):
+    statuses = [_child_status_key(c) for c in children]
+    if all(s == "done" for s in statuses):
         return "all_done"
-    if any(c["node"] == "failed" for c in children):
+    if any(s in _DQ_FAILED or s in _TQ_FAILED for s in statuses):
         return "partial_failed"
-    if any(c["node"] in _RUNNING_NODES for c in children):
+    if any(s in _DQ_RUNNING or s in _TQ_RUNNING for s in statuses):
         return "running"
     return "waiting"
 
 
 def _parent_dto(group: dict) -> dict:
-    """父级 DTO（影视任务）：分组内子任务 + 聚合指标。"""
+    """父级 DTO（影视）：分组内子任务 + 聚合指标 + probe_counts。"""
     children = group["children"]
-    done_count = sum(1 for c in children if c["node"] == "done")
+    done_count = sum(1 for c in children if _child_status_key(c) == "done")
     return {
         "media_id": group["media_id"],
         "title": group["title"],
@@ -113,69 +191,105 @@ def _parent_dto(group: dict) -> dict:
         "aggregate_status": _aggregate_status(children),
         "total_count": len(children),
         "done_count": done_count,
+        # §8.1 新契约：探测层聚合计数（{pending,probing,ready,unmatched,error}，传空计 0）
+        "probe_counts": {
+            "pending": group["probe_counts"].get("pending", 0),
+            "probing": group["probe_counts"].get("probing", 0),
+            "ready": group["probe_counts"].get("ready", 0),
+            "unmatched": group["probe_counts"].get("unmatched", 0),
+            "error": group["probe_counts"].get("error", 0),
+        },
         "children": children,
     }
 
 
-@router.get("/queue")
-async def list_queue(
-    user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-    limit: int = Query(default=100, ge=1, le=500),
-    offset: int = Query(default=0, ge=0),
+async def _list_tree(
+    session: AsyncSession, limit: int, offset: int,
 ) -> list[dict]:
-    """影视任务树列表（L8 树结构契约，替代旧扁平 QueueItem[]）。
-
-    一次取回分页的 episode_state（LEFT JOIN media 取 title/media_type），按其
-    media_id 分组为父级；孤儿 es（media 记录已不存在，FK 保护下少见）归入合成
-    父级 media_id=null，title 取首个子任务 file_name（缺省「未关联影视」）。
-    父级按子任务最近 updated_at 倒序，子任务内按 updated_at 倒序。
-
-    巡检可见性改造：每个真实 media 父级附加 scan_tasks（该 media 最近巡检记录
-    摘要，task_type='scan_media'）。一次批量查询（media_ids IN）取最近 1 条/影视，
-    避免 N+1；孤儿父级（media 不存在）scan_tasks=[]。
+    """影视任务树（§8.1）：父级=影视分组；children=download_queue 执行视图 + task_queue
+    探测视图（两队列聚合）。父级按组内最近 updated_at 倒序，children 内同口径倒序；
+    media 已删除的行归入合成孤儿父级。分页作用于父级切片。
     """
-    rows = (
-        await session.execute(
-            select(EpisodeState, Media)
-            .outerjoin(Media, Media.id == EpisodeState.media_id)
-            .order_by(EpisodeState.updated_at.desc(), EpisodeState.id.desc())
-            .limit(limit)
-            .offset(offset)
+    dq_rows = (
+        (
+            await session.execute(
+                select(DownloadQueue).order_by(
+                    DownloadQueue.media_id.asc(), DownloadQueue.updated_at.desc(),
+                    DownloadQueue.id.desc(),
+                )
+            )
         )
-    ).all()
+        .scalars()
+        .all()
+    )
+    tq_rows = (
+        (
+            await session.execute(
+                select(TaskQueue).order_by(
+                    TaskQueue.media_id.asc(), TaskQueue.updated_at.desc(),
+                    TaskQueue.id.desc(),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    # media 一次性批量查询（避免 N+1）
+    media_ids = {r.media_id for r in dq_rows} | {r.media_id for r in tq_rows}
+    media_map: dict[int, Media] = {}
+    if media_ids:
+        media_map = {
+            m.id: m for m in (
+                await session.execute(select(Media).where(Media.id.in_(media_ids)))
+            ).scalars().all()
+        }
 
     # 按 media_id 分组（保序）；孤儿用统一哨兵 key 合成一个父级
     orphan_key: object = object()
     groups: dict[object, dict] = {}
-    for es, media in rows:
-        key = es.media_id if media is not None else orphan_key
+
+    def _group_for(media_id: int, title_fb: Optional[str]) -> dict:
+        media = media_map.get(media_id)
+        key: object = media_id if media is not None else orphan_key
         g = groups.get(key)
         if g is None:
             if media is not None:
-                media_id, title, media_type = media.id, media.title, media.media_type
+                title, media_type = media.title, media.media_type
             else:
-                media_id = None
-                title = es.file_name or "未关联影视"
+                title = title_fb or "未关联影视"
                 media_type = None
             g = {
-                "media_id": media_id,
+                "media_id": media_id if media is not None else None,
                 "title": title,
                 "media_type": media_type,
                 "children": [],
-                # 组内最近 updated_at（父级排序用；es.updated_at 可能为 None → 兜底最小）
-                "latest": es.updated_at or datetime.min,
+                "latest": datetime.min,
+                "probe_counts": {},
             }
             groups[key] = g
-        if es.updated_at and es.updated_at > g["latest"]:
-            g["latest"] = es.updated_at
-        g["children"].append(_child_dto(es))
+        return g
+
+    for tq in tq_rows:
+        g = _group_for(tq.media_id, tq.file_name)
+        if tq.updated_at and tq.updated_at > g["latest"]:
+            g["latest"] = tq.updated_at
+        g["children"].append(_tq_child_dto(tq))
+        # probe_counts 聚合（探测视图计数；done 等不做探测计数）
+        if tq.status in ("pending", "probing", "ready", "unmatched", "error"):
+            g["probe_counts"][tq.status] = g["probe_counts"].get(tq.status, 0) + 1
+
+    for dq in dq_rows:
+        g = _group_for(dq.media_id, dq.file_name)
+        if dq.updated_at and dq.updated_at > g["latest"]:
+            g["latest"] = dq.updated_at
+        g["children"].append(_dq_child_dto(dq))
 
     # 巡检可见性：批量取各真实 media 最近 1 条巡检记录（task_type='scan_media'），
-    # 一次 IN 查询 + 按 (media_id, started_at) 分组取每组第一条（started_at 倒序），
-    # 避免每父级一次查询的 N+1；孤儿父级（media 不存在）不在 media_ids 中 → 空列表。
+    # 一次 IN 查询 + 按 (media_id, started_at) 分组取每组第一条（started_at 倒序）；
+    # 孤儿父级（media 不存在）不在 media_ids 中 → 空列表。
     real_ids = [g["media_id"] for g in groups.values()
-                if g["media_id"] is not None]  # 真实 media 父级（孤儿哨兵键无 media_id）
+                if isinstance(g["media_id"], int)]
     scan_by_media: dict[int, list[dict]] = {}
     if real_ids:
         scan_rows = (
@@ -192,10 +306,10 @@ async def list_queue(
             if run.media_id is not None and run.media_id not in scan_by_media:
                 scan_by_media[run.media_id] = [_scan_task_dto(run)]
 
-    # 父级按子任务最近 updated_at 倒序
+    # 父级按子任务最近 updated_at 倒序 → 分页切片
     ordered = sorted(groups.values(), key=lambda g: g["latest"], reverse=True)
     result: list[dict] = []
-    for g in ordered:
+    for g in ordered[offset: offset + limit]:
         dto = _parent_dto(g)
         if isinstance(g["media_id"], int):
             dto["scan_tasks"] = scan_by_media.get(g["media_id"], [])
@@ -205,65 +319,393 @@ async def list_queue(
     return result
 
 
+async def _list_download(
+    session: AsyncSession, limit: int, offset: int,
+) -> list[dict]:
+    """下载队列扁平列表（§8.1，?type=download）：按准入顺序（enqueued_at 倒序）。"""
+    rows = (
+        await session.execute(
+            select(DownloadQueue, Media)
+            .outerjoin(Media, Media.id == DownloadQueue.media_id)
+            .order_by(DownloadQueue.enqueued_at.desc(), DownloadQueue.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+    ).all()
+    result = []
+    for dq, media in rows:
+        result.append({
+            "id": dq.id,
+            "media_id": dq.media_id,
+            "media_title": media.title if media is not None else None,
+            "episode": dq.episode,
+            "file_name": dq.file_name,
+            "file_size": dq.file_size,
+            "share_code": dq.share_code,
+            "status": dq.status,
+            "node_attempt": dq.node_attempt,
+            "node_error": dq.node_error,
+            "retry_count": dq.retry_count,
+            "quota_hint": dq.error,  # quota_wait 排队原因（后端直出，前端可读）
+            "aria2_gid": dq.aria2_gid,
+            "enqueued_at": _iso(dq.enqueued_at),
+            "updated_at": _iso(dq.updated_at),
+        })
+    return result
+
+
+@router.get("/queue")
+async def list_queue(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    type: Annotated[Optional[str], Query()] = None,
+) -> list[dict]:
+    """影视任务树列表（§8.1 树结构契约）或 ?type=download 下载队列扁平列表。"""
+    if type == "download":
+        return await _list_download(session, limit, offset)
+    return await _list_tree(session, limit, offset)
+
+
+# ---------------------------------------------------------------------------
+# 整条下载队列暂停 / 恢复 / 状态
+# ---------------------------------------------------------------------------
+
+async def _set_pause(value: bool, session: AsyncSession) -> bool:
+    now = _now()
+    await session.merge(SystemConfig(key=_PAUSE_CONFIG_KEY, value="true" if value else "false",
+                                     updated_at=now))
+    await session.commit()
+    return value
+
+
+@router.post("/queue/download/pause")
+async def pause_download_queue(
+    admin: User = Depends(get_current_admin),  # noqa: B008  §9.1 写操作鉴权
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """暂停整条下载队列（§8.2：暂停=不取新+在途继续；不调 aria2.pause）。"""
+    return {"paused": await _set_pause(True, session)}
+
+
+@router.post("/queue/download/resume")
+async def resume_download_queue(
+    admin: User = Depends(get_current_admin),  # noqa: B008
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """恢复整条下载队列。"""
+    return {"paused": await _set_pause(False, session)}
+
+
+@router.get("/queue/download/state")
+async def download_queue_state(
+    admin: User = Depends(get_current_admin),  # noqa: B008
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """暂停状态 + 在途任务数（§8.1 横幅「队列已暂停，在途 n 个继续完成」）。"""
+    row = await session.get(SystemConfig, _PAUSE_CONFIG_KEY)
+    paused = as_bool(row.value) if row is not None else False
+    in_flight = (
+        await session.scalar(
+            select(func.count())
+            .select_from(DownloadQueue)
+            .where(DownloadQueue.status.in_(_IN_FLIGHT_STATUSES))
+        )
+    ) or 0
+    return {"paused": paused, "in_flight": in_flight}
+
+
+# ---------------------------------------------------------------------------
+# 单任务控制面
+# ---------------------------------------------------------------------------
+
+async def _cleanup_cancel_side_effects(dq: DownloadQueue) -> None:
+    """取消任务的事务提交后 best-effort 清理副作用（B-3；失败仅记录不阻断）。"""
+    if dq.aria2_gid:
+        try:
+            await aria2.client.remove(dq.aria2_gid)
+        except Exception as exc:  # noqa: BLE001  已失效/已 complete 时静默跳过（§8.2 幂等兜底）
+            logger.warning("[queue] cancel 移除 aria2 任务失败 %s: %s", dq.aria2_gid, exc)
+    if dq.quark_path:
+        try:
+            path = (dq.quark_path or "").strip().rstrip("/")
+            if "/" in path:
+                dir_part, name = path.rsplit("/", 1)
+                await alist.remove([name], (dir_part or "/") + "/")
+            elif path:
+                await alist.remove([path], "/")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[queue] cancel 删除夸克残留失败 %s: %s", dq.quark_path, exc)
+
+
+async def _trigger_consume() -> None:
+    """重试/手动入队成功后触发下载队列消费（事件触发，失败仅告警不阻断）。"""
+    try:
+        from app.tasks.transfer import trigger_transfer
+
+        await trigger_transfer()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[queue] 触发下载队列消费失败（不阻断）: %s", exc)
+
+
+@router.post("/queue/{task_id}/cancel")
+async def cancel_task(
+    task_id: int,
+    admin: User = Depends(get_current_admin),  # noqa: B008
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """取消单任务（§8.2，不可逆）：DownloadQueue 进行中/排队 → status='failed' +
+    error='人工取消'；事务提交后清 aria2 任务 + 删夸克残留（reserved 由 DB 聚合
+    自动释放）；task_queue 对应行同步 done（探测视图不再入队）。task_id 也可指
+    task_queue 行（探测视图取消 → done，不再探测）。"""
+    now = _now()
+    dq = await session.get(DownloadQueue, task_id)
+    if dq is not None:
+        if dq.status in ("done", "skipped", "failed"):
+            raise HTTPException(status_code=409, detail="终态任务不可取消")
+        err = "人工取消"
+        r = await session.execute(
+            update(DownloadQueue)
+            .where(DownloadQueue.id == dq.id, DownloadQueue.status == dq.status)  # 快照门控
+            .values(status="failed", node_error=err, error=err,
+                    node_finished_at=now, updated_at=now)
+        )
+        if r.rowcount == 0:
+            raise HTTPException(status_code=409, detail="任务状态已变化，请刷新后重试")
+        await session.execute(
+            update(TaskQueue)
+            .where(TaskQueue.media_id == dq.media_id, TaskQueue.episode == dq.episode)
+            .values(status="done", updated_at=now)
+        )
+        await session.commit()
+        await _cleanup_cancel_side_effects(dq)
+        return {"ok": True}
+
+    # 探测视图取消：task_queue → done（不再参与探测），防重不涉及
+    tq = await session.get(TaskQueue, task_id)
+    if tq is None:
+        raise HTTPException(status_code=404, detail="队列任务不存在")
+    await session.execute(
+        update(TaskQueue).where(TaskQueue.id == tq.id).values(status="done", updated_at=now)
+    )
+    await session.commit()
+    return {"ok": True}
+
+
+@router.post("/queue/{task_id}/prioritize")
+async def prioritize_task(
+    task_id: int,
+    admin: User = Depends(get_current_admin),  # noqa: B008
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """置顶/优先（§8.2）：pending/quota_wait 的 enqueued_at 提前至同队列最小值的
+    「-1s」（SQLite CURRENT_TIMESTAMP 秒级精度，与最小并列时再逐秒前移保证排到最前）。"""
+    now = _now()
+    dq = await session.get(DownloadQueue, task_id)
+    if dq is not None:
+        if dq.status not in ("pending", "quota_wait"):
+            raise HTTPException(status_code=409, detail="仅 pending/quota_wait 任务可置顶")
+        candidates = ("pending", "quota_wait")
+    else:
+        # 探测视图置顶：task_queue 无独立顺序列，用 created_at 前移（探测顺序不敏感，
+        # 兼容前端 tree 对 pending 子行的置顶按钮）
+        tq = await session.get(TaskQueue, task_id)
+        if tq is None:
+            raise HTTPException(status_code=404, detail="队列任务不存在")
+        min_ts = await session.scalar(
+            select(func.min(TaskQueue.created_at)).where(
+                TaskQueue.created_at.is_not(None),
+            )
+        )
+        new_ts = (min_ts or now) - timedelta(seconds=1)
+        await session.execute(
+            update(TaskQueue).where(TaskQueue.id == tq.id).values(created_at=new_ts, updated_at=now)
+        )
+        await session.commit()
+        return {"ok": True}
+
+    min_ts = await session.scalar(
+        select(func.min(DownloadQueue.enqueued_at)).where(
+            DownloadQueue.status.in_(candidates),
+            DownloadQueue.enqueued_at.is_not(None),
+        )
+    )
+    new_ts = (min_ts or now) - timedelta(seconds=1)
+    while (await session.scalar(
+        select(func.count())
+        .select_from(DownloadQueue)
+        .where(DownloadQueue.enqueued_at == new_ts, DownloadQueue.id != dq.id)
+    )) or 0:
+        new_ts -= timedelta(seconds=1)
+    r = await session.execute(
+        update(DownloadQueue)
+        .where(DownloadQueue.id == dq.id, DownloadQueue.status == dq.status)
+        .values(enqueued_at=new_ts, updated_at=now)
+    )
+    if r.rowcount == 0:
+        raise HTTPException(status_code=409, detail="任务状态已变化，请刷新后重试")
+    await session.commit()
+    return {"ok": True}
+
+
+@router.post("/queue/{task_id}/skip")
+async def skip_task(
+    task_id: int,
+    admin: User = Depends(get_current_admin),  # noqa: B008
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """跳过某集（§8.2）：写 DownloadQueue(status='skipped') 作防重终态 + TaskQueue done，
+    防 scan 重新入队。task_id 可为 DownloadQueue 行（当前任务跳过）或 TaskQueue 行
+    （探测视图 skipped → 无 dq 时按快照补写防重终态，兜底 NOT NULL 字段）。"""
+    now = _now()
+    dq = await session.get(DownloadQueue, task_id)
+    if dq is not None:
+        if dq.status in ("done", "skipped", "failed"):
+            raise HTTPException(status_code=409, detail="终态任务不可跳过")
+        r = await session.execute(
+            update(DownloadQueue)
+            .where(DownloadQueue.id == dq.id, DownloadQueue.status == dq.status)
+            .values(status="skipped", node_error=None, error=None,
+                    node_finished_at=now, updated_at=now)
+        )
+        if r.rowcount == 0:
+            raise HTTPException(status_code=409, detail="任务状态已变化，请刷新后重试")
+        await session.execute(
+            update(TaskQueue)
+            .where(TaskQueue.media_id == dq.media_id, TaskQueue.episode == dq.episode)
+            .values(status="done", updated_at=now)
+        )
+        await session.commit()
+        return {"ok": True}
+
+    tq = await session.get(TaskQueue, task_id)
+    if tq is None:
+        raise HTTPException(status_code=404, detail="队列任务不存在")
+    # 探测视图跳过：同 (media, episode) 已有 dq（任意状态）→ 直接置 tq done；
+    # 无 dq 但已探测到快照（ready / 有 file_name/fids）→ 补写 skipped 防重终态
+    # （防 scan 重新入队）；无 dq 且未探测（pending/probing，无快照）→ 仅置 tq
+    # done（放弃当前探测，scan 下次仍可重新探测——议会验证 P1：勿补 0 字节任务）
+    has = (
+        await session.execute(
+            select(DownloadQueue.id).where(
+                DownloadQueue.media_id == tq.media_id,
+                DownloadQueue.episode == tq.episode,
+            )
+        )
+    ).first()
+    has_probe_snapshot = bool(
+        (tq.file_size or 0) > 0 or (tq.fids or None) or tq.status == "ready"
+    )
+    if has is None and has_probe_snapshot:
+        session.add(DownloadQueue(
+            media_id=tq.media_id, episode=tq.episode,
+            file_name=tq.file_name or "", file_size=tq.file_size or 0,
+            share_code=tq.share_code or "",
+            pwd_id=tq.pwd_id, stoken=tq.stoken, receive_code=tq.receive_code,
+            fids=tq.fids, fid_tokens=tq.fid_tokens, folder_id=tq.folder_id,
+            status="skipped", error="人工跳过",
+            enqueued_at=now, updated_at=now,
+        ))
+    await session.execute(
+        update(TaskQueue).where(TaskQueue.id == tq.id).values(status="done", updated_at=now)
+    )
+    await session.commit()
+    return {"ok": True}
+
+
 @router.post("/queue/{task_id}/retry")
 async def retry_task(
     task_id: int,
-    admin: User = Depends(get_current_admin),  # §9.1 写操作鉴权
+    admin: User = Depends(get_current_admin),  # noqa: B008
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """admin 人工重试 failed 子任务（L8 节点语义，契约见五节点状态机）：
+    """admin 人工重试（§8.2）：兼容 DownloadQueue（failed/skipped → pending，重置
+    retry_count=0/node_attempt=0/save_task_id=None）与 TaskQueue（error/unmatched →
+    pending，重置 probe_attempt/silent_until）。旧三表（episode_state/transfer_queue）
+    语义保留为兼容回退（旧前端/旧测试调用按 transfer_queue.id 或 episode_state.id）。
+    条件更新防并发；commit 后触发下载队列消费，失败仅告警不阻断。"""
+    now = _now()
+    # 1) 执行视图：DownloadQueue failed/skipped → pending
+    dq = await session.get(DownloadQueue, task_id)
+    if dq is not None:
+        if dq.status not in ("failed", "skipped"):
+            raise HTTPException(status_code=409, detail="仅 failed/skipped 任务可重试")
+        r = await session.execute(
+            update(DownloadQueue)
+            .where(DownloadQueue.id == dq.id, DownloadQueue.status == dq.status)
+            .values(
+                status="pending",
+                retry_count=0,
+                node_attempt=0,
+                node_error=None,
+                node_started_at=None,
+                node_finished_at=None,
+                save_task_id=None,   # 防「已受理未落盘」盲目幂等
+                save_attempt_at=None,
+                error=None,
+                enqueued_at=now,
+                updated_at=now,
+            )
+        )
+        if r.rowcount == 0:
+            raise HTTPException(status_code=409, detail="任务状态已变化，请稍后重试")
+        await session.commit()
+        await _trigger_consume()
+        return {"ok": True}
 
-    - task_id 优先为 episode_state.id（树结构子任务 id，即子级返回的 id）；
-      兼容旧扁平接口按 transfer_queue.id 调用（旧调用方/旧测试经
-      (media_id, episode) 关联回 episode_state 后同等处理）。
-    - 可重试：node='failed'（新契约）或旧数据 state='failed'；重置
-      node='idle' / node_attempt=0 / node_error=None / state='queued' /
-      retry_count=0 / error=None，并同步 transfer_queue failed/done → pending +
-      清空 save_task_id/save_attempt_at（P0-1 防幂等盲等）。P1-3：scrape/library
-      失败终态下 tq 已是 'done'（_complete_download 置的），故联动条件放宽为
-      status IN ('failed','done')，以 es 失败定位守卫不误伤正常完成项。
-    - 非 failed → 409；任务不存在 → 404。条件更新防并发（行数=0 → 409，
-      未 commit 自动回滚保持原状）；commit 后延迟导入触发转存消费，
-      失败仅告警不阻断。
-    """
-    tq = None
-    # 1) 优先按 episode_state.id 定位（新语义）
+    # 2) 探测视图：TaskQueue error/unmatched → pending（强制重新探测）
+    tq = await session.get(TaskQueue, task_id)
+    if tq is not None:
+        if tq.status not in ("error", "unmatched"):
+            raise HTTPException(status_code=409, detail="仅 error/unmatched 探测任务可重试")
+        r = await session.execute(
+            update(TaskQueue)
+            .where(TaskQueue.id == tq.id, TaskQueue.status == tq.status)
+            .values(status="pending", probe_attempt=0, error=None, silent_until=None,
+                    updated_at=now)
+        )
+        if r.rowcount == 0:
+            raise HTTPException(status_code=409, detail="任务状态已变化，请稍后重试")
+        await session.commit()
+        return {"ok": True}
+
+    # 3) 兼容回退：旧三表语义（task_id 可为 episode_state.id 或 transfer_queue.id）
+    logger.info("[queue] retry task_id=%s 未命中 DownloadQueue/TaskQueue，回退旧三表语义", task_id)
     es = await session.get(EpisodeState, task_id)
+    tq_old = None
     if es is None:
-        # 2) 回退旧语义：task_id 指向 transfer_queue.id → 经双键关联回 es
-        tq = await session.get(TransferQueue, task_id)
-        if tq is None:
+        _TQ = _load_transfer_queue_model()
+        if _TQ is None:
+            raise HTTPException(status_code=404, detail="队列任务不存在")
+        tq_old = await session.get(_TQ, task_id)
+        if tq_old is None:
             raise HTTPException(status_code=404, detail="队列任务不存在")
         es = (
             await session.execute(
                 select(EpisodeState).where(
-                    EpisodeState.media_id == tq.media_id,
-                    EpisodeState.episode == tq.episode,
+                    EpisodeState.media_id == tq_old.media_id,
+                    EpisodeState.episode == tq_old.episode,
                 )
             )
         ).scalars().first()
         if es is None:
             raise HTTPException(status_code=404, detail="队列任务不存在或状态不允许重试")
     else:
-        # 3) 新语义取对应 transfer_queue（若存在）以便联动清空幂等标记
-        tq = (
-            await session.execute(
-                select(TransferQueue).where(
-                    TransferQueue.media_id == es.media_id,
-                    TransferQueue.episode == es.episode,
+        _TQ = _load_transfer_queue_model()
+        if _TQ is not None:
+            tq_old = (
+                await session.execute(
+                    select(_TQ).where(
+                        _TQ.media_id == es.media_id,
+                        _TQ.episode == es.episode,
+                    )
                 )
-            )
-        ).scalars().first()
+            ).scalars().first()
 
-    # 4) 可重试判定：node='failed'（新语义）或 state='failed'（旧数据兼容）
     if es.node != "failed" and es.state != "failed":
-        raise HTTPException(
-            status_code=409,
-            detail="episode_state 状态不一致，任务不可重试（仅 failed 状态可人工重试）",
-        )
-
-    # 5) 重置节点与执行流状态（WHERE 保留 failed 条件防并发，行数=0 → 409）
-    now = _now()
+        raise HTTPException(status_code=409,
+                            detail="episode_state 状态不一致，任务不可重试（仅 failed 状态可人工重试）")
     es_result = await session.execute(
         update(EpisodeState)
         .where(
@@ -271,47 +713,279 @@ async def retry_task(
             or_(EpisodeState.node == "failed", EpisodeState.state == "failed"),
         )
         .values(
-            node="idle",
-            node_attempt=0,
-            node_error=None,
-            node_started_at=None,
-            node_finished_at=None,
-            state="queued",
-            retry_count=0,
-            error=None,
-            updated_at=now,
+            node="idle", node_attempt=0, node_error=None,
+            node_started_at=None, node_finished_at=None,
+            state="queued", retry_count=0, error=None, updated_at=now,
         )
     )
     if es_result.rowcount == 0:
         raise HTTPException(status_code=409, detail="episode_state 状态不一致，请稍后重试")
-
-    # 6) 双表联动（§3.1）：transfer_queue failed/done → pending + 清空幂等标记防盲等。
-    #    P1-3：scrape/library 失败终态（es.node='failed'）下 tq.status 已是 'done'
-    #    （_complete_download 置的），原 WHERE status='failed' 不命中 → es 已重置但
-    #    tq 未联动 → _process_one_pending 取件（tq.pending）永不命中而卡死。放宽为
-    #    IN ('failed','done')：es 已在上方按 node/state='failed' 定位（409 判定守卫），
-    #    正常完成项（es.node='done'）不会走到此分支，不误伤。
-    if tq is not None:
+    if tq_old is not None:
         await session.execute(
-            update(TransferQueue)
-            .where(TransferQueue.id == tq.id, TransferQueue.status.in_(("failed", "done")))
-            .values(
-                status="pending",
-                quota_reject_count=0,
-                error=None,
-                save_task_id=None,
-                save_attempt_at=None,
-                updated_at=now,
-            )
+            update(_TQ)
+            .where(_TQ.id == tq_old.id, _TQ.status.in_(("failed", "done")))
+            .values(status="pending", quota_reject_count=0, error=None,
+                    save_task_id=None, save_attempt_at=None, updated_at=now)
         )
     await session.commit()
-
-    # 7) 重试成功后触发转存消费（延迟导入 + 兜底，与 scan 触发同模式；
-    #    状态已改 pending/queued，触发后由队列消费续跑）
-    try:
-        from app.tasks.transfer import trigger_transfer
-
-        await trigger_transfer()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[queue] retry 后触发转存消费失败（不阻断重试）: %s", exc)
+    await _trigger_consume()
     return {"ok": True}
+
+
+@router.post("/queue/{task_id}/promote")
+async def promote_task(
+    task_id: int,
+    admin: User = Depends(get_current_admin),  # noqa: B008
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """手动入队（§8.2 前端契约）：task_queue(ready) → 手动产出 download_queue(pending)。
+    防重：同 (media, episode) 已有 dq → 409。download_name 按 media.title 格式化（复用
+    transfer._format_download_name，失败回退 None 不影响入队）。"""
+    from app.tasks.transfer import _format_download_name  # noqa: PLC0415 延迟导入
+
+    tq = await session.get(TaskQueue, task_id)
+    if tq is None:
+        raise HTTPException(status_code=404, detail="探测任务不存在")
+    if tq.status != "ready":
+        raise HTTPException(status_code=409, detail="仅 ready 探测任务可手动入队")
+    has = (
+        await session.execute(
+            select(DownloadQueue.id).where(
+                DownloadQueue.media_id == tq.media_id,
+                DownloadQueue.episode == tq.episode,
+            )
+        )
+    ).first()
+    if has:
+        raise HTTPException(status_code=409, detail="该集已在下载队列中")
+
+    # download_name（aria2 落盘名，§7）按 media.title/media_type 生成；失败回退 None
+    download_name = None
+    try:
+        media = await session.get(Media, tq.media_id)
+        if media is not None and media.title:
+            download_name = _format_download_name(tq.file_name or "", media.title, media.media_type)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[queue] promote download_name 生成失败（回退 None）: %s", exc)
+
+    now = _now()
+    session.add(DownloadQueue(
+        media_id=tq.media_id, episode=tq.episode, task_queue_id=tq.id,
+        file_name=tq.file_name or "", file_size=tq.file_size or 0,
+        share_code=tq.share_code or "",
+        pwd_id=tq.pwd_id, stoken=tq.stoken, receive_code=tq.receive_code,
+        fids=tq.fids, fid_tokens=tq.fid_tokens, folder_id=tq.folder_id,
+        download_name=download_name,
+        status="pending", enqueued_at=now, updated_at=now,
+    ))
+    await session.execute(
+        update(TaskQueue).where(TaskQueue.id == tq.id).values(status="done", updated_at=now)
+    )
+    await session.commit()
+    await _trigger_consume()
+    return {"ok": True}
+
+
+@router.post("/queue/probe/{media_id}")
+async def probe_media(
+    media_id: int,
+    admin: User = Depends(get_current_admin),  # noqa: B008
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """手动触发单影视探测（§8.2）：scan_media 后台 fire-and-forget（该 media 的
+    task_queue 由 scan 补集入队并探测）。"""
+    media = await session.get(Media, media_id)
+    if media is None:
+        raise HTTPException(status_code=404, detail="影视不存在")
+    try:
+        from app.tasks.scan import trigger_scan_background  # noqa: PLC0415 延迟导入
+
+        trigger_scan_background(media_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[queue] probe media=%s 触发失败: %s", media_id, exc)
+        raise HTTPException(status_code=500, detail="探测触发失败，请稍后重试") from exc
+    return {"ok": True}
+
+
+class _AddQueueTaskBody(BaseModel):
+    media_id: int
+    episode: str
+
+
+@router.post("/queue/tasks")
+async def add_queue_task(
+    body: _AddQueueTaskBody,
+    admin: User = Depends(get_current_admin),  # noqa: B008
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """手动加集（§8.2）：body {media_id, episode} → 写 task_queue(pending) 触发探测；
+    已存在（任意状态）→ 重置 pending 重新探测。随后触发该 media 后台巡检消费。"""
+    media = await session.get(Media, body.media_id)
+    if media is None:
+        raise HTTPException(status_code=404, detail="影视不存在")
+    episode = (body.episode or "").strip()
+    if not episode:
+        raise HTTPException(status_code=422, detail="episode 不能为空")
+    now = _now()
+    existing = (
+        await session.execute(
+            select(TaskQueue).where(
+                TaskQueue.media_id == body.media_id,
+                TaskQueue.episode == episode,
+            )
+        )
+    ).scalars().first()
+    if existing is not None:
+        await session.execute(
+            update(TaskQueue)
+            .where(TaskQueue.id == existing.id)
+            .values(status="pending", probe_attempt=0, error=None, silent_until=None,
+                    updated_at=now)
+        )
+    else:
+        session.add(TaskQueue(
+            media_id=body.media_id, episode=episode, status="pending",
+            probe_attempt=0, created_at=now, updated_at=now,
+        ))
+    await session.commit()
+    # 触发探测（scan_media 后台；task_queue pending 由巡检消费，防积压）
+    try:
+        from app.tasks.scan import trigger_scan_background  # noqa: PLC0415 延迟导入
+
+        trigger_scan_background(body.media_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[queue] 加集后触发探测失败（task_queue 已入队，巡检兜底）: %s", exc)
+    return {"ok": True}
+
+
+class _SortBody(BaseModel):
+    direction: Literal["up", "down", "top"] = "top"
+
+
+@router.post("/queue/{task_id}/sort")
+async def sort_task(
+    task_id: int,
+    body: _SortBody,
+    admin: User = Depends(get_current_admin),  # noqa: B008
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """排序（§8.2）：调整 pending 准入顺序（enqueued_at 交换）。同一 media 内 pending
+    按 (enqueued_at, id) 升序排队；direction=up/down 与相邻行交换、top 置队首。
+    quota_wait 不参与本排序（其准入由容量释放 + 优先级决定）。"""
+    dq = await session.get(DownloadQueue, task_id)
+    if dq is None:
+        raise HTTPException(status_code=404, detail="队列任务不存在")
+    if dq.status != "pending":
+        raise HTTPException(status_code=409, detail="仅 pending 任务可排序")
+    pending = (
+        (
+            await session.execute(
+                select(DownloadQueue)
+                .where(
+                    DownloadQueue.media_id == dq.media_id,
+                    DownloadQueue.status == "pending",
+                )
+                .order_by(DownloadQueue.enqueued_at.asc(), DownloadQueue.id.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    idx = next((i for i, r in enumerate(pending) if r.id == dq.id), None)
+    if idx is None:
+        raise HTTPException(status_code=409, detail="任务状态已变化，请刷新后重试")
+    now = _now()
+    if body.direction == "top":
+        # 置顶（前端 top 语义 = 移到队首、其余顺延，非与队首交换）：enqueued_at
+        # 前移至同 media pending 最小值 -1s（与 prioritize 同款；秒级精度冲突时逐秒前移）
+        min_ts = await session.scalar(
+            select(func.min(DownloadQueue.enqueued_at)).where(
+                DownloadQueue.media_id == dq.media_id,
+                DownloadQueue.status == "pending",
+                DownloadQueue.enqueued_at.is_not(None),
+            )
+        )
+        new_ts = (min_ts or now) - timedelta(seconds=1)
+        while (await session.scalar(
+            select(func.count())
+            .select_from(DownloadQueue)
+            .where(DownloadQueue.enqueued_at == new_ts, DownloadQueue.id != dq.id)
+        )) or 0:
+            new_ts -= timedelta(seconds=1)
+        r = await session.execute(
+            update(DownloadQueue)
+            .where(DownloadQueue.id == dq.id, DownloadQueue.status == dq.status)
+            .values(enqueued_at=new_ts, updated_at=now)
+        )
+        if r.rowcount == 0:
+            raise HTTPException(status_code=409, detail="任务状态已变化，请刷新后重试")
+        await session.commit()
+        return {"ok": True}
+    # up/down：与相邻行交换 enqueued_at（两行互换，无唯一约束；重复值由 id 排序兜底）
+    target = max(0, idx - 1) if body.direction == "up" else min(len(pending) - 1, idx + 1)
+    if target == idx:
+        return {"ok": True}
+    a, b = pending[idx], pending[target]
+    ts_a, ts_b = a.enqueued_at, b.enqueued_at
+    await session.execute(
+        update(DownloadQueue).where(DownloadQueue.id == a.id).values(enqueued_at=ts_b, updated_at=now)
+    )
+    await session.execute(
+        update(DownloadQueue).where(DownloadQueue.id == b.id).values(enqueued_at=ts_a, updated_at=now)
+    )
+    await session.commit()
+    return {"ok": True}
+
+
+@router.get("/queue/download/progress")
+async def download_progress(
+    admin: User = Depends(get_current_admin),  # noqa: B008
+    session: AsyncSession = Depends(get_session),
+    gid: Annotated[Optional[str], Query()] = None,
+) -> list[dict]:
+    """downloading 行实时进度（§8.2，2-3s 局部轮询）：tellStatus 聚合
+    [{id, gid, speed, progress, download_name}]；aria2 故障/字段缺失 → 降级 null 字段。"""
+    if gid:
+        dq_rows = (
+            (
+                await session.execute(
+                    select(DownloadQueue).where(DownloadQueue.aria2_gid == gid)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    else:
+        dq_rows = (
+            (
+                await session.execute(
+                    select(DownloadQueue).where(DownloadQueue.status == "downloading")
+                )
+            )
+            .scalars()
+            .all()
+        )
+    result: list[dict] = []
+    for dq in dq_rows:
+        if not dq.aria2_gid:
+            continue
+        entry: dict = {
+            "id": dq.id,
+            "gid": dq.aria2_gid,
+            "speed": None,
+            "progress": None,
+            "download_name": dq.download_name,
+        }
+        try:
+            st = await aria2.client.tell_status(dq.aria2_gid)
+            total = int(st.get("totalLength") or 0)
+            done = int(st.get("completedLength") or 0)
+            if total > 0:
+                entry["progress"] = round(done / total * 100, 1)
+            speed = st.get("downloadSpeed")
+            if speed is not None:
+                entry["speed"] = int(speed)
+        except Exception as exc:  # noqa: BLE001  失败行降级返回 null 字段
+            logger.warning("[queue] progress tell_status 失败（降级 null 字段）: %s", exc)
+        result.append(entry)
+    return result

@@ -28,7 +28,10 @@ from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
 from app.database import async_session
-from app.models import DownloadTask, EpisodeState, Media, TaskRun, TransferQueue
+from app.models import DownloadQueue, Media, TaskQueue, TaskRun
+# 注：episode_state / transfer_queue / download_task 旧三表已从 scan 移除——影视下载
+# 两队列重设计：探测结果落 task_queue，经 promote 产出 download_queue（执行层），
+# 防重权威源 = download_queue.UNIQUE(media_id, episode)。见 docs/影视下载两队列重设计.md §3。
 from app.services import cloudsaver, config_store, emby, tmdb
 from app.tasks import as_bool, get_config_value, record_task_run
 
@@ -54,9 +57,10 @@ def _is_video_file(file_name: str) -> bool:
 _RE_SXXEXX = re.compile(r"[Ss](\d{1,2})[Ee](\d{1,3})")
 _RE_CN_EP = re.compile(r"第\s*(\d{1,3})\s*[集话]")
 
-# 入队防重态：queued/transferring/downloading 视为已处理；done 在 Emby 二次确认前仍参与防重（§4.5）；
-# failed 需人工 retry（§4.5 retry≥3→failed），不可被 scan 自动重新入队（否则撞 UNIQUE 且绕过人工确认）
-_ACTIVE_STATES = ("queued", "transferring", "downloading", "done", "failed")
+# 影视下载两队列重设计后防重权威源 = download_queue.UNIQUE(media_id, episode)：
+# scan 探测阶段由 _enqueue 事务内先查同键记录（存在即跳过），不再用状态集合判断
+# （done 在 Emby 二次确认前仍保留在表内参与防重，由 _resolve_done_states 解除；
+#  failed 需人工 retry，不可被 scan 自动重新入队——撞 UNIQUE 即跳过）。
 
 # 巡检 5 阶段键（契约固定，前端按此渲染进度）：
 #   check → Emby 基线（查缺/Emby 基线）；search → cloudSaver 搜索；
@@ -361,23 +365,26 @@ async def _emby_missing_codes(media) -> list[str | None] | None:
 
 
 async def _resolve_done_states(media, missing_keys: set[str], movie_missing: bool) -> None:
-    """done 防重解除（P1-1，Oracle 审查）：Emby 二次确认入库 → 解除防重；仍未入库 → 转 failed 人工确认。
+    """done 防重解除（P1-1 语义迁移至 DownloadQueue）：Emby 二次确认入库 → 解除防重；仍未入库 → 转 failed 人工确认。
+
+    影视下载两队列重设计后防重权威源 = download_queue（UNIQUE(media_id, episode)，§3.2），
+    此处操作对象从 episode_state/transfer_queue/download_task 旧三表迁移为 download_queue。
 
     在 Emby 基线之后、搜索/入队之前执行（_scan_one 步骤 2b），对该 media 全部
-    state='done' 的 episode_state 逐条判定：
+    status='done' 的 download_queue 逐条判定：
 
-    - tv 模式：episode key 不在 missing_keys → Emby 已确认入库 → 删除 es/tq/dl（解除防重，
-      允许后续搜索重新入队）；仍在 missing_keys（Emby 仍缺失）→ 未入库 → 条件更新转 failed。
+    - tv 模式：episode key 不在 missing_keys → Emby 已确认入库 → 删除 download_queue
+      （解除防重，允许后续探测重新入队）；仍在 missing_keys（Emby 仍缺失）→ 未入库 →
+      条件更新转 failed。
     - movie 全量模式：episode=文件名。movie_missing=True（Emby 整部缺失）→ 未入库 → 转 failed；
       movie 已入库（missing=[]，movie_missing=False）→ 全部视为确认 → 删除。
 
     P3-1 done→failed 循环上限：转 failed 消耗一次 retry_count（SQL 表达式 +1），
     条件 `retry_count < _DONE_FAIL_RETRY_LIMIT`（对齐 transfer._RETRY_LIMIT=3）——未达上限
-    才转 failed 并联动 tq；已达上限的记录同样写 node='failed'/state='failed'（P1-5：
-    与其它失败终态对齐，node_error/node_attempt 同步），使 queue.py retry_task 可人工
-    解锁重试（此前保持 done 仅写 error，retry 只认 failed 无法干预 → 卡死）。
-    上限分支不联动 tq（tq 保持 done，P1-3 后 retry 按 status IN ('failed','done') 联动重置）。
-    上限分支不通知（巡检避免噪音），task_run 由 _scan_one 主流程统一记录。
+    才转 failed；已达上限的记录同样写 status='failed'（P1-5：与其它失败终态对齐，
+    node_error/node_attempt 同步），使 queue.py retry_task 可人工解锁重试（此前保持 done
+    仅写 error，retry 只认 failed 无法干预 → 卡死）。上限分支不通知（巡检避免噪音），
+    task_run 由 _scan_one 主流程统一记录。
 
     全程条件删除/更新（WHERE 当前状态）不影响其他数据；异常由调用方 try/except 兜底，不阻断巡检。
     """
@@ -386,9 +393,9 @@ async def _resolve_done_states(media, missing_keys: set[str], movie_missing: boo
             done_rows = (
                 (
                     await tx.execute(
-                        select(EpisodeState).where(
-                            EpisodeState.media_id == media.id,
-                            EpisodeState.state == "done",
+                        select(DownloadQueue).where(
+                            DownloadQueue.media_id == media.id,
+                            DownloadQueue.status == "done",
                         )
                     )
                 )
@@ -401,30 +408,26 @@ async def _resolve_done_states(media, missing_keys: set[str], movie_missing: boo
             confirmed = 0
             to_retry = 0
             at_limit = 0
-            for es in done_rows:
-                if movie_missing or es.episode in missing_keys:
-                    if es.retry_count >= _DONE_FAIL_RETRY_LIMIT:
-                        # P3-1 + P1-5：已达循环上限 → 写 node='failed'/state='failed'
-                        # 终态（与其它失败终态对齐：node_error/node_attempt 同步），
-                        # 使 queue.py retry_task 可人工解锁（此前保持 done 仅写 error，
-                        # retry 只认 failed 无法干预 → 卡死）。node_attempt 置上限值
-                        # _DONE_FAIL_RETRY_LIMIT（retry 后由 queue.py 重置为 0）；
-                        # error 与 node_error 均写上限文案。上限分支不联动 tq（tq 保持
-                        # done，P1-3 后 retry 按 status IN ('failed','done') 联动重置）。
+            for dq in done_rows:
+                if movie_missing or dq.episode in missing_keys:
+                    if dq.retry_count >= _DONE_FAIL_RETRY_LIMIT:
+                        # P3-1 + P1-5：已达循环上限 → 写 status='failed' 终态（与其它
+                        # 失败终态对齐：node_error/node_attempt 同步），使 queue.py
+                        # retry_task 可人工解锁。node_attempt 置上限值（retry 后由
+                        # queue.py 重置为 0）；error 与 node_error 均写上限文案。
                         # 防无限循环语义不变：转 failed 消耗本轮，须人工 retry 才可再次
-                        # done→failed，杜绝自动无限循环。state 改 failed 后下一轮
-                        # select(state='done') 天然不命中，无需 error 去重条件。
+                        # done→failed，杜绝自动无限循环。status 改 failed 后下一轮
+                        # select(status='done') 天然不命中。
                         await tx.execute(
-                            update(EpisodeState)
+                            update(DownloadQueue)
                             .where(
-                                EpisodeState.media_id == media.id,
-                                EpisodeState.episode == es.episode,
-                                EpisodeState.state == "done",
-                                EpisodeState.retry_count >= _DONE_FAIL_RETRY_LIMIT,
+                                DownloadQueue.media_id == media.id,
+                                DownloadQueue.episode == dq.episode,
+                                DownloadQueue.status == "done",
+                                DownloadQueue.retry_count >= _DONE_FAIL_RETRY_LIMIT,
                             )
                             .values(
-                                node="failed",
-                                state="failed",
+                                status="failed",
                                 node_error=_DONE_LIMIT_ERROR,
                                 node_attempt=_DONE_FAIL_RETRY_LIMIT,
                                 error=_DONE_LIMIT_ERROR,
@@ -435,60 +438,32 @@ async def _resolve_done_states(media, missing_keys: set[str], movie_missing: boo
                         continue
                     # Emby 仍未入库且未达上限 → 转 failed 进人工 retry 路径（防重保留）；
                     # P3-1：done→failed 算一次循环，retry_count SQL 自增（对齐 transfer 上限语义）
-                    r_es = await tx.execute(
-                        update(EpisodeState)
+                    r_dq = await tx.execute(
+                        update(DownloadQueue)
                         .where(
-                            EpisodeState.media_id == media.id,
-                            EpisodeState.episode == es.episode,
-                            EpisodeState.state == "done",
-                            EpisodeState.retry_count < _DONE_FAIL_RETRY_LIMIT,
+                            DownloadQueue.media_id == media.id,
+                            DownloadQueue.episode == dq.episode,
+                            DownloadQueue.status == "done",
+                            DownloadQueue.retry_count < _DONE_FAIL_RETRY_LIMIT,
                         )
                         .values(
-                            state="failed",
+                            status="failed",
                             error=_DONE_FAIL_ERROR,
-                            retry_count=EpisodeState.retry_count + 1,
+                            retry_count=DownloadQueue.retry_count + 1,
                             updated_at=now,
                         )
                     )
-                    if r_es.rowcount > 0:
-                        # 仅在 es 成功转 failed 时联动 tq（P3-1 rowcount 门控：上限分支不动 tq）
-                        await tx.execute(
-                            update(TransferQueue)
-                            .where(
-                                TransferQueue.media_id == media.id,
-                                TransferQueue.episode == es.episode,
-                                TransferQueue.status == "done",
-                            )
-                            .values(
-                                status="failed",
-                                error=_DONE_FAIL_ERROR,
-                                updated_at=now,
-                            )
-                        )
+                    if r_dq.rowcount > 0:
                         to_retry += 1
                 else:
-                    # Emby 已确认入库 → 解除防重：删除 es / tq / dl（条件删除，P1-4：
-                    # 与同块 update(WHERE state='done') 对称，防阶段 4 新路径误删
-                    # downloading/transferring 等非 done 记录）
+                    # Emby 已确认入库 → 解除防重：删除 download_queue（条件删除，P1-4：
+                    # 与同块 update(WHERE status='done') 对称，防误删 downloading 等
+                    # 非 done 记录）
                     await tx.execute(
-                        delete(EpisodeState).where(
-                            EpisodeState.media_id == media.id,
-                            EpisodeState.episode == es.episode,
-                            EpisodeState.state == "done",
-                        )
-                    )
-                    await tx.execute(
-                        delete(TransferQueue).where(
-                            TransferQueue.media_id == media.id,
-                            TransferQueue.episode == es.episode,
-                            TransferQueue.status == "done",
-                        )
-                    )
-                    await tx.execute(
-                        delete(DownloadTask).where(
-                            DownloadTask.media_id == media.id,
-                            DownloadTask.episode == es.episode,
-                            DownloadTask.status == "complete",
+                        delete(DownloadQueue).where(
+                            DownloadQueue.media_id == media.id,
+                            DownloadQueue.episode == dq.episode,
+                            DownloadQueue.status == "done",
                         )
                     )
                     confirmed += 1
@@ -805,57 +780,91 @@ def _json_dumps(v):
 
 async def _enqueue(media_id: int, episode_key: str, file_name: str, file_size: int,
                    share_code: str, payload: dict) -> str:
-    """transfer_queue(pending) + episode_state(queued) 同时写入（§3.1 双表联动）。
+    """task_queue(done) + download_queue(pending) 双写（影视下载两队列重设计 §4.1 promote 链路）。
 
-    幂等：事务内先查 episode_state 防重态，命中则跳过；写入撞 UNIQUE(media_id, episode)
+    探测完成即产出：scan 搜索/匹配/大小过滤通过后，把探测结果快照写 task_queue
+    （探测层视图，status=done——同步探测已完成「探测→promote」整链路，§4.1
+    promote 后即 done），并在同一事务内产出 download_queue(pending)（执行层，
+    防重权威源 = 其 UNIQUE(media_id, episode)）。下载队列消费端只读 download_queue。
+    manual 入队/promote 路径（queue.py）才会让 task_queue 停在 ready 等待用户确认。
+
+    幂等：事务内先查 download_queue 同键记录，命中则跳过；写入撞 UNIQUE(media_id, episode)
     则捕获 IntegrityError 判定为并发冲突。返回 'enqueued' / 'existing' / 'conflict'。
     """
+    # download_name（aria2 落盘名，§7）生成需 media.title / media_type；单独短查询，
+    # 失败回退 None（transfer 消费时按原文件名兜底，不阻断入队）
+    media_title = media_type = None
+    try:
+        async with async_session() as s2:
+            m = await s2.get(Media, media_id)
+            if m is not None:
+                media_title, media_type = m.title, m.media_type
+    except Exception:  # noqa: BLE001
+        logger.warning("[scan] media=%s 标题查询失败，download_name 回退空", media_id)
+    download_name = None
+    if media_title and media_type:
+        try:
+            from app.tasks.transfer import _format_download_name  # 延迟导入，防循环
+
+            download_name = _format_download_name(file_name, media_title, media_type)
+        except Exception:  # noqa: BLE001
+            download_name = None
+
     async with async_session() as tx:
         async with tx.begin():
             has = (
                 await tx.execute(
-                    select(EpisodeState.id).where(
-                        EpisodeState.media_id == media_id,
-                        EpisodeState.episode == episode_key,
-                        EpisodeState.state.in_(_ACTIVE_STATES),
+                    select(DownloadQueue.id).where(
+                        DownloadQueue.media_id == media_id,
+                        DownloadQueue.episode == episode_key,
                     )
                 )
             ).first()
             if has:
                 return "existing"
 
-            tx.add(EpisodeState(
-                media_id=media_id,
-                episode=episode_key,
-                state="queued",
-                file_name=file_name,
-                file_size=file_size,
-                share_code=share_code,
-                retry_count=0,
-                updated_at=_now(),
-            ))
-            tx.add(TransferQueue(
+            tx.add(TaskQueue(
                 media_id=media_id,
                 episode=episode_key,
                 file_name=file_name,
                 file_size=file_size,
                 share_code=share_code,
-                status="pending",
+                status="done",  # 同步探测 promote 完成即 done（§4.1）
                 pwd_id=payload.get("pwd_id") or payload.get("pwdId"),
                 stoken=payload.get("stoken"),
+                receive_code=payload.get("receive_code") or payload.get("receiveCode"),
+                fids=_json_dumps(payload.get("fids")),
+                fid_tokens=_json_dumps(payload.get("fid_tokens") or payload.get("fidTokens")),
+                folder_id=payload.get("folder_id") or payload.get("folderId")
+                or config_store.get("quark_default_folder", settings.QUARK_DEFAULT_FOLDER)
+                or None,
+                probe_attempt=0,
+                created_at=_now(),
+                updated_at=_now(),
+            ))
+            tx.add(DownloadQueue(
+                media_id=media_id,
+                episode=episode_key,
+                task_queue_id=None,  # promote 链路：task_queue 本行刚插入，回填由消费端无
+                #                   需（快照已整体拷贝，独立成执行任务）
+                file_name=file_name,
+                file_size=file_size,
+                share_code=share_code,
                 # G4（Q3 双语义）：本字段存的是「提取码」（share-info 端点里的 passcode），
                 # 来自 payload["receive_code"]；而 save 端点（POST /api/quark/save）的
                 # receiveCode 语义 = **stoken**（阶段 1 实证）。transfer lane 消费时须取
                 # 上面的 stoken 字段作为 save 的 receiveCode，勿将本字段直接透传 save。
+                pwd_id=payload.get("pwd_id") or payload.get("pwdId"),
+                stoken=payload.get("stoken"),
                 receive_code=payload.get("receive_code") or payload.get("receiveCode"),
                 fids=_json_dumps(payload.get("fids")),
                 fid_tokens=_json_dumps(payload.get("fid_tokens") or payload.get("fidTokens")),
-                # 转存目标目录 folderId：share-info 无此字段时回退 QUARK_DEFAULT_FOLDER
-                # （阶段 3 实证：folderId 为空 → cloudSaver 转存不落盘到 alist /quark）
-                # Phase 8：改读 config_store（system_config 优先，env fallback，保存即生效）
                 folder_id=payload.get("folder_id") or payload.get("folderId")
                 or config_store.get("quark_default_folder", settings.QUARK_DEFAULT_FOLDER)
                 or None,
+                download_name=download_name,
+                status="pending",
+                enqueued_at=_now(),
                 updated_at=_now(),
             ))
             try:
@@ -863,33 +872,113 @@ async def _enqueue(media_id: int, episode_key: str, file_name: str, file_size: i
                 return "enqueued"
             except IntegrityError:
                 await tx.rollback()
-                # P3-6（Oracle 审查）：并发冲突后补查 tq 记录，双表不一致风险告警（不做自动修复）
+                # P3-6（Oracle 审查 迁移）：并发冲突后补查 download_queue 记录，
+                # 双表不一致风险告警（不做自动修复）
                 try:
-                    has_tq = (
+                    has_dq = (
                         await tx.execute(
-                            select(TransferQueue.id).where(
-                                TransferQueue.media_id == media_id,
-                                TransferQueue.episode == episode_key,
+                            select(DownloadQueue.id).where(
+                                DownloadQueue.media_id == media_id,
+                                DownloadQueue.episode == episode_key,
                             )
                         )
                     ).first() is not None
                 except Exception:  # noqa: BLE001
-                    has_tq = None
+                    has_dq = None
                 logger.warning(
-                    "[scan] media=%s episode=%s 并发冲突（UNIQUE），本轮跳过；tq 记录%s",
+                    "[scan] media=%s episode=%s 并发冲突（UNIQUE），本轮跳过；download_queue 记录%s",
                     media_id, episode_key,
-                    "存在（双表可能不一致，请人工核查）" if has_tq else "不存在",
+                    "存在（promote 可能已并发完成，正常）" if has_dq else "不存在（请人工核查）",
                 )
                 return "conflict"
 
 
-async def _trigger_transfer() -> None:
-    """入队成功后触发转存队列消费（§4.4 process_transfer_queue 事件触发）。
+async def _mark_unmatched(media_id: int, missing_keys: set[str], matched_keys: set[str]) -> int:
+    """搜索后确认无资源的缺失集 → task_queue 标 unmatched + 静默 N 天（影视下载两队列重设计 §4.1）。
 
-    P1-6（council）：改为 fire-and-forget——原实现同步 await 完整转存链
-    （cloudSaver save 受理后等落盘最长 180s + aria2 提交），阻塞 scan HTTP 请求；
-    现用后台任务持引用防 GC，scan_media 立即返回 task_run_id。
-    transfer 模块未就绪时静默跳过；trigger_transfer 内部已 try/except 全包。
+    巡检主循环只把「匹配到文件的缺失集」入队（task_queue ready + promote），对
+    missing_keys 中**确实搜索过但没匹配到任何网盘文件**的集，在此补标 unmatched：
+    - searched 语义：只有本轮确实走了搜索（有候选且 share-info 验证过）才标记——
+      搜索服务故障/无候选不算（那由 scan_detail 的 search_status 表达），避免误标。
+    - 静默重试：silent_until = now + N 天（system_config `task_queue_unmatched_silent_days`，
+      默认 2）；静默期内不再重探，到期后由 probe 执行器恢复 pending 重新探测。
+    - 幂等：同 (media_id, episode) 已有 task_queue 行（含已 ready/download 的）→ 跳过；
+      已 unmatched 且静默未到期 → 跳过（不刷新静默窗，防每次巡检顺延）。
+    返回本次新标记的 unmatched 条数。
+    """
+    if not missing_keys:
+        return 0
+    # 读取静默天数配置（独立短事务；失败回退默认 2 天，绝不因配置读取失败阻断）
+    try:
+        async with async_session() as s:
+            silent_days = float(
+                await get_config_value(s, "task_queue_unmatched_silent_days", 2)
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[scan] 读取 task_queue_unmatched_silent_days 失败，回退默认 2 天: %s", exc)
+        silent_days = 2.0
+    if not silent_days:
+        silent_days = 2.0  # 0/空值回退默认
+    silent_until = _now() + timedelta(days=silent_days)
+    now = _now()
+    marked = 0
+    for episode in missing_keys - matched_keys:
+        async with async_session() as tx:
+            async with tx.begin():
+                existing = (
+                    await tx.execute(
+                        select(TaskQueue.id, TaskQueue.status, TaskQueue.silent_until).where(
+                            TaskQueue.media_id == media_id,
+                            TaskQueue.episode == episode,
+                        )
+                    )
+                ).first()
+                if existing is not None:
+                    # 已有行：ready/queued/下载中 → 跳过；unmatched 且静默未到期 → 跳过
+                    if existing.status != "unmatched" or (
+                        existing.silent_until is not None and existing.silent_until > now
+                    ):
+                        continue
+                    # unmatched 已到期 → 本轮重新探测（回到 pending），不刷新静默
+                    if existing.status == "unmatched" and (
+                        existing.silent_until is None or existing.silent_until <= now
+                    ):
+                        await tx.execute(
+                            update(TaskQueue)
+                            .where(
+                                TaskQueue.media_id == media_id,
+                                TaskQueue.episode == episode,
+                            )
+                            .values(
+                                status="pending",
+                                probe_attempt=TaskQueue.probe_attempt + 1,
+                                silent_until=None,
+                                updated_at=now,
+                            )
+                        )
+                        continue
+                    continue
+                # 无记录 → 新建 unmatched（带静默到期时间）
+                tx.add(TaskQueue(
+                    media_id=media_id,
+                    episode=episode,
+                    status="unmatched",
+                    probe_attempt=0,
+                    silent_until=silent_until,
+                    error="搜索确认无网盘资源，静默 N 天后自动重试",
+                    created_at=now,
+                    updated_at=now,
+                ))
+                marked += 1
+    return marked
+
+
+async def _trigger_transfer() -> None:
+    """入队成功后触发下载队列消费（两队列重设计：process_download_queue 事件触发）。
+
+    原 process_transfer_queue 更名为下载队列消费入口（消费 download_queue），
+    语义与 §4.4 容量感知转存一致。fire-and-forget 后台任务持引用防 GC，
+    scan_media 立即返回 task_run_id；模块未就绪时静默跳过。
     """
     try:
         from app.tasks import transfer as _t  # 延迟导入，避免子模块初始化时序
@@ -1250,6 +1339,9 @@ async def _scan_one(media_id: int) -> int | None:
     enqueued = existing_skipped = size_filtered = unmatched = non_video = 0
     unmatched_files: list[str] = []  # 未匹配文件名样例（至多收集 3 个，供 message 定位）
     share_info_ok = share_info_fail = walk_fail = tried = 0
+    # 影视下载两队列重设计：记录本轮确认「有资源/已入队」的缺失集（_mark_unmatched 用——
+    # 搜过但无资源的集标 unmatched 静默重试，见 §4.1）
+    matched_keys: set[str] = set()
     _phase_start(phases, "match")
     _phase_start(phases, "enqueue")  # 匹配+入队同循环内推进；先统一标 process
     for cand in candidates:
@@ -1291,10 +1383,21 @@ async def _scan_one(media_id: int) -> int | None:
 
             # 三重匹配缺失集
             if movie_missing:
-                matched_key = file_name  # 全量模式：episode=文件名（P9 已知权衡）
+                # 全量模式（Emby 基线缺失 soft 全量）：episode 键取——
+                #   真电影（media_type==movie）→ movie:<title> 归一化键（§7 审阅 P1）：
+                #     多版本（不同分辨率/来源文件名）映射同一键，防重复下载+同名覆盖；
+                #   tv 未收录全量（media_type!=movie，Emby 未收录整部追的软全量）→
+                #     文件名键（P9 权衡保留：集号未知，逐文件入队，不归一化防丢集）。
+                # 展示 episode 仍用实际文件名供定位。
+                if (media.media_type or "").strip().lower() == "movie":
+                    matched_key = "movie:" + (media.title or "").strip()
+                    if matched_key == "movie:":
+                        matched_key = file_name  # 标题缺失回退文件名（兜底，防键空）
+                else:
+                    matched_key = file_name
                 item = {"episode": file_name, "result": "not_found"}
                 missing_items.append(item)
-                missing_items_by_key[file_name] = item
+                missing_items_by_key[matched_key] = item
             else:
                 matched_key = match_missing(file_name, missing_keys)
                 if not matched_key:
@@ -1328,14 +1431,29 @@ async def _scan_one(media_id: int) -> int | None:
             res = await _enqueue(media_id, matched_key, file_name, file_size, share_code, payload)
             if res == "enqueued":
                 enqueued += 1
+                matched_keys.add(matched_key)
                 item = missing_items_by_key.get(matched_key)
                 if item is not None:
                     item["result"] = "enqueued"
+            elif res == "existing":
+                existing_skipped += 1  # 防重命中：该集已有任务（视为有资源，不标 unmatched）
+                matched_keys.add(matched_key)
             else:
-                existing_skipped += 1  # existing（防重命中）/ conflict（行级冲突）均视为跳过
+                existing_skipped += 1  # conflict（行级并发冲突）视为跳过；不标 matched，
+                #                      防误把并发中任务标 unmatched（下轮会重新入队）
 
     _phase_done(phases, "match")
     _phase_done(phases, "enqueue")
+
+    # 影视下载两队列重设计 §4.1：搜过但无资源的缺失集 → task_queue 标 unmatched + 静默。
+    # 仅 tv 模式（有明确缺失集）且本轮确实搜索过（share_info_ok>0）才标记——搜索服务
+    # 故障/无候选不算（那由 search_status 表达）；movie 全量模式缺集实体不预知，不适用。
+    unmatched_marked = 0
+    if not movie_missing and share_info_ok > 0:
+        try:
+            unmatched_marked = await _mark_unmatched(media_id, missing_keys, matched_keys)
+        except Exception as exc:  # noqa: BLE001  unmatched 落库失败不阻断巡检
+            logger.warning("[scan] media=%s 标记 unmatched 失败（不阻断）: %s", media_id, exc)
 
     # 7. 原地 UPDATE 同一条 task_run 终态 + 更新 last_scan_at（独立短事务）——phase: finish
     #     message 缺集语义修复：parts 全空（无候选/无入队/无计数）且缺集 >0 时，
@@ -1361,6 +1479,7 @@ async def _scan_one(media_id: int) -> int | None:
         "existing_skipped": existing_skipped,
         "size_filtered": size_filtered,
         "unmatched": unmatched,
+        "unmatched_marked": unmatched_marked,  # 两队列：本轮新标静默的缺失集数（§4.1）
         "non_video": non_video,
         "share_info_ok": share_info_ok,
         "share_info_fail": share_info_fail,

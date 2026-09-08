@@ -34,7 +34,7 @@ import app.routers.queue as queue_mod
 import app.tasks.scan as scan_mod
 import app.tasks.transfer as transfer_mod
 from app.database import Base
-from app.models import EpisodeState, Media, TransferQueue, WatchRequest
+from app.models import DownloadQueue, EpisodeState, Media, TransferQueue, WatchRequest
 from app.routers.approvals import WatchRequestCreate, approve_approval, create_approval
 from app.routers.media import MediaCreate, create_media
 from app.services.emby import EmbyUnavailable
@@ -163,6 +163,14 @@ async def get_es_by_media(db, media_id):
         ).scalars().first()
 
 
+async def get_dq_by_media(db, media_id):
+    """影视下载两队列重设计：取 media 下第一条 download_queue（等价旧 get_es_by_media）。"""
+    async with db() as s:
+        return (
+            await s.execute(select(DownloadQueue).where(DownloadQueue.media_id == media_id))
+        ).scalars().first()
+
+
 def _seed_media(db, *, tmdb_id: int) -> None:
     async def _seed():
         async with db() as s:
@@ -190,54 +198,50 @@ def _seed_wr(db, tmdb_id: int) -> int:
 
 
 async def _seed_scrape_failed(db, *, episode="S01E01"):
-    """scrape/library 失败终态：es node='failed'/state='failed' + tq status='done'。
+    """scrape 失败终态：download_queue status='failed'（node_error 保留诊断）。
 
-    tq='done' 且保留 save_task_id（下载完成的成功路径保持幂等标记）——正是
-    P1-3 修复前 retry 无法联动的卡死现场。
+    DownloadQueue 单表承接旧 es(node='failed') + tq(status='done') 的职责；保留
+    save_task_id（下载完成的成功路径保持幂等标记）——P1-3 修复前 retry 无法联动的
+    卡死现场在新语义下由「failed 终态」表达（queue.retry_task 对 failed/skipped 解锁）。
     """
     async with db() as s:
         media = Media(title="测试剧", media_type="tv", tmdb_id=42, status="tracking")
         s.add(media)
         await s.flush()
         mid = media.id
-        es = EpisodeState(media_id=mid, episode=episode, state="failed", node="failed",
-                          node_attempt=3, node_error="刮削失败: xxx", retry_count=3,
-                          file_name="ep.mkv", file_size=1024, share_code="sc1",
-                          error="刮削失败: xxx", updated_at=_now())
-        s.add(es)
-        await s.flush()
-        tq = TransferQueue(media_id=mid, episode=episode, file_name="ep.mkv",
-                           file_size=1024, share_code="sc1", stoken="st",
-                           fids='["f1"]', fid_tokens='["ft1"]', folder_id="folder-1",
-                           status="done", quota_reject_count=2,
-                           save_task_id="stale-t1", save_attempt_at=_now(), updated_at=_now())
-        s.add(tq)
+        dq = DownloadQueue(
+            media_id=mid, episode=episode, status="failed",
+            node_attempt=3, node_error="刮削失败: xxx", retry_count=3,
+            file_name="ep.mkv", file_size=1024, share_code="sc1", stoken="st",
+            receive_code="rc", fids='["f1"]', fid_tokens='["ft1"]',
+            folder_id="folder-1", quota_reject_count=2,
+            save_task_id="stale-t1", save_attempt_at=_now(), error="刮削失败: xxx",
+            updated_at=_now(),
+        )
+        s.add(dq)
         await s.flush()
         await s.commit()
-        return mid, es.id, tq.id
+        return mid, dq.id
 
 
 async def _seed_done_at_limit(db, *, episode="S01E01", retry_count=3):
-    """done 防重场景：es state='done'（node='idle' 默认）+ tq status='done'。"""
+    """done 防重场景：download_queue status='done'（retry_count 可指定）。"""
     async with db() as s:
         media = Media(title="测试剧", media_type="tv", tmdb_id=42, status="tracking")
         s.add(media)
         await s.flush()
         mid = media.id
-        es = EpisodeState(media_id=mid, episode=episode, state="done", node="idle",
-                          retry_count=retry_count, file_name="ep.mkv", file_size=1024,
-                          share_code="sc1", updated_at=_now())
-        s.add(es)
-        await s.flush()
-        tq = TransferQueue(media_id=mid, episode=episode, file_name="ep.mkv",
-                           file_size=1024, share_code="sc1", stoken="st",
-                           fids='["f1"]', fid_tokens='["ft1"]', folder_id="folder-1",
-                           status="done", quota_reject_count=2,
-                           save_task_id="stale-t1", save_attempt_at=_now(), updated_at=_now())
-        s.add(tq)
+        dq = DownloadQueue(
+            media_id=mid, episode=episode, status="done",
+            retry_count=retry_count, file_name="ep.mkv", file_size=1024,
+            share_code="sc1", stoken="st", receive_code="rc",
+            fids='["f1"]', fid_tokens='["ft1"]', folder_id="folder-1",
+            quota_reject_count=2, updated_at=_now(),
+        )
+        s.add(dq)
         await s.flush()
         await s.commit()
-        return mid, es.id, tq.id
+        return mid, dq.id
 
 
 # ---------------------------------------------------------------------------
@@ -421,41 +425,38 @@ def test_approve_approval_emby_unavailable_fail_open(db, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_retry_scrape_failed_done_tq_resets_and_processes(db, transfer_env, monkeypatch):
-    """构造 node='failed'（scrape 失败终态）且 tq.status='done' 的 es：
+    """构造 DownloadQueue status='failed'（scrape 失败终态）的任务：
 
-    retry 后 es → node='idle'/state='queued'/retry_count=0、tq → pending（联动 +
-    清空 save_task_id/save_attempt_at），且可被 _process_one_pending 取走
-    （tq.pending + es idle/queued → 进入转存链，cloudsaver.save 被调用）。
+    retry 后 dq → status='pending'/retry_count=0/node_attempt=0（并清空
+    save_task_id/save_attempt_at/error），且可被 process_transfer_queue 取走
+    （进入转存链，cloudsaver.save 被调用）。
     """
     monkeypatch.setattr(transfer_mod, "async_session", db)
     # retry_task commit 后内部的 trigger_transfer（延迟导入取 patch 后引用）
     monkeypatch.setattr(transfer_mod, "trigger_transfer", AsyncMock(return_value=None))
-    mid, es_id, tq_id = run(_seed_scrape_failed(db))
+    mid, dq_id = run(_seed_scrape_failed(db))
 
     async def do_retry():
         async with db() as s:
             return await queue_mod.retry_task(
-                task_id=es_id, admin=types.SimpleNamespace(role="admin"), session=s,
+                task_id=dq_id, admin=types.SimpleNamespace(role="admin"), session=s,
             )
 
     assert run(do_retry()) == {"ok": True}
 
-    tq = run(read_row(db, TransferQueue, tq_id))
-    es = run(get_es_by_media(db, mid))
-    assert tq.status == "pending"
-    assert tq.save_task_id is None       # 联动清空幂等标记防盲等
-    assert tq.save_attempt_at is None
-    assert tq.quota_reject_count == 0
-    assert es.node == "idle"
-    assert es.state == "queued"
-    assert es.node_attempt == 0
-    assert es.node_error is None
-    assert es.retry_count == 0
-    assert es.error is None
+    dq = run(read_row(db, DownloadQueue, dq_id))
+    assert dq.status == "pending"
+    assert dq.save_task_id is None       # 重置清空幂等标记防盲等
+    assert dq.save_attempt_at is None
+    assert dq.node_attempt == 0
+    assert dq.node_error is None
+    assert dq.retry_count == 0
+    assert dq.error is None
 
-    # 下一轮消费：可被 _process_one_pending 取走（进入转存链 = 修复闭环）
-    run(transfer_mod._process_one_pending())
+    # 下一轮消费：可被 process_transfer_queue 取走（进入转存链 = 修复闭环）
+    run(transfer_mod.process_transfer_queue())
     assert len(transfer_env["cloudsaver"].save_calls) == 1
+    assert run(read_row(db, DownloadQueue, dq_id)).status == "downloading"
 
 
 def test_retry_old_state_failed_still_works(db, transfer_env, monkeypatch):
@@ -500,54 +501,49 @@ def test_retry_old_state_failed_still_works(db, transfer_env, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_done_limit_marks_failed_terminal_and_retryable(db, transfer_env, monkeypatch):
-    """构造达上限场景（es state='done' + retry_count=3，Emby 仍缺失）：
+    """构造达上限场景（dq status='done' + retry_count=3，Emby 仍缺失）：
 
-    resolve 后 es → node='failed'/state='failed'（node_error 非空、node_attempt
-    达上限值、retry_count 不消耗），tq 不联动；随后 retry_task 可解锁（tq→pending
-    + es→idle/queued），并可被 _process_one_pending 取走。
+    resolve 后 dq → status='failed'（node_error 非空、node_attempt 达上限值、
+    retry_count 不消耗）；随后 retry_task 可解锁（→ pending + 计数归零），
+    并可被 process_transfer_queue 取走。
     """
     monkeypatch.setattr(scan_mod, "async_session", db)
     monkeypatch.setattr(transfer_mod, "async_session", db)
     monkeypatch.setattr(transfer_mod, "trigger_transfer", AsyncMock(return_value=None))
-    mid, es_id, tq_id = run(_seed_done_at_limit(db, retry_count=3))
+    mid, dq_id = run(_seed_done_at_limit(db, retry_count=3))
 
     # tv 模式：episode 仍在 Emby 缺失集 → 未入库 → done 防重判定
     run(scan_mod._resolve_done_states(types.SimpleNamespace(id=mid), {"S01E01"}, False))
 
-    es = run(get_es_by_media(db, mid))
-    assert es.node == "failed"
-    assert es.state == "failed"
-    assert es.node_error == scan_mod._DONE_LIMIT_ERROR  # 非空上限文案
-    assert es.node_attempt == scan_mod._DONE_FAIL_RETRY_LIMIT  # 达上限值
-    assert es.error == scan_mod._DONE_LIMIT_ERROR
-    assert es.retry_count == 3  # 不再递增，上限语义保持
-    tq = run(read_row(db, TransferQueue, tq_id))
-    assert tq.status == "done"  # 上限分支不联动 tq（P1-3 后 retry 时联动）
+    dq = run(read_row(db, DownloadQueue, dq_id))
+    assert dq.status == "failed"
+    assert dq.node_error == scan_mod._DONE_LIMIT_ERROR  # 非空上限文案
+    assert dq.node_attempt == scan_mod._DONE_FAIL_RETRY_LIMIT  # 达上限值
+    assert dq.error == scan_mod._DONE_LIMIT_ERROR
+    assert dq.retry_count == 3  # 不再递增，上限语义保持
 
-    # 可 retry：解锁（es 以失败终态被定位 → 重置 + tq 联动 pending）
+    # 可 retry：解锁（dq 以失败终态被定位 → 重置 pending）
     async def do_retry():
         async with db() as s:
             return await queue_mod.retry_task(
-                task_id=es.id, admin=types.SimpleNamespace(role="admin"), session=s,
+                task_id=dq.id, admin=types.SimpleNamespace(role="admin"), session=s,
             )
 
     assert run(do_retry()) == {"ok": True}
-    es2 = run(get_es_by_media(db, mid))
-    assert es2.node == "idle"
-    assert es2.state == "queued"
-    assert es2.node_attempt == 0
-    assert es2.node_error is None
-    assert es2.retry_count == 0
-    tq2 = run(read_row(db, TransferQueue, tq_id))
-    assert tq2.status == "pending"
+    dq2 = run(read_row(db, DownloadQueue, dq_id))
+    assert dq2.status == "pending"
+    assert dq2.node_attempt == 0
+    assert dq2.node_error is None
+    assert dq2.retry_count == 0
+    assert dq2.error is None
 
     # 取走闭环（P1-3 + P1-5 联动后队列可消费）
-    run(transfer_mod._process_one_pending())
+    run(transfer_mod.process_transfer_queue())
     assert len(transfer_env["cloudsaver"].save_calls) == 1
 
 
 def test_done_limit_resolve_is_idempotent_after_transition(db, monkeypatch):
-    """P1-5：上限分支转 failed 后再次 resolve 不再改写（state 已非 done，天然幂等）。"""
+    """P1-5：上限分支转 failed 后再次 resolve 不再改写（status 已非 done，天然幂等）。"""
     monkeypatch.setattr(scan_mod, "async_session", db)
 
     async def seed():
@@ -556,21 +552,23 @@ def test_done_limit_resolve_is_idempotent_after_transition(db, monkeypatch):
             s.add(media)
             await s.flush()
             mid = media.id
-            es = EpisodeState(media_id=mid, episode="S01E01", state="done",
-                              retry_count=3, file_name="ep.mkv", file_size=1024,
-                              share_code="sc1", updated_at=_now())
-            s.add(es)
+            dq = DownloadQueue(media_id=mid, episode="S01E01", status="done",
+                               retry_count=3, file_name="ep.mkv", file_size=1024,
+                               share_code="sc1", stoken="st", receive_code="rc",
+                               fids="[]", fid_tokens="[]", folder_id="fd",
+                               updated_at=_now())
+            s.add(dq)
             await s.commit()
-            return mid, es.id
+            return mid, dq.id
 
-    mid, es_id = run(seed())
-
-    run(scan_mod._resolve_done_states(types.SimpleNamespace(id=mid), {"S01E01"}, False))
-    es1 = run(read_row(db, EpisodeState, es_id))
-    assert es1.node == "failed" and es1.state == "failed"
-    first_ts = es1.updated_at
+    mid, dq_id = run(seed())
 
     run(scan_mod._resolve_done_states(types.SimpleNamespace(id=mid), {"S01E01"}, False))
-    es2 = run(read_row(db, EpisodeState, es_id))
-    assert es2.node == "failed" and es2.state == "failed"
-    assert es2.updated_at == first_ts  # 第二轮 select(state='done') 不命中，无改写
+    dq1 = run(read_row(db, DownloadQueue, dq_id))
+    assert dq1.status == "failed" and dq1.node_error == scan_mod._DONE_LIMIT_ERROR
+    first_ts = dq1.updated_at
+
+    run(scan_mod._resolve_done_states(types.SimpleNamespace(id=mid), {"S01E01"}, False))
+    dq2 = run(read_row(db, DownloadQueue, dq_id))
+    assert dq2.status == "failed"
+    assert dq2.updated_at == first_ts  # 第二轮 select(status='done') 不命中，无改写

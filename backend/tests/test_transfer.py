@@ -1,18 +1,22 @@
-"""transfer 转存链单测（阶段 3 交付 B + D 契约验证）。
+"""transfer 下载队列消费单测（P5：旧三表 → DownloadQueue 单表 + 容量预算并发 + 回调推进）。
 
 全部使用 fake 依赖（monkeypatch app.tasks.transfer 模块内的
-aria2/cloudsaver/alist/capacity/notifier/nastools_sync/async_session），
+aria2/cloudsaver/alist/capacity/notifier/scrape_runner/async_session），
 不连任何真实外部服务/数据库。数据库用独立 in-memory SQLite（StaticPool 共享连接）。
 
-验证场景：
-- 阶段 A：tell_status=complete → 双表 done + download_task complete + download_complete 通知
-  + nastools_sync 触发 + 幂等（二次运行不重复）
-- 阶段 A：active → 刷新 updated_at；error → retry_count 递增 → 第 3 次双表 failed + flow_error
-- 阶段 B：容量 False → pending + quota_reject_count++ 且 retry_count 不变；
-  容量异常（CapacityUnavailable）→ pending 且 quota_reject_count 不变 + flow_error
-- 阶段 B：save 连续失败 3 次 → failed 双表 + retry_count=3
-- GID 校验：tell_active 返回陌生 comment 任务 → 跳过 + 不转存 + flow_error；
+验证场景（对应影视下载两队列重设计 §4.2/§5/§6.2）：
+- 阶段 A：tell_status=complete → dq downloading→scrape + download_complete 通知
+  + 刮削执行器触发 + 幂等（二次运行不重复）
+- 阶段 A：active → 刷新 updated_at；error → retry_count 递增 → 第 3 次 failed + flow_error
+- 阶段 B：容量 False → 保持 pending + quota_reject_count++ 且 retry_count 不变；
+  容量异常（CapacityUnavailable）→ 保持 pending 且 quota_reject_count 不变 + flow_error
+- 阶段 B：save 连续失败 3 次 → failed + retry_count=3
+- 容量预算并发（§5）：max_concurrent 限制准入数（0=不限）；reserved 聚合计入容量 check
+- GID 校验：tell_active 返回陌生 comment 任务 → 整批跳过 + 不转存 + flow_error；
   本系统 comment 任务 → 不阻断正常转存提交；tell_active 故障 → fail-closed
+- aria2 回调推进（§6.2）：trigger_download_complete 反查 gid → downloading→scrape；
+  幂等（二次 False）；未知 gid → False
+- P2：aria2 落盘名 = dq.download_name（缺失回退原始名）
 """
 import asyncio
 import types
@@ -26,12 +30,10 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import Base
 import app.models  # noqa: F401  注册全部 ORM 模型
-import app.routers.queue as queue_mod
 import app.tasks.transfer as transfer_mod
-from app.models import DownloadTask, EpisodeState, Media, TransferQueue, User
+from app.models import DownloadQueue, Media
 from app.services.alist import AlistUnavailable as RealAlistUnavailable
 from app.services.capacity import CapacityUnavailable
-from app.services.cloudsaver import CloudSaverUnavailable
 
 
 def run(coro):
@@ -47,12 +49,13 @@ def _now():
 # ---------------------------------------------------------------------------
 
 class FakeAria2Client:
-    """aria2.client：tell_status / tell_active / add_uri。"""
+    """aria2.client：tell_status / tell_active / add_uri / remove。"""
 
     def __init__(self):
         self.statuses = {}        # gid -> "active"/"complete"/"error"...
         self.actives = []         # tell_active 返回值 [{gid,status,comment}]
         self.add_uri_calls = []   # [(uri, kwargs)]
+        self.removed = []         # remove(gid)
 
     async def tell_status(self, gid):
         return {"status": self.statuses.get(gid, "active")}
@@ -63,6 +66,9 @@ class FakeAria2Client:
     async def add_uri(self, uri, **kwargs):
         self.add_uri_calls.append((uri, kwargs))
         return f"gid-{len(self.add_uri_calls)}"
+
+    async def remove(self, gid):
+        self.removed.append(gid)
 
 
 class FakeCloudSaver:
@@ -95,17 +101,19 @@ class FakeAlist:
 
     async def list_dir(self, path):
         self.list_dir_calls.append(path)
-        return [{"name": "other.mkv", "is_dir": False, "size": 123}]
+        return [{"name": "ep.mkv", "is_dir": False, "size": 123}]
 
 
 class FakeCapacityProvider:
+    """capacity.provider：check 记录入参（reserved+file_size 聚合断言用）。"""
+
     def __init__(self):
         self.result = True
         self.raise_error = None
-        self.check_calls = 0
+        self.check_calls = []  # 每次 check 的 candidate_bytes 入参
 
     async def check(self, candidate_bytes):
-        self.check_calls += 1
+        self.check_calls.append(candidate_bytes)
         if self.raise_error:
             raise self.raise_error
         return self.result
@@ -158,9 +166,7 @@ def env(monkeypatch):
     monkeypatch.setattr(transfer_mod, "alist", fakes["alist"])
     monkeypatch.setattr(transfer_mod, "capacity", types.SimpleNamespace(provider=fakes["capacity"]))
     monkeypatch.setattr(transfer_mod, "notifier", fakes["notifier"])
-    # P2-6：非终态回退会 _spawn 后台续跑——单测用 asyncio.run 每轮关闭事件循环，
-    # 与跨 loop 后台 task 不兼容，此处置为「跟踪不执行」（验证触发行为，不真正续跑；
-    # P2-6 续跑语义由 test_oracle_fixes 专门验证）
+    # 刮削执行器触发用 _spawn——单测置「跟踪不执行」（验证触发行为，不真正跑刮削）
     spawn_calls: list = []
     monkeypatch.setattr(transfer_mod, "_spawn", lambda factory: spawn_calls.append(factory))
     fakes["spawn"] = spawn_calls
@@ -179,54 +185,50 @@ def patch_db(monkeypatch, db):
 async def seed_pending(db, *, episode="S01E01", file_name="ep.mkv", file_size=1024,
                        share_code="sc123", stoken="stoken-x", fids='["f1"]',
                        fid_tokens='["ft1"]', folder_id="folder-1",
-                       retry_count=0, quota_reject_count=0):
-    """写入 media + episode_state(queued) + transfer_queue(pending)。返回 (media_id, es_id, tq_id)。"""
+                       retry_count=0, quota_reject_count=0, download_name=None,
+                       save_task_id=None, save_attempt_at=None, quark_path=None,
+                       aria2_gid=None):
+    """写入 media + download_queue(pending)。返回 (mid, dq_id)。"""
     async with db() as s:
-        media = Media(title="测试剧", media_type="tv", tmdb_id=42, status="tracking")
+        media = Media(title="测试剧", media_type="tv", tmdb_id=None, status="tracking")
         s.add(media)
         await s.flush()
         mid = media.id
-        es = EpisodeState(media_id=mid, episode=episode, state="queued",
-                          file_name=file_name, file_size=file_size,
-                          share_code=share_code, retry_count=retry_count, updated_at=_now())
-        s.add(es)
-        await s.flush()
-        tq = TransferQueue(media_id=mid, episode=episode, file_name=file_name,
-                           file_size=file_size, share_code=share_code, stoken=stoken,
-                           receive_code="提取码占位", fids=fids, fid_tokens=fid_tokens,
-                           folder_id=folder_id, status="pending",
-                           quota_reject_count=quota_reject_count, updated_at=_now())
-        s.add(tq)
+        dq = DownloadQueue(
+            media_id=mid, episode=episode, file_name=file_name, file_size=file_size,
+            share_code=share_code, stoken=stoken, receive_code="提取码占位",
+            fids=fids, fid_tokens=fid_tokens, folder_id=folder_id,
+            download_name=download_name, status="pending",
+            retry_count=retry_count, quota_reject_count=quota_reject_count,
+            save_task_id=save_task_id, save_attempt_at=save_attempt_at,
+            quark_path=quark_path, aria2_gid=aria2_gid,
+            enqueued_at=_now(), updated_at=_now(),
+        )
+        s.add(dq)
         await s.flush()
         await s.commit()
-        return mid, es.id, tq.id
+        return mid, dq.id
 
 
-async def seed_downloading(db, *, episode="S01E01", file_name="ep.mkv", gid="gid1"):
-    """写入 media + es(downloading) + tq(downloading) + download_task(downloading)。返回 (mid, es_id, tq_id, dl_id)。"""
+async def seed_downloading(db, *, episode="S01E01", file_name="ep.mkv", gid="gid1",
+                           retry_count=0, node_attempt=0, file_size=1024):
+    """写入 media + download_queue(downloading)。返回 (mid, dq_id)。"""
     async with db() as s:
-        media = Media(title="测试剧", media_type="tv", tmdb_id=42, status="downloading")
+        media = Media(title="测试剧", media_type="tv", tmdb_id=None, status="downloading")
         s.add(media)
         await s.flush()
         mid = media.id
-        es = EpisodeState(media_id=mid, episode=episode, state="downloading",
-                          file_name=file_name, file_size=1024, share_code="sc123",
-                          quark_path=f"/quark/{file_name}", aria2_gid=gid,
-                          retry_count=0, updated_at=_now())
-        s.add(es)
-        await s.flush()
-        tq = TransferQueue(media_id=mid, episode=episode, file_name=file_name,
-                           file_size=1024, share_code="sc123", fids='["f1"]',
-                           status="downloading", updated_at=_now())
-        s.add(tq)
-        await s.flush()
-        dl = DownloadTask(media_id=mid, transfer_id=tq.id, episode=episode,
-                          file_name=file_name, aria2_gid=gid, status="downloading",
-                          quark_path=f"/quark/{file_name}")
-        s.add(dl)
+        dq = DownloadQueue(
+            media_id=mid, episode=episode, file_name=file_name, file_size=file_size,
+            share_code="sc123", stoken="stoken-x", fids='["f1"]',
+            status="downloading", aria2_gid=gid, quark_path=f"/quark/{file_name}",
+            retry_count=retry_count, node_attempt=node_attempt,
+            node_started_at=_now(), updated_at=_now(),
+        )
+        s.add(dq)
         await s.flush()
         await s.commit()
-        return mid, es.id, tq.id, dl.id
+        return mid, dq.id
 
 
 async def read_row(db, model, obj_id):
@@ -234,48 +236,38 @@ async def read_row(db, model, obj_id):
         return await s.get(model, obj_id)
 
 
-async def get_es_by_media(db, media_id):
+async def get_dq_by_media(db, media_id):
     async with db() as s:
         return (
-            await s.execute(select(EpisodeState).where(EpisodeState.media_id == media_id))
+            await s.execute(select(DownloadQueue).where(DownloadQueue.media_id == media_id))
         ).scalars().first()
 
 
-async def get_first_dl(db):
+async def get_all_dq(db):
     async with db() as s:
-        return (await s.execute(select(DownloadTask))).scalars().first()
+        return (await s.execute(select(DownloadQueue).order_by(DownloadQueue.id))).scalars().all()
 
 
 # ---------------------------------------------------------------------------
-# 阶段 A：complete → 释放链 + 双表 done
+# 阶段 A：complete → downloading→scrape + 触发刮削
 # ---------------------------------------------------------------------------
 
 def test_poll_complete_enters_scrape_and_triggers_scrape(db, env, monkeypatch):
-    """下载完成（L3 新语义）：es 进入刮削节点 node='scrape'，state 不置 done、不删夸克；
-    触发刮削执行器（nastools_sync force=True）+ A-1 转存续跑。"""
+    """下载完成（§4.2/G6）：dq downloading→scrape（不置 done、不删夸克）；
+    触发刮削执行器 + download_complete 通知。回调/轮询并发推进幂等（二次不重复）。"""
     patch_db(monkeypatch, db)
-    mid, es_id, tq_id, dl_id = run(seed_downloading(db))
+    mid, dq_id = run(seed_downloading(db))
     env["aria2"].statuses["gid1"] = "complete"
 
     run(transfer_mod.process_transfer_queue())
 
-    es = run(get_es_by_media(db, mid))
-    tq = run(read_row(db, TransferQueue, tq_id))
-    dl = run(read_row(db, DownloadTask, dl_id))
-    assert dl.status == "complete"
-    assert dl.downloaded_at is not None
-    assert tq.status == "done"
-    # L2/L3：下载完成 → es 进入刮削节点（node 权威）。state 保持 downloading——
-    # 置 done 会被 scan._resolve_done_states 当作「Emby 已入库」删除/转 failed，
-    # 误伤仍在刮削/入库的集。
-    assert es.state == "downloading"
-    assert es.node == "scrape"
-    assert es.node_attempt == 0
-    assert es.node_started_at is not None
-    assert es.node_finished_at is not None
-
-    # G6：下载完成不再删夸克（入库确认后才删，由 library_check 在 node='library'
-    # 命中 Emby 时执行），此处零删除调用
+    dq = run(read_row(db, DownloadQueue, dq_id))
+    assert dq.status == "scrape"
+    assert dq.node_attempt == 0
+    assert dq.node_started_at is not None
+    assert dq.node_finished_at is not None
+    assert dq.node_error is None
+    # G6：下载完成不删夸克（入库确认后才删，由后续 lane 执行），零删除调用
     assert env["alist"].remove_calls == []
     # download_complete 通知（全体）
     done_events = [e for e in env["notifier"].events if e.event_type == "download_complete"]
@@ -283,103 +275,185 @@ def test_poll_complete_enters_scrape_and_triggers_scrape(db, env, monkeypatch):
     assert done_events[0].title == "下载完成: ep.mkv"
     assert done_events[0].extra["media_id"] == mid
     assert done_events[0].extra["episode"] == "S01E01"
-    # 刮削执行器事件触发（L3，不阻塞转存链） + A-1 转存续跑（_spawn 后台任务；
-    # 单测只验证触发行为）
-    assert len(env["spawn"]) == 2
-    assert env["spawn"][0] is transfer_mod.scrape_runner  # 先触发刮削执行器
-    assert env["spawn"][1] is transfer_mod.process_transfer_queue       # A-1：下载完成释放容量后续跑
-    # 幂等：二次运行不重复处理（download_task 已 complete，不再命中轮询）
+    # 刮削执行器事件触发（L3，不阻塞转存链）；成功推进不 spawn process_transfer_queue
+    # （容量预算并发下循环内续跑，见 test_admit_processes_multiple_pending）
+    assert env["spawn"] == [transfer_mod.scrape_runner]
+    # 幂等：二次运行不重复处理（dq 已 scrape，轮询不再命中 downloading）
     run(transfer_mod.process_transfer_queue())
-    assert len(env["spawn"]) == 2  # 不再触发
+    assert env["spawn"] == [transfer_mod.scrape_runner]  # 不再触发
     assert len([e for e in env["notifier"].events if e.event_type == "download_complete"]) == 1
 
 
 def test_poll_active_refreshes_updated_at(db, env, monkeypatch):
-    """active → 仍在下载：双表 updated_at 被刷新（防 recover 2h 误回退），状态不变。"""
+    """active → 仍在下载：updated_at 被刷新（防 recover 超时误回退），状态不变。"""
     patch_db(monkeypatch, db)
-    mid, es_id, tq_id, dl_id = run(seed_downloading(db))
+    mid, dq_id = run(seed_downloading(db))
     env["aria2"].statuses["gid1"] = "active"
 
     run(transfer_mod.process_transfer_queue())
 
-    es = run(get_es_by_media(db, mid))
-    tq = run(read_row(db, TransferQueue, tq_id))
-    dl = run(read_row(db, DownloadTask, dl_id))
-    assert tq.status == "downloading"
-    assert dl.status == "downloading"
-    assert es.state == "downloading"
-    assert tq.updated_at is not None and es.updated_at is not None
+    dq = run(read_row(db, DownloadQueue, dq_id))
+    assert dq.status == "downloading"
+    assert dq.updated_at is not None
 
 
 def test_poll_error_retries_then_failed(db, env, monkeypatch):
-    """aria2 error → 确定性失败路径（§4.5）：retry_count 递增 + 回退 + 清理残留 + 中介终止。
+    """aria2 error → 确定性失败路径（§4.2）：retry_count 递增 + 回退 pending + 清理残留。
 
-    注意：process_transfer_queue 两阶段依序执行，阶段 A 回退（tq→pending）后
-    阶段 B 会立即取到同一任务重试转存——故同时令 save 失败，保证每轮
-    retry_count 稳定 +2（阶段 A 一次、阶段 B 重试一次），第二轮达上限转 failed。
+    process_transfer_queue 两阶段依序执行：阶段 A 回退（retry 0→1）后阶段 B 立即
+    取到同一任务重试（retry 1→2）→ 每轮 retry_count +2；第二轮不再命中 downloading，
+    阶段 B 重试达上限（retry 2→3）转 failed。
     """
     patch_db(monkeypatch, db)
-    mid, es_id, tq_id, dl_id = run(seed_downloading(db, gid="gid-err"))
+    mid, dq_id = run(seed_downloading(db, gid="gid-err"))
     env["aria2"].statuses["gid-err"] = "error"
-    env["cloudsaver"].fail_save = CloudSaverUnavailable("分享已失效")
+    env["cloudsaver"].fail_save = CapacityUnavailable("分享已失效")
 
-    # 第一轮：阶段 A retry 0→1 回退 queued/pending + 清理残留；
-    #        阶段 B 立即重试 → save 失败 → retry 1→2，仍回退 queued/pending
+    # 第一轮：阶段 A retry 0→1 回退 pending + 清理残留；
+    #        阶段 B 立即重试 → save 失败 → retry 1→2，仍回退 pending
     run(transfer_mod.process_transfer_queue())
-    es = run(get_es_by_media(db, mid))
-    tq = run(read_row(db, TransferQueue, tq_id))
-    dl = run(read_row(db, DownloadTask, dl_id))
-    assert es.retry_count == 2
-    assert es.state == "queued"
-    assert tq.status == "pending"
-    assert dl.status == "failed"  # 中介 download_task 终止，防后续重复轮询计数
+    dq = run(read_row(db, DownloadQueue, dq_id))
+    assert dq.retry_count == 2
+    assert dq.node_attempt == 2
+    assert dq.status == "pending"
     assert env["alist"].remove_calls  # 回退前清理夸克残留（A 与 B 至少一次）
 
-    # 第二轮：阶段 A 不再命中（dl 已 failed）；阶段 B retry 2→3 → 双表 failed + flow_error
+    # 第二轮：阶段 A 不再命中（status 已 pending）；阶段 B retry 2→3 → failed + flow_error
     run(transfer_mod.process_transfer_queue())
-    es = run(get_es_by_media(db, mid))
-    tq = run(read_row(db, TransferQueue, tq_id))
-    assert es.retry_count == 3
-    assert es.state == "failed"
-    assert tq.status == "failed"
+    dq = run(read_row(db, DownloadQueue, dq_id))
+    assert dq.retry_count == 3
+    assert dq.status == "failed"
     assert any(e.event_type == "flow_error" for e in env["notifier"].events)
 
 
 # ---------------------------------------------------------------------------
-# 阶段 B：容量门槛（fail-closed）
+# 阶段 B：容量门槛（fail-closed，§5）
 # ---------------------------------------------------------------------------
 
 def test_quota_reject_keeps_pending_and_increments_reject(db, env, monkeypatch):
+    """容量不足（P1 裁决）→ 置 quota_wait 幽灵态 + wait_since + quota_reject_count++。
+
+    绝不消耗 retry/node_attempt（§4.5）；quota_wait 不再被取件命中（取件只认
+    pending）。第二次消费入口唤醒回 pending 后仍容量不足 → 又置回 quota_wait。"""
     patch_db(monkeypatch, db)
-    mid, es_id, tq_id = run(seed_pending(db, retry_count=1, quota_reject_count=3))
+    mid, dq_id = run(seed_pending(db, retry_count=1, quota_reject_count=3))
     env["capacity"].result = False
 
     run(transfer_mod.process_transfer_queue())
     run(transfer_mod.process_transfer_queue())
 
-    es = run(read_row(db, EpisodeState, es_id))
-    tq = run(read_row(db, TransferQueue, tq_id))
-    assert tq.status == "pending"
-    assert tq.quota_reject_count == 5  # 3 + 2
-    assert es.state == "queued"
-    assert es.retry_count == 1  # 容量拒绝绝不消耗 retry_count
+    dq = run(read_row(db, DownloadQueue, dq_id))
+    assert dq.status == "quota_wait"           # 容量不足 → quota_wait（非 pending）
+    assert dq.wait_since is not None           # 进入时间已记录
+    assert dq.quota_reject_count == 5          # 3 + 2
+    assert dq.retry_count == 1                 # 容量拒绝绝不消耗 retry_count
+    assert dq.node_attempt == 0                # 也不消耗 node_attempt
     assert env["cloudsaver"].save_calls == []  # 未转存
 
 
-def test_quota_unavailable_keeps_pending_without_inc(db, env, monkeypatch):
+def test_quota_wait_wakeup_and_admit_on_capacity_free(db, env, monkeypatch):
+    """容量释放后（P1 裁决）：消费入口统一唤醒 quota_wait → pending → 容量充足则推进。"""
     patch_db(monkeypatch, db)
-    mid, es_id, tq_id = run(seed_pending(db, quota_reject_count=2))
+    mid, dq_id = run(seed_pending(db))
+    env["capacity"].result = False
+
+    # 第一轮：容量不足 → quota_wait
+    run(transfer_mod.process_transfer_queue())
+    dq = run(read_row(db, DownloadQueue, dq_id))
+    assert dq.status == "quota_wait"
+    assert dq.wait_since is not None
+    assert dq.quota_reject_count == 1
+    assert env["cloudsaver"].save_calls == []
+
+    # 第二轮：容量释放（result=True）→ 入口唤醒 quota_wait→pending → 正常转存推进
+    env["capacity"].result = True
+    run(transfer_mod.process_transfer_queue())
+    dq = run(read_row(db, DownloadQueue, dq_id))
+    assert dq.status == "downloading"
+    assert dq.wait_since is None  # 唤醒时清空
+    assert len(env["cloudsaver"].save_calls) == 1  # 唤醒后被正常转存
+
+
+def test_quota_unavailable_keeps_pending_without_inc(db, env, monkeypatch):
+    """容量接口不可用（CapacityUnavailable）→ fail-closed：保持 pending + 不 ++ + flow_error。"""
+    patch_db(monkeypatch, db)
+    mid, dq_id = run(seed_pending(db, quota_reject_count=2))
     env["capacity"].raise_error = CapacityUnavailable("容量接口不可用")
 
     run(transfer_mod.process_transfer_queue())
 
-    es = run(read_row(db, EpisodeState, es_id))
-    tq = run(read_row(db, TransferQueue, tq_id))
-    assert tq.status == "pending"
-    assert tq.quota_reject_count == 2  # 不 ++
-    assert es.retry_count == 0  # 不耗 retry
+    dq = run(read_row(db, DownloadQueue, dq_id))
+    assert dq.status == "pending"      # 容量不可用不置 quota_wait（无状态变更）
+    assert dq.quota_reject_count == 2  # 不 ++
+    assert dq.retry_count == 0  # 不耗 retry
     assert env["cloudsaver"].save_calls == []
     assert any(e.event_type == "flow_error" for e in env["notifier"].events)
+
+
+# ---------------------------------------------------------------------------
+# P0（议会裁决）：暂停开关落地（§8.2）
+# ---------------------------------------------------------------------------
+
+def test_pause_blocks_admission_then_resume_allows(db, env, monkeypatch):
+    """暂停（system_config download_queue_paused=true）→ 本轮不取新任务（task_run
+    skipped、无 add_uri、任务保持 pending、quota_wait 不唤醒）；恢复后正常取件。"""
+    patch_db(monkeypatch, db)
+    from app.models import SystemConfig
+    mid, dq_id = run(seed_pending(db))
+
+    async def _set_pause(value: bool):
+        async with db() as s:
+            await s.merge(SystemConfig(key="download_queue_paused", value="true" if value else "false"))
+            await s.commit()
+
+    # 暂停：不取件
+    run(_set_pause(True))
+    run(transfer_mod.process_transfer_queue())
+    dq = run(read_row(db, DownloadQueue, dq_id))
+    assert dq.status == "pending"  # 未被取件
+    assert env["cloudsaver"].save_calls == []  # 未转存
+    assert env["aria2"].add_uri_calls == []
+    # task_run(skipped) 记录暂停语义
+    async def _skipped_msgs():
+        from app.models import TaskRun
+        from sqlalchemy import select
+        async with db() as s:
+            rows = (await s.execute(select(TaskRun).where(
+                TaskRun.status == "skipped", TaskRun.task_type == "transfer",
+            ))).scalars().all()
+            return [r.message for r in rows]
+    assert any("队列已暂停" in m for m in run(_skipped_msgs()))
+
+    # 恢复：正常取件
+    run(_set_pause(False))
+    run(transfer_mod.process_transfer_queue())
+    dq = run(read_row(db, DownloadQueue, dq_id))
+    assert dq.status == "downloading"
+    assert len(env["cloudsaver"].save_calls) == 1
+
+
+def test_pause_does_not_wake_quota_wait(db, env, monkeypatch):
+    """暂停期间不唤醒 quota_wait（防暂停期间反复写，P0/P1 裁决时序）。"""
+    patch_db(monkeypatch, db)
+    from app.models import SystemConfig
+
+    mid, dq_id = run(seed_pending(db))
+    env["capacity"].result = False
+    # 先置 quota_wait（未暂停时容量不足）
+    run(transfer_mod.process_transfer_queue())
+    assert run(read_row(db, DownloadQueue, dq_id)).status == "quota_wait"
+
+    # 暂停中再跑消费：不唤醒 quota_wait（保持原状）
+    async def _set_pause():
+        async with db() as s:
+            s.add(SystemConfig(key="download_queue_paused", value="true"))
+            await s.commit()
+    run(_set_pause())
+    env["capacity"].result = True  # 即使容量已充足，暂停中也不唤醒
+    run(transfer_mod.process_transfer_queue())
+    dq = run(read_row(db, DownloadQueue, dq_id))
+    assert dq.status == "quota_wait"
+    assert env["cloudsaver"].save_calls == []
 
 
 # ---------------------------------------------------------------------------
@@ -387,33 +461,31 @@ def test_quota_unavailable_keeps_pending_without_inc(db, env, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_save_failure_retries_then_failed(db, env, monkeypatch):
+    """三次连续失败（每轮重试后回退 pending，可再次被取到）→ failed + retry_count=3。"""
     patch_db(monkeypatch, db)
-    mid, es_id, tq_id = run(seed_pending(db))
-    env["cloudsaver"].fail_save = CloudSaverUnavailable("分享已失效")
+    mid, dq_id = run(seed_pending(db))
+    env["cloudsaver"].fail_save = CapacityUnavailable("分享已失效")
 
-    # 三次连续失败（每轮重试后回退 queued/pending，可再次被取到）
     for _ in range(3):
         run(transfer_mod.process_transfer_queue())
 
-    es = run(read_row(db, EpisodeState, es_id))
-    tq = run(read_row(db, TransferQueue, tq_id))
-    assert es.retry_count == 3
-    assert es.state == "failed"
-    assert tq.status == "failed"
-    assert tq.error  # 记录错误原因
+    dq = run(read_row(db, DownloadQueue, dq_id))
+    assert dq.retry_count == 3
+    assert dq.status == "failed"
+    assert dq.error  # 记录错误原因
     assert any(e.event_type == "flow_error" for e in env["notifier"].events)
-    # 每轮失败都尝试清理夸克残留（save 失败也可能有部分转存残留）
+    # 每轮失败都尝试清理夸克残留
     assert len(env["alist"].remove_calls) == 3
 
     # 已 failed → 无 pending；第四次为空跑，计数不再变
     run(transfer_mod.process_transfer_queue())
-    assert run(read_row(db, EpisodeState, es_id)).retry_count == 3
+    assert run(read_row(db, DownloadQueue, dq_id)).retry_count == 3
 
 
 def test_save_success_commits_download(db, env, monkeypatch):
-    """正常转存链路：save → get_link → add_uri → 双表 downloading + download_task。"""
+    """正常转存链路：save → get_link → add_uri → dq downloading + gid/quark_path 落库。"""
     patch_db(monkeypatch, db)
-    mid, es_id, tq_id = run(seed_pending(db))
+    mid, dq_id = run(seed_pending(db))
     env["aria2"].actives = [{"gid": "own", "status": "active", "comment": "lumencloud:1:S01E01"}]
 
     run(transfer_mod.process_transfer_queue())
@@ -426,45 +498,136 @@ def test_save_success_commits_download(db, env, monkeypatch):
     assert params["fids"] == ["f1"]
     assert params["fidTokens"] == ["ft1"]
     assert params["folderId"] == "folder-1"
-    # aria2 提交：out=文件名，comment=lumencloud:<media_id>:<episode>
+    # aria2 提交：out=落盘名（download_name 缺失回退原始名），comment=lumencloud:<media>:<episode>
     assert len(env["aria2"].add_uri_calls) == 1
     uri, kwargs = env["aria2"].add_uri_calls[0]
     assert uri == env["alist"].link
-    assert kwargs["out"] == "ep.mkv"
+    assert kwargs["out"] == "ep.mkv"  # download_name 为 None → 回退原始名
     assert kwargs["comment"] == "lumencloud:1:S01E01"
 
-    es = run(read_row(db, EpisodeState, es_id))
-    tq = run(read_row(db, TransferQueue, tq_id))
-    assert tq.status == "downloading"
-    assert es.state == "downloading"
-    assert es.aria2_gid == "gid-1"
-    assert es.quark_path == "/quark/ep.mkv"
-
-    dl = run(get_first_dl(db))
-    assert dl is not None
-    assert dl.status == "downloading"
-    assert dl.aria2_gid == "gid-1"
-    assert dl.quark_path == "/quark/ep.mkv"
+    dq = run(read_row(db, DownloadQueue, dq_id))
+    assert dq.status == "downloading"
+    assert dq.aria2_gid == "gid-1"
+    assert dq.quark_path == "/quark/ep.mkv"
+    assert dq.local_path == "/downloads/ep.mkv"
+    assert dq.node_attempt == 0  # 进入 downloading 节点重新计数
+    assert dq.node_error is None
 
 
-def test_success_path_spawns_next_pending_resume(db, env, monkeypatch):
-    """A-1（P1）：成功路径步骤 6 提交后 spawn process_transfer_queue 续跑下一 pending。
-
-    与失败非终态回退续跑（P2-6）对称——解决「一次 scan 入队 N 集只处理 1 集」
-    的静默积压；_process_lock 保证续跑仅排队等待串行执行（无并发风险）。
-    env 的 _spawn 为记录器（不真正执行），此处只验证触发行为。
-    """
+def test_download_started_notification_after_commit(db, env, monkeypatch):
+    """P1（议会裁决 gamma）：addUri 成功落 downloading 后发出 download_started 通知。"""
     patch_db(monkeypatch, db)
-    mid, es_id, tq_id = run(seed_pending(db))
+    mid, dq_id = run(seed_pending(
+        db, file_name="Show.S01E02.1080p.mkv", download_name="测试剧 - S01E02 - 第 2 集.mkv",
+    ))
 
     run(transfer_mod.process_transfer_queue())
 
-    # 成功提交后 spawn 续跑下一 pending：记录的工厂必须指向 process_transfer_queue
-    assert [f.__name__ for f in env["spawn"]] == ["process_transfer_queue"]
-    tq = run(read_row(db, TransferQueue, tq_id))
-    es = run(get_es_by_media(db, mid))
-    assert tq.status == "downloading"
-    assert es.state == "downloading"
+    dq = run(read_row(db, DownloadQueue, dq_id))
+    assert dq.status == "downloading"
+    started = [e for e in env["notifier"].events if e.event_type == "download_started"]
+    assert len(started) == 1
+    assert started[0].title == "下载开始: 测试剧 - S01E02 - 第 2 集.mkv"  # 用落盘名
+    assert started[0].extra["media_id"] == mid
+    assert started[0].extra["episode"] == "S01E01"
+    # 落盘名/本地路径与 download_name 对齐
+    assert dq.quark_path == "/quark/Show.S01E02.1080p.mkv"
+    assert dq.local_path == "/downloads/测试剧 - S01E02 - 第 2 集.mkv"
+
+
+def test_admit_processes_multiple_pending(db, env, monkeypatch):
+    """容量预算并发（§5.3）：一次调用准入多个 pending（默认 max_concurrent=3），
+    成功路径不再 spawn process_transfer_queue 续跑（循环内继续取件）。"""
+    patch_db(monkeypatch, db)
+    ids = []
+    for ep in ("S01E01", "S01E02", "S01E03"):
+        mid, dq_id = run(seed_pending(db, episode=ep))
+        ids.append(dq_id)
+
+    run(transfer_mod.process_transfer_queue())
+
+    rows = run(get_all_dq(db))
+    assert {r.status for r in rows} == {"downloading"}
+    assert len(env["cloudsaver"].save_calls) == 3
+    # 成功路径不 spawn（续跑由循环内取下一个 pending 完成，非后台触发）
+    assert env["spawn"] == []
+    # 二次运行：已全部 downloading → 无 pending，空跑不重复转存
+    run(transfer_mod.process_transfer_queue())
+    assert len(env["cloudsaver"].save_calls) == 3
+
+
+# ---------------------------------------------------------------------------
+# 阶段 B：容量预算并发上限（§5.3 max_concurrent）
+# ---------------------------------------------------------------------------
+
+def test_max_concurrent_limits_admission(db, env, monkeypatch):
+    """max_concurrent=2 → 一次调用只准入 2 个 downloading，其余保持 pending。"""
+    patch_db(monkeypatch, db)
+    monkeypatch.setattr(transfer_mod, "_read_max_concurrent", lambda: 2)
+    for ep in ("S01E01", "S01E02", "S01E03", "S01E04"):
+        run(seed_pending(db, episode=ep))
+
+    run(transfer_mod.process_transfer_queue())
+
+    rows = run(get_all_dq(db))
+    assert sum(1 for r in rows if r.status == "downloading") == 2
+    assert sum(1 for r in rows if r.status == "pending") == 2
+    assert len(env["cloudsaver"].save_calls) == 2
+
+
+def test_max_concurrent_zero_unlimited(db, env, monkeypatch):
+    """max_concurrent=0（不限）→ 全部 pending 一次准入。"""
+    patch_db(monkeypatch, db)
+    monkeypatch.setattr(transfer_mod, "_read_max_concurrent", lambda: 0)
+    for ep in ("S01E01", "S01E02", "S01E03", "S01E04"):
+        run(seed_pending(db, episode=ep))
+
+    run(transfer_mod.process_transfer_queue())
+
+    rows = run(get_all_dq(db))
+    assert {r.status for r in rows} == {"downloading"}
+    assert len(env["cloudsaver"].save_calls) == 4
+
+
+def test_inflight_statuses_exclude_downloading():
+    """P1-4（议会裁决）：reserved 口径不含 downloading（已落盘由 used 覆盖，防双重计算）。
+
+    max_concurrent 并行口径（_RUNNING_STATUSES）与 media 处理中判定
+    （_ACTIVE_STATUSES）**保持含 downloading**（另一语义，勿随 reserved 收紧）。"""
+    assert transfer_mod._INFLIGHT_STATUSES == ("transferring", "scrape", "library")
+    assert "downloading" not in transfer_mod._INFLIGHT_STATUSES
+    assert "downloading" in transfer_mod._RUNNING_STATUSES        # 并行上限口径
+    assert "downloading" in transfer_mod._ACTIVE_STATUSES          # media 处理中判定
+
+
+def test_reserved_aggregation_included_in_capacity_check(db, env, monkeypatch):
+    """reserved 聚合计入容量 check（§5.1）：check 入参 = 未落盘在途 file_size 和 + 本集。
+
+    P1-4 收紧后：downloading 不计入 reserved（已落盘由 used 覆盖），
+    仅 transferring/scrape/library 计入。"""
+    patch_db(monkeypatch, db)
+    # 1 个 transferring（未落盘在途，1000B，计入 reserved）
+    run(seed_pending(db, episode="S01E01", file_size=1000))
+    async def _to_transferring():
+        async with db() as s:
+            await s.execute(
+                update(DownloadQueue).where(DownloadQueue.episode == "S01E01")
+                .values(status="transferring", updated_at=_now())
+            )
+            await s.commit()
+    run(_to_transferring())
+    # 1 个 downloading（已落盘，1000B，**不计入** reserved）
+    run(seed_downloading(db, episode="S01E02", gid="gid-b", file_size=1000))
+    # 1 个 pending（500B）→ 准入时 check 入参应为 1000(transferring) + 500 = 1500
+    run(seed_pending(db, episode="S01E03", file_size=500))
+
+    run(transfer_mod.process_transfer_queue())
+
+    assert env["capacity"].check_calls, "容量 check 应至少被调用一次"
+    assert env["capacity"].check_calls[0] == 1500  # downloading 不计入 reserved
+    # pending 正常准入（容量足）
+    rows = run(get_all_dq(db))
+    assert sum(1 for r in rows if r.status == "downloading") == 2
 
 
 # ---------------------------------------------------------------------------
@@ -472,19 +635,17 @@ def test_success_path_spawns_next_pending_resume(db, env, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_gid_source_check_blocks_foreign_task(db, env, monkeypatch):
-    """存在陌生 aria2 活动任务 → 本轮跳过 + 不转存 + quota/retry 计数不变。"""
+    """存在陌生 aria2 活动任务 → 整批跳过 + 不转存 + quota/retry 计数不变。"""
     patch_db(monkeypatch, db)
-    mid, es_id, tq_id = run(seed_pending(db))
+    mid, dq_id = run(seed_pending(db))
     env["aria2"].actives = [{"gid": "n8n-gid", "status": "active", "comment": "n8n:legacy"}]
 
     run(transfer_mod.process_transfer_queue())
 
-    es = run(read_row(db, EpisodeState, es_id))
-    tq = run(read_row(db, TransferQueue, tq_id))
-    assert tq.status == "pending"            # 不处理
-    assert tq.quota_reject_count == 0        # 不 ++ quota_reject
-    assert es.retry_count == 0               # 不耗 retry
-    assert es.state == "queued"
+    dq = run(read_row(db, DownloadQueue, dq_id))
+    assert dq.status == "pending"            # 不处理
+    assert dq.quota_reject_count == 0        # 不 ++ quota_reject
+    assert dq.retry_count == 0               # 不耗 retry
     assert env["cloudsaver"].save_calls == []  # 不转存
     assert any(e.event_type == "flow_error" for e in env["notifier"].events)
 
@@ -492,20 +653,20 @@ def test_gid_source_check_blocks_foreign_task(db, env, monkeypatch):
 def test_gid_source_check_accepts_own_comment(db, env, monkeypatch):
     """本系统 comment（lumencloud: 前缀）的活动任务不阻断转存。"""
     patch_db(monkeypatch, db)
-    mid, es_id, tq_id = run(seed_pending(db))
+    mid, dq_id = run(seed_pending(db))
     env["aria2"].actives = [{"gid": "own-1", "status": "active", "comment": "lumencloud:9:S02E03"}]
 
     run(transfer_mod.process_transfer_queue())
 
     assert len(env["cloudsaver"].save_calls) == 1  # 正常转存
-    tq = run(read_row(db, TransferQueue, tq_id))
-    assert tq.status == "downloading"
+    dq = run(read_row(db, DownloadQueue, dq_id))
+    assert dq.status == "downloading"
 
 
 def test_gid_check_failure_blocks_round(db, env, monkeypatch):
-    """tell_active 故障 → fail-closed：本轮跳过 + flow_error，不转存。"""
+    """tell_active 故障 → fail-closed：整批跳过 + flow_error，不转存。"""
     patch_db(monkeypatch, db)
-    mid, es_id, tq_id = run(seed_pending(db))
+    mid, dq_id = run(seed_pending(db))
 
     async def boom():
         raise RuntimeError("aria2 RPC 不可用")
@@ -513,17 +674,16 @@ def test_gid_check_failure_blocks_round(db, env, monkeypatch):
     env["aria2"].tell_active = boom
     run(transfer_mod.process_transfer_queue())
 
-    es = run(read_row(db, EpisodeState, es_id))
-    tq = run(read_row(db, TransferQueue, tq_id))
-    assert tq.status == "pending"
-    assert tq.quota_reject_count == 0
-    assert es.retry_count == 0
+    dq = run(read_row(db, DownloadQueue, dq_id))
+    assert dq.status == "pending"
+    assert dq.quota_reject_count == 0
+    assert dq.retry_count == 0
     assert env["cloudsaver"].save_calls == []
     assert any(e.event_type == "flow_error" for e in env["notifier"].events)
 
 
 def test_no_pending_is_skipped(db, env, monkeypatch):
-    """空队列 → 阶段 B task_run(skipped)，无副作用。"""
+    """空队列 → task_run(skipped)，无副作用。"""
     patch_db(monkeypatch, db)
     run(transfer_mod.process_transfer_queue())
     assert env["cloudsaver"].save_calls == []
@@ -535,11 +695,7 @@ def test_no_pending_is_skipped(db, env, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_link_wait_timeout_constant_and_default():
-    """_LINK_WAIT_TIMEOUT=300s，且函数默认超时与常量一致（防魔法数漂移）。
-
-    阶段 3 实证 1.5-2.6G 文件落盘 60-180s，180s 上限偏紧导致个别超时；
-    放宽至 300s 作兜底（超时仍走外层重试路径 retry_count++，非无限等）。
-    """
+    """_LINK_WAIT_TIMEOUT=300s，且函数默认超时与常量一致（防魔法数漂移）。"""
     import inspect
 
     assert transfer_mod._LINK_WAIT_TIMEOUT == 300.0
@@ -553,10 +709,10 @@ def test_link_wait_timeout_constant_and_default():
 # ---------------------------------------------------------------------------
 
 def test_link_timeout_clears_save_task_id_for_retry(db, env, monkeypatch):
-    """save 返回 task_id 但文件始终不落盘（get_link 持续失败超时）→ 走 except 重试路径。
+    """save 返回 task_id 但文件始终不落盘（get_link 持续失败超时）→ 失败重试路径清空。
 
-    P0-1 关键断言：失败回退后 TransferQueue.save_task_id 被清空为 NULL——
-    下一轮重试会重新 save（打破「已受理即跳过 save」的盲等死循环到 retry 上限）。
+    P0-1 关键断言：失败回退后 DownloadQueue.save_task_id 被清空为 NULL——
+    下一轮重试会重新 save（打破「已受理即跳过 save」的盲等死循环到重试上限）。
 
     同时验证超时诊断：抛错前会列 /quark 目录记录实际内容；异常消息含 folderId
     与 alist 管理 API /api/admin/storage/list 核对提示。
@@ -567,7 +723,7 @@ def test_link_timeout_clears_save_task_id_for_retry(db, env, monkeypatch):
         get=lambda key, default=None: "9b852b37f9fb4d11938046a6ab5356a7"
     )
     monkeypatch.setattr(transfer_mod, "config_store", fake_store)
-    mid, es_id, tq_id = run(seed_pending(db))
+    mid, dq_id = run(seed_pending(db))
 
     # cloudSaver 正常受理（返回 task_id=t1），但文件从未落盘 → get_link 一直失败
     async def always_fail(path):
@@ -577,90 +733,28 @@ def test_link_timeout_clears_save_task_id_for_retry(db, env, monkeypatch):
 
     # 第一轮：save 受理并把 task_id 落库 → get_link 超时 → 失败回退 + 清空 save_task_id
     run(transfer_mod.process_transfer_queue())
-    tq = run(read_row(db, TransferQueue, tq_id))
-    es = run(read_row(db, EpisodeState, es_id))
+    dq = run(read_row(db, DownloadQueue, dq_id))
     assert len(env["cloudsaver"].save_calls) == 1
-    assert tq.status == "pending"
-    assert tq.save_task_id is None                    # 关键：失败重试路径清空幂等标记
-    assert es.state == "queued"
-    assert es.retry_count == 1
-    assert tq.error is not None
-    assert "folderId=" in tq.error                    # 超时消息带 folderId（诊断）
-    assert "/api/admin/storage/list" in tq.error      # 含配置核对提示
+    assert dq.status == "pending"
+    assert dq.save_task_id is None                    # 关键：失败重试路径清空幂等标记
+    assert dq.retry_count == 1
+    assert dq.node_attempt == 1
+    assert dq.error is not None
+    assert "folderId=" in dq.error                    # 超时消息带 folderId（诊断）
+    assert "/api/admin/storage/list" in dq.error      # 含配置核对提示
     assert env["alist"].list_dir_calls == ["/quark"]  # 抛错前列目录（诊断）
 
     # 第二轮：save_task_id 已清空 → 重新 save（防死循环的核心行为，而非跳过 save 盲等）
     run(transfer_mod.process_transfer_queue())
-    tq = run(read_row(db, TransferQueue, tq_id))
-    es = run(read_row(db, EpisodeState, es_id))
+    dq = run(read_row(db, DownloadQueue, dq_id))
     assert len(env["cloudsaver"].save_calls) == 2
-    assert tq.save_task_id is None
-    assert es.retry_count == 2
+    assert dq.save_task_id is None
+    assert dq.retry_count == 2
 
 
 # ---------------------------------------------------------------------------
 # P0-1（council）：save_task_id 全链路清理 + save_attempt_at 超时兜底（P0-1）
 # ---------------------------------------------------------------------------
-
-def _force_failed_with_stale_save(db, tq_id, es_id):
-    """把 pending 种子直接置为 failed + save_task_id 残留（模拟历史残留现场）。"""
-
-    async def _set():
-        async with db() as s:
-            await s.execute(
-                update(TransferQueue).where(TransferQueue.id == tq_id).values(
-                    status="failed",
-                    save_task_id="stale-t1",
-                    save_attempt_at=_now() - timedelta(minutes=30),
-                    error="转存失败: 分享已失效",
-                )
-            )
-            await s.execute(
-                update(EpisodeState).where(EpisodeState.id == es_id).values(
-                    state="failed", retry_count=3, error="转存失败: 分享已失效",
-                )
-            )
-            await s.commit()
-
-    run(_set())
-
-
-def test_manual_retry_clears_save_task_id_then_resaves(db, env, monkeypatch):
-    """改动 1a：人工 retry 回退 failed→pending 时同事务清空 save_task_id。
-
-    P0-1 关键断言：failed 任务残留的 save_task_id 在 retry 后为 NULL——下一轮
-    重新走完整转存链（重新 save），而非跳过 save 盲等。
-    """
-    patch_db(monkeypatch, db)
-    mid, es_id, tq_id = run(seed_pending(db))
-    _force_failed_with_stale_save(db, tq_id, es_id)
-
-    # 阻断 retry 成功后内部的 trigger_transfer（延迟导入会取到 patch 后的引用）
-    monkeypatch.setattr(transfer_mod, "trigger_transfer", AsyncMock(return_value=None))
-
-    async def do_retry():
-        async with db() as s:
-            return await queue_mod.retry_task(task_id=tq_id, admin=User(), session=s)
-
-    result = run(do_retry())
-    assert result == {"ok": True}
-
-    tq = run(read_row(db, TransferQueue, tq_id))
-    es = run(get_es_by_media(db, mid))
-    assert tq.status == "pending"
-    assert tq.save_task_id is None      # 关键：人工 retry 清空幂等标记
-    assert tq.save_attempt_at is None   # 受理时间一并清空（同生同灭）
-    assert tq.quota_reject_count == 0
-    assert es.state == "queued"
-    assert es.retry_count == 0
-
-    # 下一轮消费：重新走完整转存链 → 重新 save（而非跳过 save 盲等）
-    run(transfer_mod.process_transfer_queue())
-    assert len(env["cloudsaver"].save_calls) == 1
-    tq = run(read_row(db, TransferQueue, tq_id))
-    assert tq.status == "downloading"
-    assert tq.save_task_id == "t1"
-
 
 def test_stale_save_attempt_forces_resave(db, env, monkeypatch):
     """改动 2g：save_task_id 存在但 save_attempt_at 超 10 分钟 → 强制重新 save。
@@ -669,117 +763,136 @@ def test_stale_save_attempt_forces_resave(db, env, monkeypatch):
     且 save_task_id / save_attempt_at 更新为新的受理结果。
     """
     patch_db(monkeypatch, db)
-    mid, es_id, tq_id = run(seed_pending(db))
-
-    async def set_stale():
-        async with db() as s:
-            await s.execute(
-                update(TransferQueue).where(TransferQueue.id == tq_id).values(
-                    save_task_id="stale-t1",
-                    save_attempt_at=_now() - timedelta(minutes=11),  # 超 600s
-                )
-            )
-            await s.commit()
-
-    run(set_stale())
+    mid, dq_id = run(seed_pending(
+        db, save_task_id="stale-t1", save_attempt_at=_now() - timedelta(minutes=11),
+    ))
 
     run(transfer_mod.process_transfer_queue())
 
     # 强制重新 save（不盲等），受理标记更新为新一轮结果
     assert len(env["cloudsaver"].save_calls) == 1
-    tq = run(read_row(db, TransferQueue, tq_id))
-    assert tq.save_task_id == "t1"
-    assert tq.save_attempt_at is not None
-    assert (tq.save_attempt_at - _now()).total_seconds() > -60  # 刚更新（容差）
-    assert tq.status == "downloading"
-    assert run(get_es_by_media(db, mid)).state == "downloading"
+    dq = run(read_row(db, DownloadQueue, dq_id))
+    assert dq.save_task_id == "t1"
+    assert dq.save_attempt_at is not None
+    assert (dq.save_attempt_at - _now()).total_seconds() > -60  # 刚更新（容差）
+    assert dq.status == "downloading"
 
 
 def test_fresh_save_attempt_keeps_idempotent_skip(db, env, monkeypatch):
     """改动 2g 对照：save_task_id 存在且受理未超时 → 保持幂等跳过 save（不重复转存）。"""
     patch_db(monkeypatch, db)
-    mid, es_id, tq_id = run(seed_pending(db))
-
-    async def set_fresh():
-        async with db() as s:
-            await s.execute(
-                update(TransferQueue).where(TransferQueue.id == tq_id).values(
-                    save_task_id="t1",
-                    save_attempt_at=_now(),
-                )
-            )
-            await s.commit()
-
-    run(set_fresh())
+    mid, dq_id = run(seed_pending(db, save_task_id="t1", save_attempt_at=_now()))
 
     run(transfer_mod.process_transfer_queue())
 
     assert len(env["cloudsaver"].save_calls) == 0  # 幂等：跳过 save 直接等落盘
-    tq = run(read_row(db, TransferQueue, tq_id))
-    assert tq.status == "downloading"
-    assert tq.save_task_id == "t1"
+    dq = run(read_row(db, DownloadQueue, dq_id))
+    assert dq.status == "downloading"
+    assert dq.save_task_id == "t1"
 
 
-def test_complete_double_table_lost_rolls_back_pending(db, env, monkeypatch):
-    """改动 3i：_complete_download 双表失联（tq 已被并发回退 pending）→ 显式回退。
+# ---------------------------------------------------------------------------
+# 下载完成幂等（回调/轮询并发推进，§6.2）
+# ---------------------------------------------------------------------------
 
-    P0-2 关键断言：tq 回退/保持 pending 且 save_task_id 被清空——下一轮重新走
-    完整转存链（重新 save），而非「只置 dl complete 就静默丢弃」。
-    """
+def test_complete_idempotent_when_already_promoted(db, env, monkeypatch):
+    """下载完成已被并发方推进（dq 已 scrape）→ 轮询不再命中，零副作用（幂等）。"""
     patch_db(monkeypatch, db)
-    mid, es_id, tq_id, dl_id = run(seed_downloading(db))
-    # 模拟双表失联：tq 已被 recovery/人工回退为 pending，且 save_task_id 残留
-    async def desync():
+    mid, dq_id = run(seed_downloading(db))
+
+    # 模拟 aria2 回调已先推进：dq 已是 scrape
+    async def _promote():
         async with db() as s:
             await s.execute(
-                update(TransferQueue).where(TransferQueue.id == tq_id).values(
-                    status="pending", save_task_id="stale-t1",
-                )
+                update(DownloadQueue).where(DownloadQueue.id == dq_id)
+                .values(status="scrape", updated_at=_now())
             )
             await s.commit()
+    run(_promote())
 
-    run(desync())
     env["aria2"].statuses["gid1"] = "complete"
-
-    # 只跑阶段 A，便于断言回退中间态（阶段 B 会立即把回退任务重新转存）
-    run(transfer_mod._poll_downloading_tasks())
-
-    tq = run(read_row(db, TransferQueue, tq_id))
-    es = run(get_es_by_media(db, mid))
-    dl = run(read_row(db, DownloadTask, dl_id))
-    assert tq.status == "pending"       # 保持可重试
-    assert tq.save_task_id is None      # 关键：失联回退清空幂等标记
-    assert es.state == "queued"         # downloading → queued
-    assert dl.status == "complete"      # 中介终态（下载确已完成）
-    # 双表失联 → 不发完成通知、不触发 nasTools 同步
-    assert not [e for e in env["notifier"].events if e.event_type == "download_complete"]
-    assert env["spawn"] == []
-
-    # 下一轮消费：阶段 B 取到回退的 pending → 重新走完整转存链（重新 save）
     run(transfer_mod.process_transfer_queue())
-    assert len(env["cloudsaver"].save_calls) == 1
+
+    dq = run(read_row(db, DownloadQueue, dq_id))
+    assert dq.status == "scrape"
+    # 轮询查 downloading 不命中 → 不重复通知/触发刮削
+    assert env["notifier"].events == []
+    assert env["spawn"] == []
 
 
 def test_complete_enters_scrape_without_removing_quark(db, env, monkeypatch):
-    """G6/L3 新语义：下载完成仅把 es 推进到刮削节点（node='scrape'），不删夸克。
+    """G6/L3 新语义：下载完成仅推进到 scrape（node_attempt 归零），不删夸克。
 
-    删除夸克移至「入库确认」（node='library' 命中 Emby）后的 library_check 执行
-    （transfer 内已无 alist.remove 调用），state 保持 downloading（不置 done）。
+    删除夸克移至「入库确认」（library 节点完成）后的后续 lane 执行。
     """
     patch_db(monkeypatch, db)
-    mid, es_id, tq_id, dl_id = run(seed_downloading(db))
+    mid, dq_id = run(seed_downloading(db))
     env["aria2"].statuses["gid1"] = "complete"
 
     run(transfer_mod._poll_downloading_tasks())
 
-    es = run(get_es_by_media(db, mid))
-    tq = run(read_row(db, TransferQueue, tq_id))
-    assert es.node == "scrape"
-    assert es.state == "downloading"  # 不置 done（scan 会把 done 当已入库删除/转 failed）
-    assert tq.status == "done"
+    dq = run(read_row(db, DownloadQueue, dq_id))
+    assert dq.status == "scrape"
+    assert dq.node_attempt == 0
     # 下载完成阶段不删夸克（G6：入库确认后才释放）
     assert env["alist"].remove_calls == []
     assert (["ep.mkv"], "/quark/") not in env["alist"].remove_calls
+
+
+# ---------------------------------------------------------------------------
+# P6：aria2 回调推进 trigger_download_complete（§6.2）
+# ---------------------------------------------------------------------------
+
+def test_trigger_download_complete_promotes_to_scrape(db, env, monkeypatch):
+    """回调推进：按 aria2_gid 反查 downloading → downloading→scrape + 通知 + 触发刮削。"""
+    patch_db(monkeypatch, db)
+    mid, dq_id = run(seed_downloading(db, gid="gid-1"))
+
+    result = run(transfer_mod.trigger_download_complete("gid-1"))
+
+    assert result is True
+    dq = run(read_row(db, DownloadQueue, dq_id))
+    assert dq.status == "scrape"
+    assert dq.node_attempt == 0
+    assert dq.node_finished_at is not None
+    # 通知 + 刮削执行器触发（同轮询推进语义）
+    done_events = [e for e in env["notifier"].events if e.event_type == "download_complete"]
+    assert len(done_events) == 1
+    assert done_events[0].extra["media_id"] == mid
+    assert done_events[0].extra["episode"] == "S01E01"
+    assert env["spawn"] == [transfer_mod.scrape_runner]
+
+
+def test_trigger_download_complete_idempotent_second_false(db, env, monkeypatch):
+    """幂等：二次回调（dq 已 scrape）→ 返回 False，不重复推进/通知/触发刮削。"""
+    patch_db(monkeypatch, db)
+    mid, dq_id = run(seed_downloading(db, gid="gid-1"))
+
+    assert run(transfer_mod.trigger_download_complete("gid-1")) is True
+    # 二次回调：条件更新 downloading→scrape 命中 0 行 → False
+    assert run(transfer_mod.trigger_download_complete("gid-1")) is False
+
+    dq = run(read_row(db, DownloadQueue, dq_id))
+    assert dq.status == "scrape"
+    assert len([e for e in env["notifier"].events if e.event_type == "download_complete"]) == 1
+    assert env["spawn"] == [transfer_mod.scrape_runner]
+
+
+def test_trigger_download_complete_unknown_gid_false(db, env, monkeypatch):
+    """未知 gid（查不到 downloading 任务）→ 返回 False（幂等，不推进）。"""
+    patch_db(monkeypatch, db)
+    run(seed_pending(db))  # 只有 pending，无 downloading
+
+    assert run(transfer_mod.trigger_download_complete("unknown-gid")) is False
+    assert env["notifier"].events == []
+    assert env["spawn"] == []
+
+
+def test_trigger_download_complete_empty_gid_false(db, env, monkeypatch):
+    """空 gid → 直接返回 False（参数防护）。"""
+    patch_db(monkeypatch, db)
+    run(seed_downloading(db, gid="gid-1"))
+    assert run(transfer_mod.trigger_download_complete("")) is False
 
 
 # ---------------------------------------------------------------------------
@@ -819,17 +932,23 @@ def test_format_download_name_no_title_keeps_original():
     ) == "Show.S01E02.mkv"
 
 
-def test_transfer_out_uses_formatted_download_name(db, env, monkeypatch):
-    """P2 集成：addUri 的 out 传格式化落盘名；quark_path 仍用原始名（quark 侧不动）。"""
+def test_transfer_out_uses_download_name_or_original(db, env, monkeypatch):
+    """P2 集成：addUri out 用 dq.download_name（scan promote 生成）；缺失回退原始名。
+
+    quark_path 仍用原始名（quark 侧不动，防重键不受影响）。
+    """
     patch_db(monkeypatch, db)
-    mid, es_id, tq_id = run(seed_pending(db, file_name="Show.S01E02.1080p.mkv"))
-    env["aria2"].actives = [{"gid": "own", "status": "active", "comment": "lumencloud:1:S01E01"}]
+    mid, dq_id = run(seed_pending(
+        db, file_name="Show.S01E02.1080p.mkv",
+        download_name="测试剧 - S01E02 - 第 2 集.mkv",
+    ))
 
     run(transfer_mod.process_transfer_queue())
 
     assert len(env["aria2"].add_uri_calls) == 1
     _, kwargs = env["aria2"].add_uri_calls[0]
-    assert kwargs["out"] == "测试剧 - S01E02 - 第 2 集.mkv"
+    assert kwargs["out"] == "测试剧 - S01E02 - 第 2 集.mkv"  # 用 download_name
     assert kwargs["comment"] == "lumencloud:1:S01E01"
-    es = run(get_es_by_media(db, mid))
-    assert es.quark_path == "/quark/Show.S01E02.1080p.mkv"  # 夸克侧原始名，防重键不受影响
+    dq = run(read_row(db, DownloadQueue, dq_id))
+    assert dq.quark_path == "/quark/Show.S01E02.1080p.mkv"  # 夸克侧原始名，防重键不受影响
+    assert dq.local_path == "/downloads/测试剧 - S01E02 - 第 2 集.mkv"

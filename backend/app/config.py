@@ -55,6 +55,15 @@ class Settings(BaseSettings):
     ALIST_TOKEN: str = ""
     ARIA2_RPC_URL: str = ""
     ARIA2_TOKEN: str = ""
+    # P6 aria2 hook 回调签名密钥（HMAC-SHA256，/internal/aria2/notify）。
+    # DB 优先（system_config.internal_aria2_webhook_secret，settings 页可配置），
+    # 此处为 env fallback（旧部署平滑迁移：system_config 缺失时回退 .env/环境变量）。
+    ARIA2_WEBHOOK_SECRET: Optional[str] = None
+    # §12 NaSTools Webhook 集成鉴权 token（/internal/nastools/notify）。
+    # 旧版 jxxghp Webhook 插件 POST 不支持自定义 Header → 走 query token
+    # （新版「消息通知→Webhook」渠道支持 Authorization header，端点两者都认）。
+    # DB 优先（system_config.internal_nastools_webhook_token），此处 env fallback。
+    NASTOOLS_WEBHOOK_SECRET: Optional[str] = None
     NASTOOLS_BASE_URL: str = ""
     NASTOOLS_USERNAME: str = ""
     NASTOOLS_PASSWORD: str = ""

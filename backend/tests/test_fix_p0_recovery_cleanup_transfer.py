@@ -28,7 +28,7 @@ import app.models  # noqa: F401  注册全部 ORM 模型
 import app.tasks.cleanup as cleanup_mod
 import app.tasks.recovery as recovery_mod
 import app.tasks.transfer as transfer_mod
-from app.models import DownloadTask, EpisodeState, Media, TaskRun, TransferQueue
+from app.models import DownloadQueue, DownloadTask, EpisodeState, Media, TaskRun, TransferQueue
 
 
 def run(coro):
@@ -67,61 +67,30 @@ async def read_row(db, model, obj_id):
 
 
 # ---------------------------------------------------------------------------
-# P0-1：recovery 五节点维度超时回退
+# P0-1：recovery download_queue 单表超时回退
 # ---------------------------------------------------------------------------
 
 async def seed_transferring(db, *, episode="S01E01", file_name="ep.mkv",
-                            gid="gid-t1", node="transfer", updated_at=None):
-    """media + es(node='transfer', state='transferring', 超时) + tq(transferring)。
-    返回 (mid, es_id, tq_id)。"""
+                            gid="gid-t1", updated_at=None):
+    """media + download_queue(status='transferring', 超时)。返回 (mid, dq_id)。"""
     ts = updated_at or _now()
     async with db() as s:
         media = Media(title="测试剧", media_type="tv", tmdb_id=None, status="downloading")
         s.add(media)
         await s.flush()
         mid = media.id
-        es = EpisodeState(media_id=mid, episode=episode, state="transferring",
-                          node=node, node_attempt=1,
-                          node_started_at=_now() - timedelta(hours=3),
-                          node_finished_at=None, node_error="上个节点诊断",
-                          file_name=file_name, file_size=1024, share_code="sc",
-                          quark_path=f"/quark/{file_name}", aria2_gid=gid,
-                          retry_count=0, error="旧错误", updated_at=ts)
-        s.add(es)
-        await s.flush()
-        tq = TransferQueue(media_id=mid, episode=episode, file_name=file_name,
-                           file_size=1024, share_code="sc", stoken="st",
-                           receive_code="提取码占位", fids='["f1"]', fid_tokens='["ft1"]',
-                           folder_id="fd", status="transferring", updated_at=ts)
-        s.add(tq)
+        dq = DownloadQueue(
+            media_id=mid, episode=episode, file_name=file_name, file_size=1024,
+            share_code="sc", stoken="st", receive_code="rc", fids="[]",
+            fid_tokens="[]", folder_id="fd", status="transferring", node_attempt=1,
+            node_started_at=_now() - timedelta(hours=3),
+            node_finished_at=None, node_error="上个节点诊断",
+            quark_path=f"/quark/{file_name}", aria2_gid=gid, save_task_id="st-1",
+            retry_count=0, error="旧错误", updated_at=ts)
+        s.add(dq)
         await s.flush()
         await s.commit()
-        return mid, es.id, tq.id
-
-
-async def seed_stalled_node(db, *, episode, node, file_name, state="downloading"):
-    """media + es(指定 node, state=downloading 超时) + tq(done)。返回 (mid, es_id, tq_id)。"""
-    ts = _now() - timedelta(hours=3)  # 超时（timeout=2h）
-    async with db() as s:
-        media = Media(title="测试剧", media_type="tv", tmdb_id=None, status="downloading")
-        s.add(media)
-        await s.flush()
-        mid = media.id
-        es = EpisodeState(media_id=mid, episode=episode, state=state,
-                          node=node, node_attempt=2,
-                          node_started_at=_now() - timedelta(hours=5),
-                          node_finished_at=ts, node_error="进行中",
-                          file_name=file_name, file_size=1024, share_code="sc",
-                          quark_path=f"/quark/{file_name}", retry_count=1, updated_at=ts)
-        s.add(es)
-        await s.flush()
-        tq = TransferQueue(media_id=mid, episode=episode, file_name=file_name,
-                           file_size=1024, share_code="sc", stoken="st",
-                           status="done", updated_at=ts)
-        s.add(tq)
-        await s.flush()
-        await s.commit()
-        return mid, es.id, tq.id
+        return mid, dq.id
 
 
 class _FakeRecoveryAlist:
@@ -146,10 +115,11 @@ class _FakeAria2Remove:
 
 
 def test_recover_transfer_timeout_resets_node_then_pickable(db, monkeypatch):
-    """P0-1：transferring 超时回退 → 五节点字段复位（node='idle' 等）+ state='queued'，
-    随后 process_transfer_queue 可正常取件走完转存链。"""
+    """P0-1：transferring 超时回退（download_queue 单表）→ status='pending' +
+    retry_count++ + node_attempt++ + save_task_id 清空（防盲等）+ B-3 后置清理；
+    回退后下载队列消费端可正常取件走完转存链。"""
     monkeypatch.setattr(recovery_mod, "async_session", db)
-    mid, es_id, tq_id = run(seed_transferring(
+    mid, dq_id = run(seed_transferring(
         db, updated_at=_now() - timedelta(hours=3)))
     fake_alist = _FakeRecoveryAlist()
     monkeypatch.setattr(recovery_mod, "alist", fake_alist)
@@ -159,61 +129,31 @@ def test_recover_transfer_timeout_resets_node_then_pickable(db, monkeypatch):
     count = run(recovery_mod.recover_stale_tasks())
 
     assert count == 1
-    es = run(read_row(db, EpisodeState, es_id))
-    tq = run(read_row(db, TransferQueue, tq_id))
-    # 回退语义：state=queued + 五节点字段全部复位（取件条件 node='idle' & state='queued'）
-    assert es.state == "queued"
-    assert es.node == "idle"
-    assert es.node_attempt == 0
-    assert es.node_error is None
-    assert es.node_started_at is None
-    assert es.node_finished_at is None
-    assert es.retry_count == 1  # CAS 语义保留：本轮 +1
-    assert tq.status == "pending"
-    assert fake_alist.remove_calls  # 夸克残留清理照常
+    dq = run(read_row(db, DownloadQueue, dq_id))
+    # 回退语义：status=pending（单表权威），计数自增，节点时序/诊断复位
+    assert dq.status == "pending"
+    assert dq.retry_count == 1           # CAS 语义保留：本轮 +1
+    assert dq.node_attempt == 2          # node_attempt++（消费端重新取件）
+    assert dq.node_error is not None     # 超时回退原因（node_error 记录）
+    assert dq.node_started_at is None and dq.node_finished_at is None
+    assert dq.save_task_id is None       # P0-1：清空 save 幂等标记防盲等
+    assert fake_alist.remove_calls       # 夸克残留清理照常（B-3：CAS 成功提交后）
     assert aria2.removed == ["gid-t1"]  # B-3：CAS 成功才移除下行 aria2 任务
 
-    # 回退后可被取件：完整跑一遍阶段 B，断言语义落 downloading
+    # 回退后可被取件：完整跑一遍下载队列消费，断言语义落 downloading。
+    # （transfer 消费 download_queue(pending)；以同 media 重新 seed 的 pending
+    # 验证取件链路）
+    _mid2, dq2_id = run(seed_pending(db, episode="S01E99", file_name="recovered.mkv"))
     env_fakes = _patch_transfer(monkeypatch, db)
     run(transfer_mod.process_transfer_queue())
-    es = run(read_row(db, EpisodeState, es_id))
-    tq = run(read_row(db, TransferQueue, tq_id))
-    assert es.node == "downloading"
-    assert es.state == "downloading"
-    assert tq.status == "downloading"
-    async def _count_dl():
-        async with db() as s:
-            return len((await s.execute(select(DownloadTask))).scalars().all())
-    assert run(_count_dl()) == 1  # 中介 download_task 已建立
+    dq = run(read_row(db, DownloadQueue, dq2_id))
+    assert dq.status == "downloading"
+    assert dq.aria2_gid == "gid-1"
     assert env_fakes["aria2"].add_uri_calls  # 转存链真实走通
 
 
-def test_recover_skips_scrape_and_library_nodes(db, monkeypatch):
-    """P0-1：五节点下 scrape/library（state 双写为 downloading）不被 downloading
-    超时回退——它们由独立机制（node_attempt 重试 / library_check_timeout_seconds）
-    负责，recovery 按 node 维度排除，杜绝回退成 node≠idle+queued 的卡死态。"""
-    monkeypatch.setattr(recovery_mod, "async_session", db)
-    run(seed_stalled_node(db, episode="S01E01", node="scrape", file_name="a.mkv"))
-    run(seed_stalled_node(db, episode="S01E02", node="library", file_name="b.mkv"))
-    monkeypatch.setattr(recovery_mod, "alist", _FakeRecoveryAlist())
-    monkeypatch.setattr(recovery_mod, "aria2",
-                        types.SimpleNamespace(client=_FakeAria2Remove()))
-
-    count = run(recovery_mod.recover_stale_tasks())
-
-    assert count == 0  # scrape/library 均不参与回退
-    async def _rows():
-        async with db() as s:
-            return (await s.execute(select(EpisodeState))).scalars().all()
-    for es in run(_rows()):
-        assert es.state == "downloading"      # state 双写保持 downloading（不置 queued）
-        assert es.node in ("scrape", "library")
-        assert es.retry_count == 1            # 未被回退自增
-        assert es.node_attempt == 2           # 节点级进度未被触碰
-
-
 # ---------------------------------------------------------------------------
-# P0-2：cleanup 五节点维度引用判定（双保险）
+# P0-2：cleanup download_queue 维度引用判定
 # ---------------------------------------------------------------------------
 
 class _FakeCleanupAlist:
@@ -232,29 +172,27 @@ class _FakeCleanupAlist:
 
 
 def test_cleanup_preserves_scrape_and_only_removes_failed_or_missing(db, monkeypatch):
-    """P0-2：es 存在且 node='scrape'（tq=done）→ 文件受保护不删；
-    es 存在但 node='failed' → 可删；es 不存在 → 可删。"""
+    """P0-2：download_queue 非终态（scrape 等进行中）→ 文件受保护不删；
+    failed（终态）→ 可删；无引用（ghost）→ 可删。"""
     monkeypatch.setattr(cleanup_mod, "async_session", db)
 
-    # DB：scrape 集（五节点刮削中，tq 已 done）+ failed 集 + ghost 无 es
+    # DB：scrape 任务（刮削中，非终态）+ failed 任务（终态）
     async def _seed():
         async with db() as s:
-            for ep, node, fname in [("S01E01", "scrape", "scrape.mkv"),
-                                    ("S01E02", "failed", "failed.mkv")]:
+            for ep, status, fname in [("S01E01", "scrape", "scrape.mkv"),
+                                      ("S01E02", "failed", "failed.mkv")]:
                 media = Media(title="测试剧", media_type="tv", tmdb_id=None, status="tracking")
                 s.add(media)
                 await s.flush()
-                es = EpisodeState(media_id=media.id, episode=ep, state="downloading",
-                                  node=node, node_attempt=1, file_name=fname,
-                                  file_size=1024, share_code="sc",
-                                  quark_path=f"/quark/{fname}", retry_count=1,
-                                  updated_at=_now())
-                s.add(es)
-                await s.flush()
-                tq = TransferQueue(media_id=media.id, episode=ep, file_name=fname,
-                                   file_size=1024, share_code="sc", stoken="st",
-                                   status="done", updated_at=_now())
-                s.add(tq)
+                dq = DownloadQueue(
+                    media_id=media.id, episode=ep, file_name=fname, file_size=1024,
+                    share_code="sc", stoken="st", receive_code="rc", fids="[]",
+                    fid_tokens="[]", folder_id="fd", status=status, node_attempt=1,
+                    quark_path=f"/quark/{fname}", retry_count=1,
+                    updated_at=_now())
+                s.add(dq)
+                s.add(DownloadTask(media_id=media.id, episode=ep, file_name=fname,
+                                   status="downloading", quark_path=f"/quark/{fname}"))
                 await s.flush()
             await s.commit()
     run(_seed())
@@ -265,11 +203,11 @@ def test_cleanup_preserves_scrape_and_only_removes_failed_or_missing(db, monkeyp
 
     assert fake_alist.remove_calls, "应当有孤儿文件待清理"
     removed_names = {n for calls in fake_alist.remove_calls for n in calls[0]}
-    # scrape 集：tq=done 但仍被五节点刮削流程引用 → 绝不删（防数据丢失）
+    # scrape：非终态仍被刮削流程引用 → 绝不删（防数据丢失）
     assert "scrape.mkv" not in removed_names
-    # failed 集（es 存在但 node='failed'）→ 可清理
+    # failed：终态 → 可清理（残留不再保护）
     assert "failed.mkv" in removed_names
-    # es 不存在 → 可清理
+    # 无引用 → 可清理
     assert "ghost.mkv" in removed_names
 
 
@@ -357,41 +295,37 @@ def _patch_transfer(monkeypatch, db, *, on_save=None):
 
 
 async def seed_pending(db, *, episode="S01E01", file_name="ep.mkv"):
-    """media + es(node='idle', state='queued') + tq(pending)。返回 (mid, es_id, tq_id)。"""
+    """media + download_queue(pending)（P5 迁移：旧 es+tq 双表 → 单表）。返回 (mid, dq_id)。"""
     async with db() as s:
         media = Media(title="测试剧", media_type="tv", tmdb_id=None, status="tracking")
         s.add(media)
         await s.flush()
         mid = media.id
-        es = EpisodeState(media_id=mid, episode=episode, state="queued",
-                          node="idle", node_attempt=0,
-                          file_name=file_name, file_size=1024, share_code="sc",
-                          retry_count=0, updated_at=_now())
-        s.add(es)
-        await s.flush()
-        tq = TransferQueue(media_id=mid, episode=episode, file_name=file_name,
-                           file_size=1024, share_code="sc", stoken="st",
-                           receive_code="提取码占位", fids='["f1"]', fid_tokens='["ft1"]',
-                           folder_id="fd", status="pending", updated_at=_now())
-        s.add(tq)
+        dq = DownloadQueue(
+            media_id=mid, episode=episode, file_name=file_name, file_size=1024,
+            share_code="sc", stoken="st", receive_code="提取码占位",
+            fids='["f1"]', fid_tokens='["ft1"]', folder_id="fd",
+            status="pending", retry_count=0, enqueued_at=_now(), updated_at=_now(),
+        )
+        s.add(dq)
         await s.flush()
         await s.commit()
-        return mid, es.id, tq.id
+        return mid, dq.id
 
 
 def test_transfer_success_rowcount_conflict_removes_orphan_aria2(db, monkeypatch):
-    """P2-4：转存链路期间 es 被并发方改动（recovery 回退）→ 步骤 6 双表 rowcount 校验
-    不通过（es 命中 0）→ 事务整体回滚：不落 downloading、不插孤儿 DownloadTask、
-    best-effort 清理已提交的 aria2 任务 + task_run(error) 告警。"""
-    mid, es_id, tq_id = run(seed_pending(db))
+    """P2-4：转存链期间 dq 被并发方改动（recovery 回退）→ 步骤 6 单表 rowcount 校验
+    不通过（dq 命中 0）→ 事务整体回滚：不落 downloading、best-effort 清理已提交的
+    aria2 任务 + task_run(error) 告警。"""
+    mid, dq_id = run(seed_pending(db))
 
     async def _concurrent_revert():
-        # 模拟 recovery 超时回退：转存链路（save 期间）把 es 从 transfer/transferring
-        # 并发改回 queued/idle
+        # 模拟 recovery 超时回退：转存链（save 期间）把 dq 从 transferring 并发改回
+        # pending（单表语义，recovery 迁移后回退同此形态）
         async with db() as s:
             await s.execute(
-                update(EpisodeState).where(EpisodeState.id == es_id)
-                .values(state="queued", node="idle", retry_count=1, updated_at=_now())
+                update(DownloadQueue).where(DownloadQueue.id == dq_id)
+                .values(status="pending", retry_count=1, updated_at=_now())
             )
             await s.commit()
 
@@ -399,20 +333,11 @@ def test_transfer_success_rowcount_conflict_removes_orphan_aria2(db, monkeypatch
 
     run(transfer_mod.process_transfer_queue())
 
-    # 不落 downloading：es 保持并发方回退的排队态，tq 回滚后停留 transferring
-    es = run(read_row(db, EpisodeState, es_id))
-    tq = run(read_row(db, TransferQueue, tq_id))
-    assert es.state == "queued"
-    assert es.node == "idle"
-    assert es.retry_count == 1  # 并发方（recovery）的增量不被覆盖
-    assert tq.status != "downloading"
-    assert tq.status != "pending"  # 事务回滚：抢占的 transferring 保持原样
-
-    # 不产生孤儿 DownloadTask
-    async def _count_dl():
-        async with db() as s:
-            return len((await s.execute(select(DownloadTask))).scalars().all())
-    assert run(_count_dl()) == 0
+    # 不落 downloading：dq 保持并发方回退的排队态（抢占的 transferring 被回滚覆盖）
+    dq = run(read_row(db, DownloadQueue, dq_id))
+    assert dq.status == "pending"
+    assert dq.retry_count == 1  # 并发方（recovery）的增量不被覆盖
+    assert dq.aria2_gid is None  # 未提交下载
 
     # best-effort 清理已提交的 aria2 任务
     assert fakes["aria2"].removed == ["gid-1"]
@@ -432,24 +357,15 @@ def test_transfer_success_rowcount_conflict_removes_orphan_aria2(db, monkeypatch
 
 
 def test_transfer_success_path_still_commits_download(db, monkeypatch):
-    """P2-4 不回归：无并发变动的正常成功路径仍完整落 downloading + dl + 不误清理。"""
-    mid, es_id, tq_id = run(seed_pending(db))
+    """P2-4 不回归：无并发变动的正常成功路径仍完整落 downloading + 不误清理。"""
+    mid, dq_id = run(seed_pending(db))
     fakes = _patch_transfer(monkeypatch, db)  # on_save=None
 
     run(transfer_mod.process_transfer_queue())
 
-    es = run(read_row(db, EpisodeState, es_id))
-    tq = run(read_row(db, TransferQueue, tq_id))
-    assert es.node == "downloading"
-    assert es.state == "downloading"
-    assert tq.status == "downloading"
-    assert es.aria2_gid == "gid-1"
-    assert es.quark_path == "/quark/ep.mkv"
-    async def _rows():
-        async with db() as s:
-            return (await s.execute(select(DownloadTask))).scalars().all()
-    dl_rows = run(_rows())
-    assert len(dl_rows) == 1
-    assert dl_rows[0].status == "downloading"
-    assert fakes["aria2"].removed == []  # 正常路径绝不清aria2 任务
-    assert fakes["spawn"]  # A-1 续跑触发保持
+    dq = run(read_row(db, DownloadQueue, dq_id))
+    assert dq.status == "downloading"
+    assert dq.aria2_gid == "gid-1"
+    assert dq.quark_path == "/quark/ep.mkv"
+    assert fakes["aria2"].removed == []  # 正常路径绝不清 aria2 任务
+    assert fakes["spawn"] == []  # 成功路径不 spawn 续跑（循环内取下一个 pending，§5）

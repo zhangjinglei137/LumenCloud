@@ -45,11 +45,14 @@ def _auth(token: str) -> dict:
 
 
 async def _seed_queue_data():
-    """注入一条 pending + 一条 failed 队列数据，供脱敏与 retry 断言（同事件循环）。"""
+    """注入一条 pending + 一条 failed 队列数据，供脱敏与 retry 断言（同事件循环）。
+
+    影视下载两队列重设计后防重权威源 = download_queue（§3.2），树/重试均以其为对象。
+    """
     from datetime import datetime, timezone
 
     from app.database import async_session
-    from app.models import EpisodeState, Media, TransferQueue
+    from app.models import DownloadQueue, EpisodeState, Media
 
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     async with async_session() as session:
@@ -57,37 +60,37 @@ async def _seed_queue_data():
         session.add(media)
         await session.flush()
 
+        # media 详情端点（未随两队列改造，仍读旧表 episode_state）的凭据分级断言数据
         session.add(
-            TransferQueue(
+            EpisodeState(media_id=media.id, episode="S01E01", state="queued",
+                         file_name="f01.mkv", file_size=1500000000,
+                         share_code="AbCd1234XyZq", retry_count=0, updated_at=now)
+        )
+        session.add(
+            EpisodeState(media_id=media.id, episode="S01E02", state="failed",
+                         file_name="f02.mkv", file_size=99,
+                         share_code="Qq7Ww8ZzNm1p", retry_count=3,
+                         error="确定性失败", updated_at=now)
+        )
+
+        session.add(
+            DownloadQueue(
                 media_id=media.id, episode="S01E01", file_name="f01.mkv",
                 file_size=1500000000, share_code="AbCd1234XyZq", pwd_id="pwd1",
                 stoken="stok1", receive_code="rc1", fids="[1]", fid_tokens='["t1"]',
-                folder_id="fld1", status="pending", updated_at=now,
-            )
-        )
-        session.add(
-            EpisodeState(
-                media_id=media.id, episode="S01E01", state="queued",
-                file_name="f01.mkv", file_size=1500000000,
-                share_code="AbCd1234XyZq", retry_count=0, updated_at=now,
+                folder_id="fld1", status="pending", node_attempt=0,
+                enqueued_at=now, updated_at=now,
             )
         )
 
-        failed = TransferQueue(
+        failed = DownloadQueue(
             media_id=media.id, episode="S01E02", file_name="f02.mkv",
             file_size=99, share_code="Qq7Ww8ZzNm1p", status="failed",
-            quota_reject_count=0, error="确定性失败", updated_at=now,
+            retry_count=3, error="确定性失败", updated_at=now,
         )
         session.add(failed)
-        session.add(
-            EpisodeState(
-                media_id=media.id, episode="S01E02", state="failed",
-                file_name="f02.mkv", file_size=99,
-                share_code="Qq7Ww8ZzNm1p", retry_count=3, error="确定性失败", updated_at=now,
-            )
-        )
         await session.commit()
-        return {"media_id": media.id, "failed_tq_id": failed.id}
+        return {"media_id": media.id, "failed_dq_id": failed.id}
 
 
 async def _recreate_admin() -> str:
@@ -165,22 +168,24 @@ def test_full_auth_and_api_flow():
 
         # ---------- 注入队列数据（同事件循环）验证 §9.1 脱敏 ----------
         seed = client.portal.call(_seed_queue_data)
-        media_id, failed_tq_id = seed["media_id"], seed["failed_tq_id"]
+        media_id, failed_dq_id = seed["media_id"], seed["failed_dq_id"]
 
-        # guest 视图：影视任务树（L8）——父级 media 聚合 + children 分集子任务，
-        # 凭据字段任何层级都不返回
+        # guest 视图：影视任务树（§8.1）——父级 media 聚合 + children 子任务
+        # （下载队列执行视图 node=status），凭据字段任何层级都不返回
         r = client.get("/api/queue", headers=_auth(guest_tok))
         assert r.status_code == 200
         tree = r.json()
         parent = tree[0]
         assert parent["media_id"] == media_id
         assert parent["title"] == "脱敏测试影视"
-        # seed 子任务未走流程（node 默认 idle）→ 聚合 waiting，无 done 集
-        assert parent["aggregate_status"] == "waiting"
+        # 一 pending 一 failed → 聚合 partial_failed，完成 0 集
+        assert parent["aggregate_status"] == "partial_failed"
         assert parent["total_count"] == 2 and parent["done_count"] == 0
         child = next(c for c in parent["children"] if c["episode"] == "S01E01")
-        assert isinstance(child["id"], int) and child["node"] == "idle"
+        assert isinstance(child["id"], int) and child["node"] == "pending"
         assert child["node_attempt"] == 0 and child["file_name"] == "f01.mkv"
+        # §8.1 新契约字段：tq_status 缺省（执行视图）、share_code_tail 缩略
+        assert child["tq_status"] is None and child["share_code_tail"] == "XyZq"
         for p in tree:
             for f in _SENSITIVE_QUEUE_FIELDS:
                 assert f not in p and all(f not in c for c in p["children"])
@@ -314,18 +319,18 @@ def test_full_auth_and_api_flow():
 
         # ---------- queue retry：guest 403 / admin 200（failed→pending） ----------
         assert (
-            client.post(f"/api/queue/{failed_tq_id}/retry", headers=_auth(guest_tok)).status_code == 403
+            client.post(f"/api/queue/{failed_dq_id}/retry", headers=_auth(guest_tok)).status_code == 403
         )
-        r = client.post(f"/api/queue/{failed_tq_id}/retry", headers=_auth(admin_tok))
+        r = client.post(f"/api/queue/{failed_dq_id}/retry", headers=_auth(admin_tok))
         assert r.status_code == 200, r.text
-        # 再次 retry（已非 failed）→ 409（L8 树语义：仅 failed 节点可人工重试）
+        # 再次 retry（已 pending）→ 409（§8.2：仅 failed/skipped 可人工重试）
         assert (
-            client.post(f"/api/queue/{failed_tq_id}/retry", headers=_auth(admin_tok)).status_code == 409
+            client.post(f"/api/queue/{failed_dq_id}/retry", headers=_auth(admin_tok)).status_code == 409
         )
-        # episode_state 双表联动回 queued + retry_count 归零
-        r = client.get(f"/api/media/{media_id}", headers=_auth(admin_tok))
-        ep = [e for e in r.json()["episode_state"] if e["episode"] == "S01E02"][0]
-        assert ep["state"] == "queued" and ep["retry_count"] == 0
+        # retry 重置为 pending + retry_count 归零（download_queue 为防重权威源）
+        r = client.get("/api/queue", headers=_auth(admin_tok))
+        by_ep = {c["episode"]: c for p in r.json() for c in p.get("children", [])}
+        assert by_ep["S01E02"]["node"] == "pending"
 
         # ---------- 通知铃铛 ----------
         r = client.get("/api/notifications", headers=_auth(guest_tok))

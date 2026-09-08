@@ -1,20 +1,15 @@
 """
 兜底清理任务（设计文档 §4.2 release_space_cleanup，每 12h / 交付 D 兜底）。
 
-正常流程靠「下载完成即释放」（transfer 阶段 A complete 即删夸克残留）；
+正常流程靠「入库确认即删夸克」（library_check finalize done 时删）；
 此处仅兜底清理夸克残留孤儿文件：alist /quark 中不在「受引用集合」的文件
-（download_task **仅 downloading 状态**的 quark_path 末段文件名 + transfer_queue 中
-transferring/downloading 状态的 file_name + P0-2 五节点维度：episode_state 存在且
-node≠'failed' 的集的 quark_path/file_name——覆盖 tq=done/dl=complete 但刮削/入库
-仍在进行的 scrape/library 阶段）→ 一次批量 alist.remove。
+（download_queue **非终态**行的 quark_path/file_name——覆盖 pending/quota_wait/
+transferring/downloading/scrape/library 全部进行中与排队阶段，含刮削/入库期间
+文件仍被占用的情况）→ 一次批量 alist.remove。
 
-P1-3（Oracle 审查）：引用集合只含进行中任务——complete/failed 的 download_task
-不再保护其 quark_path，下载完成未删干净的残留可由本兜底清理（而非永久滞留）。
-
-P0-2（council 双保险）：五节点下 es 是权威维度。es 存在且 node='failed' → 文件
-可清理；es 不存在 → 可清理；其余（含 idle/queued/transfer/download/downloading/
-scrape/library/done）一律不可清理——杜绝刮削/入库期间（tq=done、dl=complete 时
-state 仍为 downloading）文件被当孤儿误删的数据丢失。
+P1-3（Oracle 审查）语义迁移：引用集合只含非终态任务——done/skipped/failed 的
+download_queue 不再保护其 quark_path，流程完成/失败后未删干净的残留可由本兜底
+清理（而非永久滞留）。
 
 保守原则：只删无引用孤儿文件（必要时宁可保留，绝不误删进行中任务）；
 alist 故障 → task_run(error) 记录，不向外抛异常。
@@ -26,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import delete, select
 
 from app.database import async_session
-from app.models import DownloadTask, EpisodeState, QuarkCapacityLog, TaskRun, TransferQueue
+from app.models import DownloadQueue, QuarkCapacityLog, TaskRun
 from app.services import alist
 from app.tasks import record_task_run
 
@@ -35,11 +30,9 @@ logger = logging.getLogger(__name__)
 _IMPLEMENTED = True
 
 _QUARK_ROOT = "/quark"
-# 执行流「进行中」态的文件视为被引用（转存中/下载中都占用 /quark 空间，不可删）
-_TQ_REFERENCED_STATES = ("transferring", "downloading")
-# P0-2（council）：五节点维度兜底规则——es 存在且 node ≠ 'failed'（含 transfer/
-# download/downloading/scrape/library 及 idle/queued/done 迁移前旧值）的文件一律保护；
-# 仅 es.node='failed' 或 es.state='done'（五节点终态残留）才视为可清理。
+# 下载队列终态集：终态行的残留文件视为可清理孤儿（不再保护）；
+# 非终态（pending/quota_wait/transferring/downloading/scrape/library）一律保护。
+_DQ_TERMINAL_STATUSES = ("done", "skipped", "failed")
 
 
 def _basename(path) -> str | None:
@@ -77,59 +70,23 @@ async def release_space_cleanup_job() -> None:
             await s.commit()
         return
 
-    # 2) 受引用集合（P1-3：download_task 仅 downloading 状态引用其 quark_path；
-    #    complete/failed 不再保护，残留可被兜底清理；tq 进行中态 file_name）。
-    #    P0-2（council 双保险）：新增五节点 es 维度——es 存在且 node≠'failed' 的集，
-    #    其 quark_path/file_name 一律视为仍被引用（即便 tq=done / dl=complete）：
-    #    - 五节点下 scrape/library 阶段 tq=done、dl=complete 但文件仍被刮削/入库流程
-    #      占用（es 维度保护，误删=数据丢失）；
-    #    - 兜底规则：es 存在但 node='failed' → 可清理；es 不存在 → 可清理；
-    #      其余（idle/queued/transfer/download/downloading/scrape/library/done）→ 不可清理。
+    # 2) 受引用集合（P1-3 语义迁移至 download_queue）：非终态任务
+    #    （pending/quota_wait/transferring/downloading/scrape/library）的
+    #    quark_path/file_name 一律视为仍被引用：
+    #    - scrape/library 阶段文件仍被刮削/入库流程占用（保护，误删=数据丢失）；
+    #    - pending/quota_wait 尚无文件但可能残留回退未删净的中间文件（保护无害）；
+    #    - done/skipped/failed 终态不再保护其文件 → 残留可由本兜底清理。
     async with async_session() as s:
-        dl_paths = (
-            (
-                await s.execute(
-                    select(DownloadTask.quark_path).where(
-                        DownloadTask.status == "downloading",
-                        DownloadTask.quark_path.is_not(None),
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        tq_names = (
-            (
-                await s.execute(
-                    select(TransferQueue.file_name).where(
-                        TransferQueue.status.in_(_TQ_REFERENCED_STATES)
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        es_rows = (
+        rows = (
             await s.execute(
-                select(
-                    EpisodeState.node,
-                    EpisodeState.state,
-                    EpisodeState.file_name,
-                    EpisodeState.quark_path,
+                select(DownloadQueue.quark_path, DownloadQueue.file_name).where(
+                    DownloadQueue.status.not_in(_DQ_TERMINAL_STATUSES)
                 )
             )
         ).all()
-    referenced = {b for b in (_basename(p) for p in dl_paths) if b}
-    referenced.update(n for n in tq_names if n)
-    for node, state, file_name, quark_path in es_rows:
-        # P0-2 兜底规则：es 存在且 node='failed' → 可清理；es 不存在（本循环无行）
-        # → 可清理；其余不可清理。另补 state='done'（五节点终态/旧字段完成态）——
-        # 流程真正完成后的残留属可清理孤儿（与 P1-3「complete/failed 的 download_task
-        # 不再保护」同语义）；五节点下 scrape/library 的 state 双写为 'downloading'，
-        # 不会命中此分支，对 P0-2 保护无影响。
-        if node == "failed" or state == "done":
-            continue  # 可清理：不再保护其文件
-        for p in (file_name, quark_path):
+    referenced: set[str] = set()
+    for quark_path, file_name in rows:
+        for p in (quark_path, file_name):
             b = _basename(p)
             if b:
                 referenced.add(b)

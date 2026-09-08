@@ -28,7 +28,7 @@ from sqlalchemy.pool import StaticPool
 
 import app.models  # noqa: F401  注册全部 ORM 模型
 from app.database import Base
-from app.models import EpisodeState, Media, TaskRun, TransferQueue
+from app.models import DownloadQueue, Media, TaskQueue, TaskRun
 
 
 def run(coro):
@@ -239,16 +239,21 @@ def test_scan_one_success_phases_all_done_and_scan_detail(db, monkeypatch):
 
     assert "已入队 2 个资源" in tr.message
     assert "1 个文件未匹配" in tr.message
+    # §4.1：unmatched_marked 键存在（本轮未匹配集未被标静默，matched 全命中）
+    assert "unmatched_marked" in detail
 
-    # 双表入队落库
+    # 两队列入队落库（download_queue pending + task_queue done，§4.1 promote 双写；
+    # 同步探测 promote 完成即 task_queue 终态 done）
     async def _read_tables():
         async with db() as s:
-            es = (await s.execute(select(EpisodeState).where(EpisodeState.media_id == mid))).scalars().all()
-            tq = (await s.execute(select(TransferQueue).where(TransferQueue.media_id == mid))).scalars().all()
-            return es, tq
-    es, tq = run(_read_tables())
-    assert {e.episode for e in es} == {"S01E01", "S01E02"}
+            dq = (await s.execute(select(DownloadQueue).where(DownloadQueue.media_id == mid))).scalars().all()
+            tq = (await s.execute(select(TaskQueue).where(TaskQueue.media_id == mid))).scalars().all()
+            return dq, tq
+    dq, tq = run(_read_tables())
+    assert {d.episode for d in dq} == {"S01E01", "S01E02"}
+    assert all(d.status == "pending" for d in dq)
     assert len(tq) == 2
+    assert all(t.status == "done" for t in tq)
 
 
 def test_scan_one_emby_failure_failed_phase_check(db, monkeypatch):
@@ -577,10 +582,12 @@ def test_queue_scan_tasks_latest_only_and_orphan_empty(_router_db):
             s.add(media)
             await s.flush()
             mid = media.id
-            # 分集子任务驱动父级出现
-            s.add(EpisodeState(media_id=mid, episode="S01E01", state="queued",
-                               file_name="S01E01.mkv", file_size=1024,
-                               retry_count=0, updated_at=now))
+            # 分集子任务驱动父级出现（download_queue 为两队列树数据源，§8.1）
+            s.add(DownloadQueue(media_id=mid, episode="S01E01", status="pending",
+                                file_name="S01E01.mkv", file_size=1024,
+                                share_code="sc", stoken="s", receive_code="r",
+                                fids="[]", fid_tokens="[]", folder_id="f",
+                                updated_at=now))
             # 两条巡检：旧 + 新
             s.add(TaskRun(task_type="scan_media", media_id=mid, status="success",
                           message="旧巡检", started_at=now - timedelta(days=1),
@@ -588,10 +595,12 @@ def test_queue_scan_tasks_latest_only_and_orphan_empty(_router_db):
             s.add(TaskRun(task_type="scan_media", media_id=mid, status="running",
                           message="正在巡检", started_at=now,
                           duration_seconds=None))
-            # 孤儿 episode_state（media 不存在）：FK 在 SQLite 无 enforcement，可插入
-            s.add(EpisodeState(media_id=999999, episode="S99E99", state="queued",
-                               file_name="orphan.mkv", file_size=1,
-                               retry_count=0, updated_at=now))
+            # 孤儿 download_queue（media 不存在）：FK 在 SQLite 无 enforcement，可插入
+            s.add(DownloadQueue(media_id=999999, episode="S99E99", status="pending",
+                                file_name="orphan.mkv", file_size=1,
+                                share_code="sc", stoken="s", receive_code="r",
+                                fids="[]", fid_tokens="[]", folder_id="f",
+                                updated_at=now))
             await s.commit()
             return mid
 

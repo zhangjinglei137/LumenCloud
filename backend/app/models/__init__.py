@@ -112,6 +112,103 @@ class EpisodeState(Base):
     updated_at = mapped_column(DateTime, onupdate=func.current_timestamp())
 
 
+class TaskQueue(Base):
+    """缺失集探测任务（影视下载两队列重设计 §3.1，防重基线 + 探测结果快照）。
+
+    防重权威源 = DownloadQueue.UNIQUE(media_id, episode)（本表为探测视图）。
+    episode 键规则：剧集=SxxExx（S01E01，三位集数保留三位）；
+    电影=「movie:<media.title>」归一化键（§7：多版本匹配取一，防重复下载/同名覆盖）。
+    """
+
+    __tablename__ = "task_queue"
+    __table_args__ = (
+        UniqueConstraint("media_id", "episode", name="uq_task_queue_media_episode"),
+        Index("idx_tqk_status", "status"),
+        Index("idx_tqk_media", "media_id"),
+        Index("idx_tqk_silent_until", "silent_until"),
+    )
+
+    id = mapped_column(BIG_PK, Identity(), primary_key=True)
+    media_id = mapped_column(BigInteger, ForeignKey("media.id"), nullable=False)
+    episode = mapped_column(Text, nullable=False)          # S01E01 / 电影=movie:<title>
+    # ---- 探测结果快照（ready 时填充，promote 时整体拷贝进 download_queue）----
+    file_name = mapped_column(Text)                        # 夸克分享原始文件名
+    file_size = mapped_column(BigInteger)                  # 字节；探测到才有
+    share_code = mapped_column(Text)                       # 夸克分享码（12 位）
+    pwd_id = mapped_column(Text)
+    stoken = mapped_column(Text)
+    receive_code = mapped_column(Text)
+    fids = mapped_column(Text)                             # JSON 数组字符串
+    fid_tokens = mapped_column(Text)
+    folder_id = mapped_column(Text)
+    # ---- 状态机 ----
+    status = mapped_column(  # pending/probing/ready/unmatched/error/done
+        Text, nullable=False, server_default=text("'pending'")
+    )
+    probe_attempt = mapped_column(Integer, server_default=text("0"))
+    silent_until = mapped_column(DateTime)                 # unmatched 静默到期时间
+    error = mapped_column(Text)
+    created_at = mapped_column(DateTime, server_default=text("CURRENT_TIMESTAMP"))
+    updated_at = mapped_column(DateTime, onupdate=func.current_timestamp())
+
+
+class DownloadQueue(Base):
+    """下载执行任务（影视下载两队列重设计 §3.2，防重权威源：UNIQUE(media_id, episode)）。
+
+    承接旧 transfer_queue + download_task + episode_state 的职责：
+      - 执行状态机（transferring/downloading/scrape/library）+ 全节点超时回退
+      - aria2 GID / quark_path / local_path 跟踪
+      - cloudSaver save 幂等（save_task_id / save_attempt_at）
+      - 容量预留记账（quota_wait 不消耗 retry_count）
+    """
+
+    __tablename__ = "download_queue"
+    __table_args__ = (
+        UniqueConstraint("media_id", "episode", name="uq_download_queue_media_episode"),
+        Index("idx_dqk_status", "status"),
+        Index("idx_dqk_media", "media_id"),
+    )
+
+    id = mapped_column(BIG_PK, Identity(), primary_key=True)
+    media_id = mapped_column(BigInteger, ForeignKey("media.id"), nullable=False)
+    episode = mapped_column(Text, nullable=False)          # 防重键（同 task_queue）
+    task_queue_id = mapped_column(BigInteger, ForeignKey("task_queue.id"))
+    # ---- 分享信息快照（promote 时从 task_queue 整体拷贝，转存阶段独立）----
+    file_name = mapped_column(Text, nullable=False)        # 夸克原始文件名
+    file_size = mapped_column(BigInteger, nullable=False)  # 字节
+    share_code = mapped_column(Text, nullable=False)
+    pwd_id = mapped_column(Text)
+    stoken = mapped_column(Text)
+    receive_code = mapped_column(Text)
+    fids = mapped_column(Text)
+    fid_tokens = mapped_column(Text)
+    folder_id = mapped_column(Text)
+    # ---- 落盘名（aria2 out 参数；命名规则见设计文档 §7）----
+    download_name = mapped_column(Text)                    # 格式化落盘名，addUri out 用
+    # ---- 执行跟踪 ----
+    aria2_gid = mapped_column(Text)                        # 来源标记 comment 同值
+    quark_path = mapped_column(Text)                       # /quark/<真实名>（删除用）
+    local_path = mapped_column(Text)                       # /downloads/<download_name>
+    save_task_id = mapped_column(Text)                     # cloudSaver save 幂等标记
+    save_attempt_at = mapped_column(DateTime)              # save 受理时间（超时兜底）
+    # ---- 状态机（全节点可超时回退，见设计文档 §四）----
+    status = mapped_column(  # pending/transferring/downloading/scrape/library/
+        Text, nullable=False, server_default=text("'pending'")  #   quota_wait/done/skipped/failed
+    )
+    node_attempt = mapped_column(Integer, server_default=text("0"))
+    node_started_at = mapped_column(DateTime)
+    node_finished_at = mapped_column(DateTime)
+    node_error = mapped_column(Text)
+    retry_count = mapped_column(Integer, server_default=text("0"))
+    quota_reject_count = mapped_column(Integer, server_default=text("0"))
+    # quota_wait 进入时间（议会验证 P1：容量不足置 quota_wait + wait_since，
+    # 容量释放回 pending；>1 天时间维度告警依据）
+    wait_since = mapped_column(DateTime)
+    error = mapped_column(Text)
+    enqueued_at = mapped_column(DateTime, server_default=text("CURRENT_TIMESTAMP"))
+    updated_at = mapped_column(DateTime, onupdate=func.current_timestamp())
+
+
 class TransferQueue(Base):
     """容量感知转存队列（执行流视图；防重权威源 = episode_state）"""
 
