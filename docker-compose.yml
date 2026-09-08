@@ -24,6 +24,8 @@
 #   - lumencloud 从 Dockerfile 构建（多阶段：前端 vite → python:3.12-slim）
 #   - 应用启动时 alembic 自动迁移建表（init_db），无需手动初始化
 #   - 健康检查：/api/health（lumencloud）与 pg_isready（db）
+#   - dataprep：一次性权限引导（busybox 以 root chown ./data → UID 1000），
+#     lumencloud 依赖其成功退出后才启动（非 root 运行配套，免手动 chown）
 # ============================================
 services:
   db:
@@ -44,6 +46,18 @@ services:
       retries: 10
     restart: unless-stopped
 
+  dataprep:
+    # 一次性权限引导（非 root 运行配套）：容器内以 root 把 bind-mount 的宿主
+    # ./data 属主修正为 UID 1000（lumencloud），解决旧 root 实例/新机器上
+    # bind-mount 权限踩坑（JWT 密钥/落盘 Permission denied）。幂等、秒级完成；
+    # lumencloud depends_on 等待其成功退出（service_completed_successfully）后才启动。
+    image: busybox:1.36
+    container_name: lumencloud-dataprep
+    command: ["sh", "-c", "mkdir -p /app/data && chown -R 1000:1000 /app/data"]
+    volumes:
+      - ./data:/app/data
+    restart: "no"
+
   lumencloud:
     build:
       context: .
@@ -59,12 +73,12 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      dataprep:
+        condition: service_completed_successfully
     volumes:
       # JWT 密钥文件（.jwt_secret）+ SQLite/备份目录等
-      # ⚠️ 非 root 运行：容器内以 UID 1000（lumencloud）写 /app/data。宿主
-      #   ./data 若已存在且属主非 1000，需 chown 1000:1000 ./data（或首次以
-      #   root 启动一次、目录建好后再 chown），否则 bind-mount 权限会踩坑
-      #   （JWT 密钥/数据库落盘 Permission denied）。
+      # 非 root 运行（UID 1000）：bind-mount 的宿主 ./data 属主由上方 dataprep
+      # 服务在每次 up 时自动 chown 修正，无需手动干预。
       - ./data:/app/data
     restart: unless-stopped
 

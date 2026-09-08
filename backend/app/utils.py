@@ -53,7 +53,7 @@ def fmt_episode(season: int, ep: int) -> str:
 
 
 def parse_episode_num(filename_or_ep: str) -> int | None:
-    """从集 key / 文件名尾部提取集号（`E(\d{2,3})$` 结尾），取不到返回 None。
+    r"""从集 key / 文件名尾部提取集号（`E(\d{2,3})$` 结尾），取不到返回 None。
 
     原 scan.py / library_check.py 的 _ep_num（两者实现完全一致）。
     """

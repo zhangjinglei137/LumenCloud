@@ -31,9 +31,9 @@
 #      POSTGRES_PASSWORD=xxxx docker compose -f docker-compose.prod.yml up -d
 #      未设置时 compose 直接报错拒绝启动，杜绝硬编码弱密码进生产。
 #      db 服务与 lumencloud 服务取同一变量（两处同步），改一处不如改两处。
-#   6. 宿主卷权限（非 root 运行）：容器内以 UID 1000 写 /app/data；
-#      部署前先执行 chown 1000:1000 ./data（或首次以 root 启动一次再 chown），
-#      否则 bind-mount 落盘会 Permission denied。
+#   6. 宿主卷权限（非 root 运行）：容器内以 UID 1000 写 /app/data；bind-mount
+#      的宿主 ./data 属主由 dataprep 服务在每次 up 时自动 chown 修正（幂等），
+#      无需手动干预（旧 root 实例/新机器均可直接拉起）。
 #      ./pgdata 由 postgres 镜像 entrypoint 自动处理属主，无需手动 chown。
 # ============================================
 services:
@@ -54,6 +54,18 @@ services:
       retries: 10
     restart: unless-stopped
 
+  dataprep:
+    # 一次性权限引导（非 root 运行配套）：容器内以 root 把 bind-mount 的宿主
+    # ./data 属主修正为 UID 1000（lumencloud），解决旧 root 实例/新机器上
+    # bind-mount 权限踩坑（JWT 密钥/落盘 Permission denied）。幂等、秒级完成；
+    # lumencloud depends_on 等待其成功退出（service_completed_successfully）后才启动。
+    image: busybox:1.36
+    container_name: lumencloud-dataprep
+    command: ["sh", "-c", "mkdir -p /app/data && chown -R 1000:1000 /app/data"]
+    volumes:
+      - ./data:/app/data
+    restart: "no"
+
   lumencloud:
     image: thntime/lumencloud:${IMAGE_TAG:-latest}
     container_name: lumencloud
@@ -65,11 +77,12 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      dataprep:
+        condition: service_completed_successfully
     volumes:
       # JWT 密钥文件（.jwt_secret）+ SQLite/备份目录等
-      # ⚠️ 非 root 运行：容器内以 UID 1000（lumencloud）写 /app/data。
-      #   部署前 chown 1000:1000 ./data（或首次以 root 启动一次后再 chown），
-      #   否则 bind-mount 落盘 Permission denied。
+      # 非 root 运行（UID 1000）：bind-mount 的宿主 ./data 属主由上方 dataprep
+      # 服务在每次 up 时自动 chown 修正，无需手动干预。
       - ./data:/app/data
     restart: unless-stopped
 
