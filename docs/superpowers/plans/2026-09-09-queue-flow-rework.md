@@ -63,11 +63,11 @@ git commit -m "refactor(scan): 巡检改为全局统一调度，移除每影视�
 - Consumes: 巡检搜索/匹配结果（media_id, episode_key, file_name, file_size, share_code, payload转存凭据）。
 - Produces: `_enqueue(...)` → 只写 `TaskQueue(status='ready', ...)`，**不再**在同事务插入 `DownloadQueue(pending)`；返回 `'enqueued'/'existing'/'conflict'`。巡检产生的任务随后由下载队列取件（Task 3）。
 
-- [ ] **Step 1: 写失败测试**：在 `test_scan_baseline.py` 增加用例「巡检入队只写 task_queue」：跑 `_scan_one` 或 enqueue 后断言 `task_queue` 有该键行、`download_queue` 无该键行。
-- [ ] **Step 2: 运行确认失败**：`cd backend && python -m pytest tests/test_scan_baseline.py -q -k enqueue`
-- [ ] **Step 3: 修改实现**：enqueue 段删除 `tx.add(DownloadQueue(...))` 分支；`TaskQueue` 写入时 `status="ready"`（凭据收集完毕），保留 `probe_attempt=0`。同步更新 `_scan_one` 结果统计语义（`enqueued` 计数对齐新行为）。
-- [ ] **Step 4: 适配测试**：`test_scan_run_phases.py` 中「enqueue 后 download_queue 存在」的断言改为断言 task_queue。全量运行 `test_scan_baseline.py` + `test_scan_run_phases.py` 通过。
-- [ ] **Step 5: Commit**
+- [x] **Step 1: 写失败测试**：在 `test_scan_baseline.py` 增加用例「巡检入队只写 task_queue」：跑 `_scan_one` 或 enqueue 后断言 `task_queue` 有该键行、`download_queue` 无该键行。
+- [x] **Step 2: 运行确认失败**：`cd backend && python -m pytest tests/test_scan_baseline.py -q -k enqueue`
+- [x] **Step 3: 修改实现**：enqueue 段删除 `tx.add(DownloadQueue(...))` 分支；`TaskQueue` 写入时 `status="ready"`（凭据收集完毕），保留 `probe_attempt=0`。同步更新 `_scan_one` 结果统计语义（`enqueued` 计数对齐新行为）。
+- [x] **Step 4: 适配测试**：`test_scan_run_phases.py` 中「enqueue 后 download_queue 存在」的断言改为断言 task_queue。全量运行 `test_scan_baseline.py` + `test_scan_run_phases.py` 通过。
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/app/tasks/scan.py backend/tests/test_scan_baseline.py backend/tests/test_scan_run_phases.py
