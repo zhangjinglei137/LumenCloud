@@ -163,6 +163,11 @@ _background_tasks: set[asyncio.Task] = set()
 # 段（单 worker 部署可靠；多 worker 由 SQLite 单写者 + 行级 CAS 条件更新兜底，
 # 见 _try_admit_one 事务级锁注释）。
 _admission_lock = asyncio.Lock()
+# queue-flow-rework Task 6：事件消费触发互斥锁——scan 入队成功 / 入库完成（容量释放）
+# 等多路事件 fire-and-forget 触发下载队列消费时，同一时刻只允许一轮消费在跑（防重入；
+# 多路事件的重叠遗漏由每分钟 process_transfer_queue_job 兜底）。与每分钟 job / 手动
+# 重试的重叠并行仍由 _try_admit_one 的「进程锁 + 事务级锁 + 行级 CAS」保证正确。
+_consume_trigger_lock = asyncio.Lock()
 
 # P2-2（council）：flow_error 通知节流窗（秒）。GID 校验失败/容量不可用等
 # fail-closed 场景由每分钟兜底 job 重复触发，同一告警 10 分钟内只 notify 一次，
@@ -1464,12 +1469,44 @@ async def process_transfer_queue_job() -> None:
             await s.commit()
 
 
+async def trigger_transfer_consume() -> None:
+    """事件驱动下载队列消费触发（queue-flow-rework Task 6：事件触发下载队列消费）。
+
+    调度一次「下载队列消费尝试」：内部执行 _admit_batch（step 0.5 释放唤醒全部
+    quota_wait→pending、step 0.75/1 调 _fetch_from_task_queue 从 TaskQueue(ready) FIFO
+    取件生成 DQ(pending)、step 3 有界准入循环——即设计文档 D3/D6 的「取件 + 有界
+    准入」消费入口）。事件来源：scan 入队成功（经 trigger_transfer 委托）、入库完成 /
+    容量释放（library_check._finalize_done）、手动 retry/promote。
+
+    并发安全（§5.3）：进程内 _consume_trigger_lock 防重入——多路事件同时触发时同一
+    时刻只允许一轮消费在跑；后到者直接跳过（正在跑的一轮已尽力取件并唤醒全部
+    quota_wait，遗漏由每分钟 process_transfer_queue_job 兜底）。与每分钟 job / 手动
+    重试的重叠并行仍由 _try_admit_one 的「进程锁 + 事务级锁 + 行级 CAS」保证正确
+    （不超容量、不重复准入）。
+
+    供调用方 fire-and-forget（_spawn / _background 强引用集合模式）；异常不外泄
+    （内部记录，不阻塞调用方）。
+    """
+    if _consume_trigger_lock.locked():
+        logger.info("[transfer] 已有消费轮进行中（事件触发防重入），本轮跳过")
+        return
+    async with _consume_trigger_lock:
+        try:
+            await _admit_batch()
+        except Exception:  # noqa: BLE001
+            logger.exception("[transfer] trigger_transfer_consume 事件消费异常")
+
+
 async def trigger_transfer() -> None:
-    """scan 入队后的事件触发（调用 process_transfer_queue，异常捕获记日志，不阻塞调用方）。"""
-    try:
-        await process_transfer_queue()
-    except Exception:  # noqa: BLE001
-        logger.exception("[transfer] trigger_transfer 事件触发异常")
+    """scan 入队成功后的事件触发（queue-flow-rework Task 6 起统一走互斥消费入口）。
+
+    兼容壳：queue.py 的 _trigger_consume 与 scan._trigger_transfer 仍引用本函数，
+    实际消费转调 trigger_transfer_consume（带 _consume_trigger_lock 防重入的
+    _admit_batch 消费轮）；阶段 A（downloading 完成轮询）保留给每分钟
+    process_transfer_queue_job 兜底。异常在 trigger_transfer_consume 内捕获，
+    不阻塞调用方。
+    """
+    await trigger_transfer_consume()
 
 
 async def trigger_download_complete(gid: str) -> bool:

@@ -3,14 +3,21 @@
 不连真实服务/数据库：mock alist.list_dir 与 provider 的持久化/配置读取方法。
 """
 import asyncio
+import types
 from contextlib import ExitStack
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import StaticPool
+
 from app.config import settings
-from app.models import QuarkCapacityLog
+from app.database import Base
+import app.models  # noqa: F401  注册全部 ORM 模型
+import app.tasks.transfer as transfer_mod
+from app.models import DownloadQueue, Media, QuarkCapacityLog
 from app.routers.capacity import _get_usage
 from app.services.alist import AlistUnavailable
 from app.services import capacity as cap_mod
@@ -378,3 +385,169 @@ def test_router_get_usage_unavailable_returns_explicit_null():
         assert result["used_gb"] is None
 
     run(scenario())
+
+
+# ---------------------------------------------------------------------------
+# queue-flow-rework Task 6：事件触发下载队列消费（容量释放续跑 + 并发防重入）
+# ---------------------------------------------------------------------------
+# 入库完成释放容量后触发续跑：消费入口 trigger_transfer_consume 唤醒 quota_wait 并
+# 准入取件；多事件并发触发时 asyncio.Lock 防重入（同一时刻只跑一轮消费）。
+
+
+def _task6_now():
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+class _Task6Aria2:
+    """aria2.client：GID 校验（tell_active/tell_waiting 空）+ add_uri。"""
+
+    def __init__(self):
+        self.add_uri_calls = []
+
+    async def tell_active(self):
+        return []
+
+    async def tell_waiting(self):
+        return []
+
+    async def add_uri(self, uri, **kwargs):
+        self.add_uri_calls.append((uri, kwargs))
+        return "gid-1"
+
+
+class _Task6CloudSaver:
+    def __init__(self):
+        self.save_calls = []
+
+    async def save(self, params):
+        self.save_calls.append(dict(params))
+        return {"task_id": "t1"}
+
+
+class _Task6Alist:
+    async def remove(self, names, dir):
+        return {"success": True}
+
+    async def get_link(self, path):
+        return "http://alist.test/raw/ep.mkv"
+
+    async def list_dir(self, path):
+        return [{"name": "ep.mkv", "is_dir": False, "size": 123}]
+
+
+class _Task6Capacity:
+    def __init__(self):
+        self.check_calls = []
+
+    async def check(self, candidate_bytes):
+        self.check_calls.append(candidate_bytes)
+        return True  # mock 容量充足（模拟入库完成释放容量后）
+
+
+class _Task6Notifier:
+    def __init__(self):
+        self.events = []
+
+    async def notify(self, event):
+        self.events.append(event)
+
+
+@pytest.fixture()
+def db():
+    """独立 in-memory SQLite（StaticPool 共享连接）→ 返回 sessionmaker。"""
+    engine = create_async_engine(
+        "sqlite+aiosqlite://",
+        poolclass=StaticPool,
+        connect_args={"check_same_thread": False},
+    )
+    maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def _create():
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    run(_create())
+    yield maker
+    run(engine.dispose())
+
+
+@pytest.fixture()
+def task6_env(monkeypatch):
+    """fake 外部服务（准入门 mock 容量充足），替换 transfer 模块依赖引用。"""
+    fakes = {
+        "aria2": _Task6Aria2(),
+        "cloudsaver": _Task6CloudSaver(),
+        "alist": _Task6Alist(),
+        "capacity": _Task6Capacity(),
+        "notifier": _Task6Notifier(),
+    }
+    monkeypatch.setattr(transfer_mod, "aria2", types.SimpleNamespace(client=fakes["aria2"]))
+    monkeypatch.setattr(transfer_mod, "cloudsaver", fakes["cloudsaver"])
+    monkeypatch.setattr(transfer_mod, "alist", fakes["alist"])
+    monkeypatch.setattr(transfer_mod, "capacity", types.SimpleNamespace(provider=fakes["capacity"]))
+    monkeypatch.setattr(transfer_mod, "notifier", fakes["notifier"])
+    return fakes
+
+
+async def _seed_quota_wait(db, *, episode="S01E01"):
+    """media(tracking) + download_queue(quota_wait，容量等待中)。返回 (mid, dq_id)。"""
+    async with db() as s:
+        media = Media(title="测试剧", media_type="tv", tmdb_id=None, status="tracking")
+        s.add(media)
+        await s.flush()
+        dq = DownloadQueue(
+            media_id=media.id, episode=episode, file_name="ep.mkv", file_size=1024,
+            share_code="sc123", stoken="st", receive_code="rc", fids="[]",
+            fid_tokens="[]", folder_id="fd", status="quota_wait", wait_since=_task6_now(),
+            retry_count=0, node_attempt=0, enqueued_at=_task6_now(), updated_at=_task6_now(),
+        )
+        s.add(dq)
+        await s.flush()
+        await s.commit()
+        return media.id, dq.id
+
+
+async def _read_dq(db, dq_id):
+    async with db() as s:
+        return await s.get(DownloadQueue, dq_id)
+
+
+def test_consume_trigger_resumes_quota_wait_and_admits(db, task6_env, monkeypatch):
+    """入库完成释放容量后触发续跑：quota_wait 行 + mock 容量充足 → 调用消费入口
+    trigger_transfer_consume → quota_wait 唤醒回 pending → 被取件转入存（downloading）。"""
+    monkeypatch.setattr(transfer_mod, "async_session", db)
+    mid, dq_id = run(_seed_quota_wait(db))
+
+    run(transfer_mod.trigger_transfer_consume())
+
+    dq = run(_read_dq(db, dq_id))
+    assert dq.status == "downloading"  # quota_wait → pending（释放唤醒）→ transferring → downloading（被取件）
+    assert dq.wait_since is None        # 准入成功后清除等待起点
+    assert len(task6_env["capacity"].check_calls) == 1  # 真实准入路径询问过容量（mock 充足）
+    assert len(task6_env["cloudsaver"].save_calls) == 1  # 被取件后正常转存
+
+
+def test_consume_trigger_lock_prevents_concurrent_rounds():
+    """事件触发并发防重入（asyncio.Lock）：第一轮消费进行中时，第二轮触发直接跳过，
+    同一时刻只允许一轮 _admit_batch 在跑。"""
+    from unittest.mock import patch
+
+    calls = []
+
+    async def slow_admit_batch():
+        calls.append("enter")
+        await asyncio.sleep(0.05)
+        calls.append("exit")
+
+    async def scenario():
+        with patch.object(transfer_mod, "_admit_batch", new=slow_admit_batch):
+            t1 = asyncio.create_task(transfer_mod.trigger_transfer_consume())
+            await asyncio.sleep(0.01)  # t1 已进入消费并持锁
+            t2 = asyncio.create_task(transfer_mod.trigger_transfer_consume())
+            await t1
+            await t2
+
+    run(scenario())
+
+    assert calls == ["enter", "exit"]  # 第二轮触发被防重入跳过，未再进入消费
+    assert len(calls) == 2

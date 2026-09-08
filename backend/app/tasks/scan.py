@@ -4,7 +4,8 @@ scan_all_media 巡检主流程（设计文档 §4.3 / 实施计划 §3.5）
 阶段 2 范围：搜索 → 入队（不转存）。
 阶段 3 改造：share-list 递归遍历到具体文件（_walk_share，对齐 n8n quarkRecursiveGetFiles，
            阶段 1 Q2 实证：文件夹 fid 不被生产版落盘，须逐文件转存）；
-           入队成功后触发 transfer.trigger_transfer()（transfer lane 并行实现，未就绪静默跳过）。
+           入队成功后触发 transfer.trigger_transfer()（Task 6 起委托
+            trigger_transfer_consume 互斥消费入口；transfer lane 未就绪静默跳过）。
 
 入口：
 - scan_media(media_id)   单影视巡检；API POST /api/media/{id}/scan 手动触发，
@@ -1026,11 +1027,11 @@ async def _enqueue(media_id: int, episode_key: str, file_name: str, file_size: i
 
 
 async def _trigger_transfer() -> None:
-    """入队成功后触发下载队列消费（两队列重设计：process_download_queue 事件触发）。
+    """入队成功后触发下载队列消费（queue-flow-rework Task 6 起：互斥事件消费入口）。
 
-    原 process_transfer_queue 更名为下载队列消费入口（消费 download_queue），
-    语义与 §4.4 容量感知转存一致。fire-and-forget 后台任务持引用防 GC，
-    scan_media 立即返回 task_run_id；模块未就绪时静默跳过。
+    transfer.trigger_transfer 自 Task 6 起委托 trigger_transfer_consume（带防重入锁的
+    _admit_batch 消费轮：唤醒 quota_wait + TaskQueue 取件 + 有界准入）。fire-and-forget
+    后台任务持引用防 GC，scan_media 立即返回 task_run_id；模块未就绪时静默跳过。
     """
     try:
         from app.tasks import transfer as _t  # 延迟导入，避免子模块初始化时序

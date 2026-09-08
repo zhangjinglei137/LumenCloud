@@ -90,9 +90,11 @@ def _spawn(coro_factory) -> None:
 
 
 def _download_queue_consume(transfer_mod) -> object:
-    """下载队列消费入口（兼容 P5 改名过渡期）：优先 process_download_queue，
-    回退旧名 process_transfer_queue（transfer lane 并行改造，勿假设实现细节）。"""
-    return getattr(transfer_mod, "process_download_queue", None) or \
+    """下载队列消费入口（queue-flow-rework Task 6 起）：优先事件消费入口
+    trigger_transfer_consume（带防重入锁的 _admit_batch 消费轮），回退历史
+    process_download_queue / process_transfer_queue 原名（兼容迁移过渡期）。"""
+    return getattr(transfer_mod, "trigger_transfer_consume", None) or \
+        getattr(transfer_mod, "process_download_queue", None) or \
         getattr(transfer_mod, "process_transfer_queue", None)
 
 
@@ -387,8 +389,9 @@ async def _finalize_done(dq_id, media_id, episode, file_name, quark_path, transf
 
     P2-5：删夸克前先列目录按真实名删除（transfer._find_real_name 匹配），匹配不到
     回退原始 quark_path（_remove_quark_files 内实现）。
-    P2-6：末尾触发下载队列续跑（_spawn(process_download_queue)），让等待容量的
-    pending 立即释放（与 transfer 下载完成续跑对称）。
+    Task 6：末尾触发下载队列消费续跑（_spawn(trigger_transfer_consume)），让等待容
+    量的 quota_wait 与新入队任务立即释放（与 transfer 下载完成续跑对称；防重入锁在
+    transfer 侧）。
     """
     await _remove_quark_files(transfer_mod, quark_path)
 
@@ -419,8 +422,9 @@ async def _finalize_done(dq_id, media_id, episode, file_name, quark_path, transf
         extra={"media_id": media_id, "episode": episode},
     ))
 
-    # P2-6：入库完成（该 media 可能刚释放容量/状态流转）→ 触发下载队列续跑，
-    # 让等待容量的 pending 立即释放（fire-and-forget，与下载完成对称）
+    # queue-flow-rework Task 6：入库完成（该 media 可能刚释放容量/状态流转）→ 事件
+    # 触发下载队列消费续跑，让等待容量的 quota_wait / 新入队任务立即释放（fire-and-
+    # forget；防重入锁由 transfer.trigger_transfer_consume 侧持有）
     consume = _download_queue_consume(transfer_mod)
     if consume is not None:
         try:

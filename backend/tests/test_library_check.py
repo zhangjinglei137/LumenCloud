@@ -257,8 +257,9 @@ def test_library_hit_marks_done_and_removes_quark(db, env, monkeypatch):
     assert done_events[0].extra["episode"] == "S01E01"
     # media 无其他进行中集 → 回退 tracking（P3-6）
     assert run(get_media(db, mid)).status == "tracking"
-    # P2-6：入库完成触发下载队列续跑（_spawn(process_transfer_queue)，transfer 未改名过渡期）
-    assert env["spawn_calls"] == [transfer_mod.process_transfer_queue]
+    # Task 6：入库完成触发下载队列消费续跑（_spawn(trigger_transfer_consume)，
+    # 事件消费入口：唤醒 quota_wait + 取件 + 有界准入，防重入锁在 transfer 侧）
+    assert env["spawn_calls"] == [transfer_mod.trigger_transfer_consume]
 
     # 幂等：再跑一轮不重复删/通知（status 已 done，不再命中轮询）
     run(library_check_mod.library_check())
