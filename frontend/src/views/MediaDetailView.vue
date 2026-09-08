@@ -90,8 +90,9 @@ function tmdbEpisodeLabel(item: { season?: number | null; episode?: number | nul
 
 /** 查找 TMDB 集数对应的 episode_state 分类色；未匹配返回 default（灰色） */
 function tmdbEpisodeStateType(
-  item: { season?: number | null; episode?: number | null },
+  item: { season?: number | null; episode?: number | null; in_emby?: boolean },
 ): 'success' | 'info' | 'warning' | 'danger' | 'default' {
+  if (item.in_emby === true) return 'success'
   const label = tmdbEpisodeLabel(item)
   const matched = episodes.value.find((ep) => {
     if (

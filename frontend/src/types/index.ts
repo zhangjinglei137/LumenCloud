@@ -86,6 +86,7 @@ export interface TmdbEpisode {
   episode?: number | null
   air_date?: string | null
   name?: string | null
+  in_emby?: boolean
 }
 
 export interface MediaDetail extends MediaItem {

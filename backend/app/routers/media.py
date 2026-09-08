@@ -551,9 +551,19 @@ async def get_media(
         # TMDB 全集数 + 每集首播日期（详情页「TMDB 全集」数据源）：不依赖
         # episode_state 已有行 / Emby 是否收录，tv 详情全季回源聚合。函数内部
         # 已降级返回 []，此处再包 try 双保险，绝不拖垮详情接口。
+        # 每集附加 in_emby（Emby 已收录判定）：按 (season, episode) 生成 "SxxExx"
+        # code 命中 in_emby_codes 集合（上方 Emby 查询失败时为 set() → 全 False，正确降级）。
         try:
             tmdb_eps = await tmdb.get_tv_all_episodes(media.tmdb_id)
             if tmdb_eps:
+                for ep_item in tmdb_eps:
+                    s = ep_item.get("season")
+                    e = ep_item.get("episode")
+                    if s is not None and e is not None:
+                        code = f"S{int(s):02d}E{int(e):02d}"
+                        ep_item["in_emby"] = code in in_emby_codes
+                    else:
+                        ep_item["in_emby"] = False
                 tmdb_episodes = tmdb_eps
         except Exception as exc:  # noqa: BLE001
             logger.warning("[media] TMDB 全集数查询降级 media=%s: %s", media_id, exc)
