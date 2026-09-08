@@ -1,13 +1,13 @@
 # Subagent Progress — queue-flow-rework
 
-- Plan task: Task 9 后端 queue API 扁平任务列表 + 完成剔除
-- OpenSpec task: 6.1 后端 queue API 返回扁平任务列表视图（TaskQueue + DownloadQueue 合并，终态剔除）
+- Plan task: Task 10 前端 QueueView 扁平化改造
+- OpenSpec task: 6.2 QueueView 从影视分组树改为扁平列表；6.3 完成即剔除
 - Phase: implementing
-- Model: fixer (ses_f7db423c4ffeQ6zLNgJFLagIRT)
+- Model: designer (des-1, ses_f7da6d749ffeRfKdfOChQ7Qxly)
 - review_mode: standard（风险触发式）
-- baseline: efe81c7983a02dde4cfb967168060288a144b4ed
+- baseline: e527444210c5f908c388fd505557664b52290121
 - 实现提交: pending
 - 审查-修复轮次: 0/1
 - 状态: implementing
-- 前置任务: Task 1-8 ✅
-- 衔接: GET /api/queue 扁平化（Tree→Flat 契约变更，Task 10 适配前端）；type=download 分支保留；终态剔除
+- 前置任务: Task 1-9 ✅（Task 9 后端扁平 API 已完成）
+- Controller ruling: 越界测试 test_api_smoke.py:184 + test_scan_run_phases.py:571 修订并入本任务（旧树字段断言 → 扁平契约）

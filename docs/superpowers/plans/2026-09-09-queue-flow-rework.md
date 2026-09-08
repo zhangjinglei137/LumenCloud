@@ -236,11 +236,11 @@ git commit -m "refactor(queue): 任务队列 API 改为扁平列表并剔除终�
 - Consumes: Task 9 扁平 API；既有 `listDownloadQueueApi`/容量/暂停接口。
 - Produces: QueueView 任务 tab 以扁平列表渲染「影视名 - SxxExx」+ 状态标签（待取件/下载中/等待容量/异常/完成即消失）+ 操作（取消/跳过/置顶/重试/手动入队显隐调整）；移除影视分组树、巡检伪行、探测聚合、子集详情树相关代码路径。
 
-- [ ] **Step 1: 重构 store/types**：`queue.ts` 移除 `normalizeQueueTree` 树归一化，直接存扁平行；`types/index.ts` 缩减 `QueueMediaTask/QueueChildTask/ScanTask*`（保留 `[key:string]:unknown` 兜底），`format.ts` 状态 label 收敛（移除 unmatched 中文标签，保留下载状态）。
-- [ ] **Step 2: 重构视图**：`QueueView.vue` 任务 tab 改 `el-table` 扁平行渲染（列：任务/状态/大小/更新时间/操作）；删除分组树展开、巡检详情 drawer、子集流程链、手动探测/加集入口（或按需保留加集）；保留下载队列 tab 与暂停开关。
-- [ ] **Step 3: 构建验证**：`cd frontend && npm run build` 通过。
-- [ ] **Step 4: 手工核对**：列表显示「影视名 - SxxExx」、完成任务刷新后消失、操作按钮可用。
-- [ ] **Step 5: Commit**
+- [x] **Step 1: 重构 store/types**：`queue.ts` 移除 `normalizeQueueTree` 树归一化，直接存扁平行；`types/index.ts` 缩减 `QueueMediaTask/QueueChildTask/ScanTask*`（保留 `[key:string]:unknown` 兜底），`format.ts` 状态 label 收敛（移除 unmatched 中文标签，保留下载状态）。
+- [x] **Step 2: 重构视图**：`QueueView.vue` 任务 tab 改 `el-table` 扁平行渲染（列：任务/状态/大小/更新时间/操作）；删除分组树展开、巡检详情 drawer、子集流程链、手动探测/加集入口（或按需保留加集）；保留下载队列 tab 与暂停开关。
+- [x] **Step 3: 构建验证**：`cd frontend && npm run build` 通过。
+- [x] **Step 4: 手工核对**：列表显示「影视名 - SxxExx」、完成任务刷新后消失、操作按钮可用。
+- [x] **Step 5: Commit**
 
 ```bash
 git add frontend/src/views/QueueView.vue frontend/src/stores/queue.ts frontend/src/types/index.ts frontend/src/utils/format.ts frontend/src/api/index.ts
