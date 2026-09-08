@@ -369,12 +369,44 @@ _SEASON_AIR_TTL = 6 * 3600  # 6 小时
 _SEASON_AIR_CACHE: dict[str, tuple[float, dict[int, str | None]]] = {}
 
 
+async def _fetch_season_episodes(tmdb_id: str | int, season_number: int) -> list[dict[str, Any]] | None:
+    """回源 TMDB 指定季的 episodes 原始列表（内部辅助，不做进程内缓存）。
+
+    返回 list[dict]，每项为 season 接口 episodes 数组的原始条目（含
+    episode_number / air_date / name 等字段）；失败（api_key 缺失 / 网络 /
+    非 200 / JSON 异常）→ log warning 并返回 None。
+
+    None 与「成功但空季」的 [] 有区分，供调用方决定是否写缓存
+    （get_tv_season_air_dates / get_tv_all_episodes 共用本辅助）。
+    回源模式沿用 _base_url / _client_kwargs / api_key 读取 / httpx 写法
+    （参考 get_by_tmdb_id / 原 get_tv_season_air_dates）。
+    """
+    api_key = config_store.get("tmdb_api_key", settings.TMDB_API_KEY)
+    if not api_key:
+        logger.warning("TMDB_API_KEY 未配置，season 回源降级 None（season=%s）", season_number)
+        return None
+
+    url = f"{_base_url()}/3/tv/{tmdb_id}/season/{season_number}"
+    params = {"api_key": api_key, "language": "zh-CN"}
+    try:
+        async with httpx.AsyncClient(**_client_kwargs()) as client:
+            resp = await client.get(url, params=params)
+        if resp.status_code != 200:
+            logger.warning("TMDB season 回源非 200 响应: %s", resp.status_code)
+            return None
+        payload = resp.json()
+    except Exception as exc:  # noqa: BLE001  详情页增强字段：任何失败降级，不阻断
+        logger.warning("TMDB season 回源失败（降级）: %s", exc)
+        return None
+    return list(payload.get("episodes") or [])
+
+
 async def get_tv_season_air_dates(tmdb_id: str | int, season_number: int) -> dict[int, str | None]:
     """获取 TV 指定季每集的 TMDB 首播日期（详情页集数 tag 的 air_date 数据源）。
 
     返回 `{episode_number(int): air_date}`，air_date 为 "YYYY-MM-DD" 字符串或 None
-    （TMDB 该集未提供首播日期）。回源 `GET /3/tv/{tmdb_id}/season/{season_number}`，
-    沿用 _base_url/_client_kwargs/api_key 读取/httpx 模式（参考 get_by_tmdb_id）。
+    （TMDB 该集未提供首播日期）。回源复用 _fetch_season_episodes 辅助
+    （`GET /3/tv/{tmdb_id}/season/{season_number}`，language=zh-CN）。
 
     进程内 TTL 缓存（_SEASON_AIR_TTL=6h，key=f"{tmdb_id}:{season_number}"）：
     命中且未过期直接返回；回源失败/非 200/JSON 异常仅 log warning 并返回 {}
@@ -385,29 +417,98 @@ async def get_tv_season_air_dates(tmdb_id: str | int, season_number: int) -> dic
     if hit is not None and _now().timestamp() - hit[0] < _SEASON_AIR_TTL:
         return hit[1]
 
-    api_key = config_store.get("tmdb_api_key", settings.TMDB_API_KEY)
-    if not api_key:
-        logger.warning("TMDB_API_KEY 未配置，season air_date 降级 {}（season=%s）", season_number)
-        return {}
-
-    url = f"{_base_url()}/3/tv/{tmdb_id}/season/{season_number}"
-    params = {"api_key": api_key, "language": "zh-CN"}
-    try:
-        async with httpx.AsyncClient(**_client_kwargs()) as client:
-            resp = await client.get(url, params=params)
-        if resp.status_code != 200:
-            logger.warning("TMDB season air_date 非 200 响应: %s", resp.status_code)
-            return {}
-        payload = resp.json()
-    except Exception as exc:  # noqa: BLE001  详情页增强字段：任何失败降级 {}，不阻断
-        logger.warning("TMDB season air_date 回源失败（降级 {}）: %s", exc)
+    episodes = await _fetch_season_episodes(tmdb_id, season_number)
+    if episodes is None:
         return {}
 
     out: dict[int, str | None] = {}
-    for ep in payload.get("episodes") or []:
+    for ep in episodes:
         ep_num = ep.get("episode_number")
         if isinstance(ep_num, int):
             out[ep_num] = ep.get("air_date")
     # 仅成功回源才写缓存（失败不缓存空结果，避免临时故障期间长时间拿不到数据）
     _SEASON_AIR_CACHE[key] = (_now().timestamp(), out)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# TV 全部正片季的每集信息（详情页「TMDB 全集数 + 首播日期」数据源）
+# ---------------------------------------------------------------------------
+# 进程内 TTL 缓存：详情页同一剧集只回源一次；缓存层纯优化，任何回源失败一律
+# 降级返回 []（log warning），绝不把异常抛给详情接口。
+_ALL_EPS_TTL = 6 * 3600  # 6 小时
+_ALL_EPS_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+
+
+async def get_tv_all_episodes(tmdb_id: str | int) -> list[dict[str, Any]]:
+    """获取 TV 全部正片季的每集信息（详情页「TMDB 全集数 + 首播日期」数据源）。
+
+    返回 list[dict]，每项:
+        {"season": int, "episode": int, "air_date": str|None, "name": str|None}
+    按 season 升序、episode 升序排列；air_date / name 可能为 None（TMDB 该集
+    未提供首播日期 / 集名）。
+
+    实现路径:
+    1. `GET /3/tv/{tmdb_id}?language=zh-CN` 取 seasons 数组，过滤
+       season_number==0（特辑/预告不算正片）；
+    2. 对每个正片季调用 _fetch_season_episodes（与 get_tv_season_air_dates
+       共用回源辅助）聚合 episode_number / air_date / name。
+
+    进程内 TTL 缓存（key=f"{tmdb_id}:all_episodes"，TTL 6h）：仅成功聚合出
+    非空结果才写缓存。降级语义与 get_tv_season_air_dates 一致：api_key 缺失 /
+    网络失败 / 非 200 / JSON 异常一律 log warning 并返回 []（单季失败仅跳过
+    该季）——绝不抛出；movie / 无 tmdb_id 场景由调用方控制，不调用本函数。
+    """
+    cache_key = f"{tmdb_id}:all_episodes"
+    hit = _ALL_EPS_CACHE.get(cache_key)
+    if hit is not None and _now().timestamp() - hit[0] < _ALL_EPS_TTL:
+        return hit[1]
+
+    api_key = config_store.get("tmdb_api_key", settings.TMDB_API_KEY)
+    if not api_key:
+        logger.warning("TMDB_API_KEY 未配置，全部季集数降级 []（tmdb_id=%s）", tmdb_id)
+        return []
+
+    url = f"{_base_url()}/3/tv/{tmdb_id}"
+    params = {"api_key": api_key, "language": "zh-CN"}
+    try:
+        async with httpx.AsyncClient(**_client_kwargs()) as client:
+            resp = await client.get(url, params=params)
+        if resp.status_code != 200:
+            logger.warning("TMDB tv 详情（全集数）非 200 响应: %s", resp.status_code)
+            return []
+        payload = resp.json()
+    except Exception as exc:  # noqa: BLE001  详情页增强字段：任何失败降级 []，不阻断
+        logger.warning("TMDB tv 详情（全集数）回源失败（降级 []）: %s", exc)
+        return []
+
+    seasons: list[int] = []
+    for s in payload.get("seasons") or []:
+        if not isinstance(s, dict):
+            continue
+        sn = s.get("season_number")
+        if isinstance(sn, int) and sn > 0:
+            seasons.append(sn)  # season_number==0（特辑/预告）不算正片，直接过滤
+    seasons = sorted(set(seasons))
+    out: list[dict[str, Any]] = []
+    for season in seasons:
+        eps = await _fetch_season_episodes(tmdb_id, season)
+        if eps is None:
+            continue  # 单季失败仅跳过，不影响其余季
+        for ep in eps:
+            ep_num = ep.get("episode_number")
+            if not isinstance(ep_num, int):
+                continue
+            out.append(
+                {
+                    "season": season,
+                    "episode": ep_num,
+                    "air_date": ep.get("air_date"),
+                    "name": ep.get("name"),
+                }
+            )
+
+    out.sort(key=lambda e: (e["season"], e["episode"]))
+    if out:
+        _ALL_EPS_CACHE[cache_key] = (_now().timestamp(), out)
     return out

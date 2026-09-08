@@ -60,6 +60,16 @@ const episodeRows = computed(() =>
   episodes.value.map((ep) => ({ ...ep, __tag: episodeStateTag({ ...ep }) })),
 )
 
+/** TMDB 全集列表（按 season/episode 升序兜底） */
+const tmdbEpisodes = computed(() => {
+  const list = detail.value?.tmdb_episodes ?? []
+  return [...list].sort((a, b) => {
+    const seasonDiff = (a.season ?? 0) - (b.season ?? 0)
+    if (seasonDiff !== 0) return seasonDiff
+    return (a.episode ?? 0) - (b.episode ?? 0)
+  })
+})
+
 function episodeLabel(ep: Record<string, unknown>): string {
   const season = ep.season ?? ep.season_number
   const episodeNumber = ep.episode_number
@@ -69,6 +79,39 @@ function episodeLabel(ep: Record<string, unknown>): string {
   // 无 season/episode_number（全量模式 movie：episode=文件名）→ 直接显示原始 episode
   if (ep.episode !== undefined && ep.episode !== null) return String(ep.episode)
   return '—'
+}
+
+/** 格式化 TMDB 集数为 S01E04 */
+function tmdbEpisodeLabel(item: { season?: number | null; episode?: number | null }): string {
+  const season = item.season ?? 0
+  const episodeNumber = item.episode ?? 0
+  return `S${String(season).padStart(2, '0')}E${String(episodeNumber).padStart(2, '0')}`
+}
+
+/** 查找 TMDB 集数对应的 episode_state 分类色；未匹配返回 default（灰色） */
+function tmdbEpisodeStateType(
+  item: { season?: number | null; episode?: number | null },
+): 'success' | 'info' | 'warning' | 'danger' | 'default' {
+  const label = tmdbEpisodeLabel(item)
+  const matched = episodes.value.find((ep) => {
+    if (
+      ep.season != null &&
+      ep.episode != null &&
+      item.season != null &&
+      item.episode != null
+    ) {
+      return ep.season === item.season && ep.episode === item.episode
+    }
+    const epStr = ep.episode as unknown
+    if (typeof epStr === 'string' && epStr.toUpperCase().includes(label)) {
+      return true
+    }
+    return false
+  })
+  if (matched) {
+    return episodeStateTag({ ...matched }).type
+  }
+  return 'default'
 }
 
 async function saveSettings() {
@@ -183,7 +226,33 @@ async function onDelete() {
               <span class="ep-legend-item"><i class="ep-dot danger" />异常</span>
               <span class="ep-legend-hint">悬停状态标签查看详情</span>
             </p>
-            <el-empty v-if="episodes.length === 0" description="暂无集数记录，触发一次巡检后会建立基线" :image-size="80" />
+
+            <!-- TMDB 全集：展示完整集数 + 首播日期 -->
+            <div v-if="tmdbEpisodes.length > 0" class="tmdb-episodes">
+              <div class="tmdb-episodes-title">TMDB 全集（{{ tmdbEpisodes.length }} 集）</div>
+              <div class="tmdb-episodes-grid">
+                <div
+                  v-for="(ep, idx) in tmdbEpisodes"
+                  :key="idx"
+                  class="tmdb-episodes-item"
+                  :title="ep.name ?? undefined"
+                >
+                  <div class="tmdb-episodes-label">
+                    <i class="ep-dot" :class="tmdbEpisodeStateType(ep)" />
+                    <span>{{ tmdbEpisodeLabel(ep) }}</span>
+                  </div>
+                  <div class="tmdb-episodes-date lc-muted">{{ ep.air_date ?? '—' }}</div>
+                </div>
+              </div>
+            </div>
+
+            <el-empty
+              v-if="episodes.length === 0"
+              :description="
+                tmdbEpisodes.length > 0 ? '暂无任务记录，TMDB 全集见上方列表' : '暂无集数记录，触发一次巡检后会建立基线'
+              "
+              :image-size="80"
+            />
             <el-table v-else :data="episodeRows" size="small" max-height="480">
               <el-table-column label="集" width="110">
                 <template #default="{ row }">{{ episodeLabel(row as Record<string, unknown>) }}</template>
@@ -370,5 +439,53 @@ async function onDelete() {
 
 .ep-legend-hint {
   opacity: 0.65;
+}
+
+/* TMDB 全集网格 */
+.tmdb-episodes {
+  margin-bottom: 14px;
+}
+
+.tmdb-episodes-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.tmdb-episodes-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  gap: 8px;
+}
+
+.tmdb-episodes-item {
+  border: 1px solid var(--lc-border);
+  border-radius: 8px;
+  padding: 6px 4px;
+  text-align: center;
+  transition: background 0.2s;
+}
+
+.tmdb-episodes-item:hover {
+  background: var(--el-fill-color-light);
+}
+
+.tmdb-episodes-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.tmdb-episodes-date {
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.ep-dot.default {
+  background: var(--el-text-color-placeholder);
 }
 </style>

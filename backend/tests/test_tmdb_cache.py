@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
 from app.config import settings
@@ -341,3 +342,164 @@ def test_search_multi_upserts_each_hit(monkeypatch):
     assert tmdb_ids == ["1", "2"]  # tmdb_id 字符串化
     years = sorted(r.year for r in added)
     assert years == [2021, 2023]  # year 转 int 落库
+
+
+# ---------------------------------------------------------------------------
+# get_tv_all_episodes：TV 全部正片季每集信息（详情页「TMDB 全集」数据源）
+# ---------------------------------------------------------------------------
+
+class _RoutedFakeClient:
+    """按 URL 包含的子串分发 payload 的 AsyncClient mock（tv 详情 + 各季接口）。"""
+
+    def __init__(self, routes, calls=None):
+        self._routes = routes
+        self._calls = calls
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def get(self, url, params=None):
+        if self._calls is not None:
+            self._calls.append(url)
+        # 季接口优先（URL 含 /season/N）；tv 详情仅当 URL 以路由结尾精确命中，
+        # 避免 "/3/tv/42" 子串误匹配到 "/3/tv/42/season/1"。
+        for suffix, payload in self._routes.items():
+            if "/season/" in suffix and suffix in url:
+                return _FakeResp(payload)
+        for suffix, payload in self._routes.items():
+            if "/season/" not in suffix and url.rstrip("/").endswith(suffix):
+                return _FakeResp(payload)
+        return _FakeResp({"error": "unexpected"})
+
+
+def _make_routed_factory(routes, calls=None):
+    def factory(**kwargs):
+        return _RoutedFakeClient(routes, calls=calls)
+
+    return factory
+
+
+def _tv_detail_payload(seasons):
+    return {
+        "id": 42,
+        "name": "测试剧",
+        "seasons": [{"season_number": sn, "episode_count": 2} for sn in seasons],
+    }
+
+
+def _season_payload(eps):
+    return {"id": 42, "episodes": eps}
+
+
+def test_get_tv_all_episodes_aggregates_filters_and_sorts(monkeypatch):
+    """seasons 过滤 season_number==0（特辑/预告）；逐季聚合 episode/air_date/name；
+    结果按 season、episode 升序。"""
+    monkeypatch.setattr(settings, "TMDB_API_KEY", "test-key")
+    monkeypatch.setattr(config_store, "_cache", {})
+    routes = {
+        "/3/tv/42": _tv_detail_payload([0, 1, 2]),
+        "/season/1": _season_payload([
+            {"episode_number": 2, "air_date": "2026-03-05", "name": "第2集"},
+            {"episode_number": 1, "air_date": None, "name": "第1集"},
+        ]),
+        "/season/2": _season_payload([
+            {"episode_number": 1, "air_date": "2026-04-01", "name": None},
+        ]),
+    }
+    calls = []
+    factory = _make_routed_factory(routes, calls=calls)
+    monkeypatch.setattr("app.services.tmdb.httpx.AsyncClient", factory)
+
+    result = run(tmdb_mod.get_tv_all_episodes(42))
+    assert result == [
+        {"season": 1, "episode": 1, "air_date": None, "name": "第1集"},
+        {"season": 1, "episode": 2, "air_date": "2026-03-05", "name": "第2集"},
+        {"season": 2, "episode": 1, "air_date": "2026-04-01", "name": None},
+    ]
+    # 请求数 = 1(tv 详情) + 2(正片季)；season 0 不回源
+    assert len(calls) == 3
+    assert not any("/season/0" in u for u in calls)
+
+
+def test_get_tv_all_episodes_cache_hit_skips_refetch(monkeypatch):
+    """进程内 TTL 缓存：第二次调用命中缓存，不再回源。"""
+    monkeypatch.setattr(settings, "TMDB_API_KEY", "test-key")
+    monkeypatch.setattr(config_store, "_cache", {})
+    routes = {
+        "/3/tv/430": _tv_detail_payload([1]),
+        "/season/1": _season_payload([
+            {"episode_number": 1, "air_date": "2026-03-05", "name": "第1集"},
+        ]),
+    }
+    calls = []
+    factory = _make_routed_factory(routes, calls=calls)
+    monkeypatch.setattr("app.services.tmdb.httpx.AsyncClient", factory)
+
+    first = run(tmdb_mod.get_tv_all_episodes(430))
+    assert len(calls) == 2  # tv 详情 + 季 1
+    second = run(tmdb_mod.get_tv_all_episodes(430))
+    assert second == first
+    assert len(calls) == 2  # 缓存命中，无新增请求
+
+
+def test_get_tv_all_episodes_no_api_key_returns_empty(monkeypatch):
+    """TMDB_API_KEY 缺失 → log warning 并返回 []，绝不抛异常。"""
+    monkeypatch.setattr(settings, "TMDB_API_KEY", "")
+    monkeypatch.setattr(config_store, "_cache", {})
+
+    def _explode(**kwargs):
+        raise AssertionError("api_key 缺失时不应发起任何请求")
+
+    monkeypatch.setattr("app.services.tmdb.httpx.AsyncClient", _explode)
+    assert run(tmdb_mod.get_tv_all_episodes(431)) == []
+
+
+def test_get_tv_all_episodes_non_200_returns_empty(monkeypatch):
+    """tv 详情非 200 → log warning 并返回 []。"""
+    monkeypatch.setattr(settings, "TMDB_API_KEY", "test-key")
+    monkeypatch.setattr(config_store, "_cache", {})
+
+    class _ErrResp:
+        status_code = 500
+
+        def json(self):
+            return {}
+
+    class _ErrClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url, params=None):
+            return _ErrResp()
+
+    monkeypatch.setattr(
+        "app.services.tmdb.httpx.AsyncClient", lambda **kw: _ErrClient()
+    )
+    assert run(tmdb_mod.get_tv_all_episodes(432)) == []
+
+
+def test_get_tv_all_episodes_network_error_returns_empty(monkeypatch):
+    """回源网络异常 → log warning 并返回 []（单季失败仅跳过该季）。"""
+    monkeypatch.setattr(settings, "TMDB_API_KEY", "test-key")
+    monkeypatch.setattr(config_store, "_cache", {})
+
+    class _BoomClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url, params=None):
+            raise httpx.ConnectError("boom")
+
+    monkeypatch.setattr(
+        "app.services.tmdb.httpx.AsyncClient", lambda **kw: _BoomClient()
+    )
+    assert run(tmdb_mod.get_tv_all_episodes(433)) == []

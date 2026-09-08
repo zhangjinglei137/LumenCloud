@@ -81,10 +81,18 @@ export interface QueueSummaryItem {
   [key: string]: unknown
 }
 
+export interface TmdbEpisode {
+  season?: number | null
+  episode?: number | null
+  air_date?: string | null
+  name?: string | null
+}
+
 export interface MediaDetail extends MediaItem {
   poster_path?: string | null
   episode_state?: EpisodeState[]
   transfer_queue?: QueueSummaryItem[]
+  tmdb_episodes?: TmdbEpisode[]
   [key: string]: unknown
 }
 

@@ -522,6 +522,9 @@ async def get_media(
     # air_date None），绝不阻断详情接口。
     in_emby_codes: set[str] = set()
     air_map: dict[tuple[int, int], str | None] = {}
+    # TMDB 全集数 + 每集首播日期（详情页「TMDB 全集」数据源）：仅 tv + tmdb_id 时
+    # 聚合，成功且非空才进响应；movie / 无 tmdb_id / 外部服务故障 → 字段省略。
+    tmdb_episodes: list[dict] | None = None
     if (media.media_type or "").strip().lower() != "movie" and media.tmdb_id is not None:
         try:
             emby_id = await emby.find_emby_id(media.tmdb_id, media.title)
@@ -545,6 +548,15 @@ async def get_media(
                     "[media] TMDB season air_date 降级 media=%s season=%s: %s",
                     media_id, season, exc,
                 )
+        # TMDB 全集数 + 每集首播日期（详情页「TMDB 全集」数据源）：不依赖
+        # episode_state 已有行 / Emby 是否收录，tv 详情全季回源聚合。函数内部
+        # 已降级返回 []，此处再包 try 双保险，绝不拖垮详情接口。
+        try:
+            tmdb_eps = await tmdb.get_tv_all_episodes(media.tmdb_id)
+            if tmdb_eps:
+                tmdb_episodes = tmdb_eps
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[media] TMDB 全集数查询降级 media=%s: %s", media_id, exc)
 
     tq_rows = (
         (
@@ -585,6 +597,8 @@ async def get_media(
         .first()
     )
     media_dto = _media_dto(media)
+    if tmdb_episodes:
+        media_dto["tmdb_episodes"] = tmdb_episodes
     media_dto["last_task_run"] = (  # 前端契约键
         {
             "id": latest_run.id,
