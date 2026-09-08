@@ -18,6 +18,7 @@ API：
 不引入锁。refresh/load 由 async 路由协程调用，get 由 services 同步/异步函数调用，
 dict 替换（_cache = {...}）为单条赋值，读取方看到的是完整快照。
 """
+import asyncio
 import logging
 
 from sqlalchemy import select
@@ -48,23 +49,41 @@ _SENSITIVE_KEYS = frozenset({
 })
 
 
+# 启动自愈（安全加固）：load_from_db 失败重试次数与退避起始间隔（0.2s/0.4s/0.8s）。
+# DB 容器比本进程起步慢的部署，重试窗口内恢复即加载成功，避免启动期误告警。
+_CONFIG_LOAD_RETRIES = 3
+_CONFIG_LOAD_RETRY_DELAY = 0.2
+
+
 async def load_from_db() -> None:
     """启动/惰性加载：从 system_config 全量读取到进程内缓存。
 
     - 成功：_cache = {key: value}，_loaded = True；
-    - 失败（DB 不可用/表不存在等）：仅 logger.warning，_loaded 保持 False，
-      调用方经 get(key, default) 继续回退 settings/env 值，不阻断启动。
+    - 失败：指数退避重试（0.2s/0.4s/0.8s，共 _CONFIG_LOAD_RETRIES 次）仍失败
+      才 logger.warning，_loaded 保持 False，调用方经 get(key, default) 继续
+      回退 settings/env 值，不阻断启动。
     """
     global _cache, _loaded
-    try:
-        async with async_session() as session:
-            rows = (await session.execute(select(SystemConfig))).scalars().all()
-    except Exception as exc:  # noqa: BLE001  查询失败回退 env，不阻断启动
-        logger.warning("config_store 从 system_config 加载失败（回退 settings/env 值）: %s", exc)
-        return
-    _cache = {r.key: r.value for r in rows}
-    _loaded = True
-    logger.info("config_store 已加载 %d 项 system_config 配置", len(_cache))
+    delay = _CONFIG_LOAD_RETRY_DELAY
+    for attempt in range(1, _CONFIG_LOAD_RETRIES + 1):
+        try:
+            async with async_session() as session:
+                rows = (await session.execute(select(SystemConfig))).scalars().all()
+            _cache = {r.key: r.value for r in rows}
+            _loaded = True
+            logger.info("config_store 已加载 %d 项 system_config 配置", len(_cache))
+            return
+        except Exception as exc:  # noqa: BLE001  查询失败重试，最终回退 env，不阻断启动
+            if attempt < _CONFIG_LOAD_RETRIES:
+                await asyncio.sleep(delay)
+                delay *= 2
+            else:
+                logger.warning(
+                    "config_store 从 system_config 加载失败（重试 %d 次后回退 "
+                    "settings/env 值）: %s",
+                    _CONFIG_LOAD_RETRIES,
+                    exc,
+                )
 
 
 async def refresh() -> None:

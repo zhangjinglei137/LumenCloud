@@ -34,6 +34,8 @@ from app.models import DownloadQueue, Media, TaskQueue, TaskRun
 # 防重权威源 = download_queue.UNIQUE(media_id, episode)。见 docs/影视下载两队列重设计.md §3。
 from app.services import cloudsaver, config_store, emby, tmdb
 from app.tasks import as_bool, get_config_value, record_task_run
+# tasks 层公共纯函数（app.utils，仅标准库）：统一时间源与集级匹配函数
+from app.utils import fmt_episode, now_utc_naive as _now, parse_episode_num
 
 logger = logging.getLogger(__name__)
 
@@ -265,23 +267,15 @@ _DONE_FAIL_ERROR = "下载完成但 Emby 未入库，请人工确认"
 _DONE_LIMIT_ERROR = "下载完成但 Emby 未入库已达循环上限，请人工核实 Emby 端"
 
 
-def _now() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
-
-
 # ---------------------------------------------------------------------------
 # 三重匹配
 # ---------------------------------------------------------------------------
 
-def _fmt_episode(season: int, ep: int) -> str:
-    """规范化集 key：S01E01（两位）；三位集数（如 S01E100）保留三位。"""
-    ep_s = f"E{ep:03d}" if ep >= 100 else f"E{ep:02d}"
-    return f"S{season:02d}{ep_s}"
-
-
-def _ep_num(key: str) -> int | None:
-    m = re.search(r"E(\d{2,3})$", key or "")
-    return int(m.group(1)) if m else None
+# 公共化（tasks 层 utils）：_fmt_episode / _ep_num 实现迁至 app.utils
+# （scan.py 与 library_check.py 原实现完全一致，本文件实现原样搬移），
+# 这里保留局部名称绑定使全部调用点不变；_RE_SXXEXX / _RE_CN_EP 常量保留。
+_fmt_episode = fmt_episode
+_ep_num = parse_episode_num
 
 
 def match_missing(text: str, missing_keys: set[str]) -> str | None:
@@ -1017,6 +1011,28 @@ def _media_lock(media_id: int) -> asyncio.Lock:
     return _scan_locks.setdefault(media_id, asyncio.Lock())
 
 
+def _scan_lock_idle(lock: asyncio.Lock) -> bool:
+    """锁是否无等待者（可安全从 _scan_locks 移除）。
+
+    读取 asyncio.Lock._waiters 判断是否有等待中的调用方。该属性是 CPython 私有
+    实现细节（3.14 懒初始化为 None / deque of futures），读取可能因实现变化抛异常
+    （AttributeError 等）——此时**保守返回 False**（视为有等待者，保留锁）：宁可
+    轻微泄漏锁对象（下轮 setdefault 复用），也不破坏并发互斥（等待者被丢下会产生
+    「新锁 + 旧锁」并发巡检同一 media）。版本不兼容时每次读取失败都会 warning
+    （该路径仅在 CPython 私有属性实现变化时触发，刷屏本身即暴露问题、便于及时
+    升级适配，故不做节流）。返回 True（明确无等待者）才允许调用方 pop。
+    """
+    try:
+        waiters = lock._waiters  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001  CPython 私有属性变化 → 保守保留锁
+        logger.warning(
+            "[scan] asyncio.Lock._waiters 读取失败（CPython 私有属性不兼容），"
+            "保守保留 _scan_locks 锁（轻微泄漏，不破坏互斥）"
+        )
+        return False
+    return not waiters
+
+
 async def scan_media(media_id: int) -> int | None:
     """单影视巡检（API /api/media/{id}/scan 手动触发入口），返回最近一条 task_run id。
 
@@ -1029,7 +1045,9 @@ async def scan_media(media_id: int) -> int | None:
       - 有等待者：保留锁。等待者仍持有该锁引用，释放后照常串行执行；后续到达者复用
         同一把锁继续排队，不会出现「新锁 + 旧锁」并发巡检同一 media。
       - 无等待者：唯一执行者已结束，移除后新调用方会新建锁，同样无并发。
-    依赖 asyncio.Lock._waiters（CPython 3.14 实现，懒初始化为 None / deque of futures）；
+    判定委托 _scan_lock_idle（见其 docstring）：try 读取 asyncio.Lock._waiters 私有
+    属性（CPython 3.14 实现，懒初始化为 None / deque of futures）；读取抛异常（实现
+    变化）→ 保守返回 False 保留锁，宁可轻微泄漏也不破坏互斥。
     不用 lock.locked() 判断——它仅反映 _locked，与是否有人在等待无关，无法区分清理时机。
     """
     lock = _scan_locks.setdefault(media_id, asyncio.Lock())
@@ -1038,7 +1056,7 @@ async def scan_media(media_id: int) -> int | None:
             return await _scan_one(media_id)
         finally:
             # 清理：无等待者时才移除（新调用方会重新创建，等待中的调用方仍持有旧锁引用）
-            if not getattr(lock, "_waiters", None):
+            if _scan_lock_idle(lock):
                 _scan_locks.pop(media_id, None)
 
 

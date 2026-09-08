@@ -34,7 +34,7 @@ B-3 语义（清理副作用后置）：夸克残留删除与 aria2.remove 均�
 """
 import logging
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from sqlalchemy import select, update
 
@@ -43,6 +43,12 @@ from app.database import async_session
 from app.models import DownloadQueue, Media, SystemConfig
 from app.services import alist, aria2, emby
 from app.tasks import record_task_run
+# tasks 层公共纯函数（app.utils，仅标准库）：统一时间源与夸克路径拆分
+from app.utils import now_utc_naive as _now, split_quark_path
+
+# 公共化（tasks 层 utils）：_split_quark_path 实现迁至 app.utils（本文件原实现
+# 原样搬移，与 transfer.py 原实现一致），保留局部名称使调用点不变。
+_split_quark_path = split_quark_path
 
 logger = logging.getLogger(__name__)
 
@@ -56,10 +62,6 @@ _LIBRARY_TIMEOUT_CONFIG_KEY = "library_revert_timeout_hours"
 # 独立阈值默认值（议会 P0 裁决：scrape 4h / library 6h）
 _SCRAPE_TIMEOUT_DEFAULT_HOURS = 4.0
 _LIBRARY_TIMEOUT_DEFAULT_HOURS = 6.0
-
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _deadline(hours: float) -> datetime:
@@ -81,18 +83,6 @@ async def _load_timeout_hours(config_key: str, default: float) -> float:
     except (TypeError, ValueError):
         logger.warning("%s 非数值 %r，用默认超时 %.1fh", config_key, row.value, default)
         return default
-
-
-def _split_quark_path(path: str) -> tuple[str, list[str]]:
-    """把夸克完整路径拆为 (dir, [name])，适配 alist.remove(names, dir) 契约。"""
-    path = (path or "").strip()
-    if not path:
-        return "/", []
-    path = path.rstrip("/")
-    if "/" in path:
-        dir_part, name = path.rsplit("/", 1)
-        return (dir_part or "/") + "/", [name]
-    return "/", [path]
 
 
 async def _cleanup_quark(quark_path: str) -> None:

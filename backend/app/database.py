@@ -4,6 +4,7 @@
 - DATABASE_URL 有值   → 外部数据库（如 postgresql+asyncpg://）
 """
 import asyncio
+import logging
 from pathlib import Path
 
 from sqlalchemy import event
@@ -12,6 +13,8 @@ from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.pool import StaticPool
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class Base(DeclarativeBase):
@@ -68,7 +71,18 @@ async def init_db() -> None:
     """启动时执行 Alembic 迁移至 head（建表权威来源 = versions/ 手写迁移脚本）。
 
     替代骨架阶段的 create_all；Alembic 自身使用同步 engine（见 alembic/env.py）。
+
+    AUTO_MIGRATE（安全加固）：False → 跳过自动迁移，仅告警提示手动执行
+    `alembic upgrade head`。生产可选 AUTO_MIGRATE=0 配合手动迁移窗口
+    （多副本/需人工把控迁移时机的部署），默认 True 保持原行为。
     """
+    if not settings.AUTO_MIGRATE:
+        logger.warning(
+            "AUTO_MIGRATE=False：跳过自动 Alembic 迁移，请手动执行 "
+            "`alembic upgrade head` 后重启服务"
+        )
+        return
+
     from alembic import command
 
     from app import models  # noqa: F401  确保模型已注册（供 autogenerate 参考）

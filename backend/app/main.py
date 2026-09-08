@@ -4,17 +4,23 @@ LumenCloud 最小骨架入口
 - FastAPI 静态直出前端（Vue SPA fallback）
 业务 API（鉴权/审批/队列/媒体等）按 docs/新系统设计.md §9 在实施阶段注册。
 """
+import asyncio
+import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
+from sqlalchemy import text
 
 from app.config import settings
-from app.database import engine, init_db
+from app.database import async_session, engine, init_db
 from app.scheduler import scheduler
+
+logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
@@ -67,13 +73,19 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title=settings.APP_NAME, lifespan=lifespan)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# 安全加固（Task 1）：CORS 白名单从 settings.CORS_ALLOW_ORIGINS 读取（逗号分隔）。
+# 白名单 + allow_credentials=True 是允许的组合（"*" + credentials 才是浏览器禁止
+# 的组合）。env 置空串 → 白名单为空 → 不注册 CORS 中间件：生产同源部署由 FastAPI
+# 直出静态页，浏览器不发 Origin，无需 CORS，完全禁用更安全。
+_cors_origins = [o.strip() for o in settings.CORS_ALLOW_ORIGINS.split(",") if o.strip()]
+if _cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 # API 路由：app/routers/api.py → api_router 统一注册。
 # 不再捕获 ImportError（骨架期遗留）：routers 已完整实现，import/注册失败必须
@@ -85,7 +97,23 @@ app.include_router(api_router.api_router)
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok"}
+    """健康检查：探活数据库（SELECT 1，3 秒超时），保持轻量。
+
+    - DB 正常 → 200 {"status": "ok", "db": true, "time": ...}
+    - DB 异常 → 503 {"status": "degraded", "db": false}
+    不探测 aria2/alist 等外部服务（避免健康检查因下游抖动误报）。
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        async with async_session() as session:
+            await asyncio.wait_for(session.execute(text("SELECT 1")), timeout=3)
+        return {"status": "ok", "db": True, "time": now}
+    except Exception as exc:  # noqa: BLE001  健康检查失败即 degraded，不阻断请求
+        logger.warning("健康检查 DB 探测失败: %s", exc)
+        return JSONResponse(
+            status_code=503,
+            content={"status": "degraded", "db": False, "time": now},
+        )
 
 
 # 前端静态文件 — 必须在最后注册（SPA fallback）

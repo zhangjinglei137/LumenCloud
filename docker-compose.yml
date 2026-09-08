@@ -15,9 +15,10 @@
 #      INIT_ADMIN_USERNAME，非必需）。
 #
 # ★ 数据库：内置 PostgreSQL 16（db 服务），数据在 ./pgdata 卷。
-#   数据库账号/密码/库名在此文件内配置（基础设施连接串，非业务凭据）；
-#   如需更换凭据，改 db.environment 与 lumencloud.environment.DATABASE_URL
-#   两处并保持一致（生产建议改强密码）。
+#   密码可用 .env 覆盖（如 POSTGRES_PASSWORD=strongpass docker compose up -d），
+#   默认 lumencloud 仅供本地开发。db 服务与 lumencloud 服务取同一变量
+#   ${POSTGRES_PASSWORD:-lumencloud}——两处同步，改一处不如改两处同时生效，
+#   避免凭据不一致导致连接失败。
 #
 # 说明：
 #   - lumencloud 从 Dockerfile 构建（多阶段：前端 vite → python:3.12-slim）
@@ -30,7 +31,8 @@ services:
     container_name: lumencloud-db
     environment:
       POSTGRES_USER: lumen
-      POSTGRES_PASSWORD: lumencloud
+      # 可用 .env 覆盖（生产请务必设强密码）；未设时回退默认 lumencloud（仅开发）
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lumencloud}
       POSTGRES_DB: lumencloud
     volumes:
       # PostgreSQL 数据目录
@@ -51,13 +53,18 @@ services:
     ports:
       - "${PORT:-8000}:8000"
     environment:
-      # 连接 db 服务（compose 内服务名解析；密码与 db.environment 保持一致）
-      DATABASE_URL: postgresql+asyncpg://lumen:lumencloud@db:5432/lumencloud
+      # 连接 db 服务（compose 内服务名解析；密码与 db.environment 取同一变量，
+      # 同步改，避免两处不一致）
+      DATABASE_URL: postgresql+asyncpg://lumen:${POSTGRES_PASSWORD:-lumencloud}@db:5432/lumencloud
     depends_on:
       db:
         condition: service_healthy
     volumes:
-      # JWT 密钥文件（.jwt_secret）+ 备份目录等
+      # JWT 密钥文件（.jwt_secret）+ SQLite/备份目录等
+      # ⚠️ 非 root 运行：容器内以 UID 1000（lumencloud）写 /app/data。宿主
+      #   ./data 若已存在且属主非 1000，需 chown 1000:1000 ./data（或首次以
+      #   root 启动一次、目录建好后再 chown），否则 bind-mount 权限会踩坑
+      #   （JWT 密钥/数据库落盘 Permission denied）。
       - ./data:/app/data
     restart: unless-stopped
 
@@ -82,3 +89,6 @@ services:
         limits:
           cpus: "1.0"
           memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 256M

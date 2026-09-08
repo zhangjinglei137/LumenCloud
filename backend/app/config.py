@@ -27,6 +27,25 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     LUMENCLOUD_DATA_DIR: str = "data"
     DATABASE_URL: Optional[str] = None  # 空 = 内置 SQLite（/app/data/lumencloud.db）
+    # 启动自动迁移开关（安全加固）：False → init_db 跳过 Alembic 迁移，仅日志提示
+    # 手动执行 `alembic upgrade head`。生产可选 AUTO_MIGRATE=0 配合手动迁移窗口
+    #（多副本/需人工把控迁移时机的部署更安全），默认 True 保持原自动迁移行为。
+    AUTO_MIGRATE: bool = True
+
+    # ---- 安全加固：CORS 白名单 ----
+    # 逗号分隔的允许来源。开发默认 vite 端口 5173；生产同源部署（FastAPI 直出
+    # 静态页）浏览器不发 Origin，无需 CORS——env 置空串即完全禁用 CORS 中间件
+    #（main.py 白名单为空则不注册 CORSMiddleware）。
+    CORS_ALLOW_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173"
+
+    # ---- 安全加固：登录限流 + httpOnly cookie（单 worker 进程内）----
+    # httpOnly cookie 双通道的 Secure 标志：生产若启用 HTTPS 应设 COOKIE_SECURE=1；
+    # 本地 HTTP 开发必须 False（secure cookie 会被浏览器在 http:// 下丢弃）。
+    COOKIE_SECURE: bool = False
+    # 登录失败限流（进程内内存）：窗口 LOGIN_FAIL_WINDOW_SECONDS 秒内同一
+    # (IP, username) 失败超过 LOGIN_FAIL_LIMIT 次 → 429（见 auth.py login）。
+    LOGIN_FAIL_LIMIT: int = 5
+    LOGIN_FAIL_WINDOW_SECONDS: int = 300
 
     # ---- 初始化（首次启动创建管理员）----
     INIT_ADMIN_USERNAME: str = "admin"

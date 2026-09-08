@@ -169,7 +169,8 @@ def test_delete_media_fk_order_and_in_progress_guard():
         # 不存在 → 404
         assert client.delete("/api/media/99999", headers=h).status_code == 404
 
-        # 未登录 → 401
+        # 未登录 → 401（双通道 cookie：登录 Set-Cookie 会兜底鉴权，断言前须清 cookie）
+        client.cookies.clear()
         assert client.delete(f"/api/media/{seed['tq_pending_media_id']}").status_code == 401
 
 

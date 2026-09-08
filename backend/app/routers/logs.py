@@ -4,14 +4,14 @@
   日志脱敏（§9.1）：task_run 本就不含 token/凭据明文，DTO 白名单直出。
 - 线上反馈修复 Q8：支持按 tmdb_id 搜索；返回项附 media_title（影视名称）与 tmdb_id
   （join media 表装配），前端日志不再只看数字 id。
-- P1-2：新增 title 影视名称模糊搜索（ilike，join 已有 media 表）。
+- P1-2：新增 title 影视名称模糊搜索（contains，join 已有 media 表）。
 - 巡检可见性改造：返回项附 phases / scan_detail（TEXT JSON 解析为 dict/None）。
 - GET /api/logs/{id}：单条完整巡检/任务记录（含 media_title；media 不存在为 None）。
 """
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Media, TaskRun, User
@@ -40,7 +40,7 @@ async def list_logs(
     media_id: int | None = Query(default=None),
     # Q8：按 TMDB id 搜索日志（多个 media 可同 tmdb_id，用子查询覆盖全部）
     tmdb_id: int | None = Query(default=None),
-    # P1-2：按影视名称模糊搜索（ilike；空串不生效）
+    # P1-2：按影视名称模糊搜索（contains；空串不生效）
     title: str | None = Query(default=None, max_length=128),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
@@ -60,8 +60,12 @@ async def list_logs(
         # 缺省 media 的 task_run（media 已删 / 无关联）不命中
         stmt = stmt.where(TaskRun.media_id.in_(select(Media.id).where(Media.tmdb_id == tmdb_id)))
     if title:
-        # P1-2：影视名称模糊搜索（join 已有 isouter media，直接用 Media.title；空串不生效）
-        stmt = stmt.where(Media.title.ilike(f"%{title}%"))
+        # P1-2：影视名称模糊搜索（join 已有 isouter media，直接用 Media.title；空串不生效）。
+        # contains(autoescape=True) 等价于模糊包含，且自动转义 %/_ 等 LIKE 通配符——
+        # title 参数含「%」时只按字面量匹配，避免通配符注入放大命中面
+        # （原 ilike(f"%{title}%") 拼接会把 % 当通配符注入）。
+        # 保留原 ilike 的大小写不敏感语义：两侧 lower 后再 contains。
+        stmt = stmt.where(func.lower(Media.title).contains(title.lower(), autoescape=True))
     stmt = (
         stmt.order_by(TaskRun.started_at.desc(), TaskRun.id.desc())
         .limit(limit)

@@ -57,7 +57,7 @@ import json
 import logging
 import re
 import time as _time
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 from sqlalchemy import func, select, update
 
@@ -74,6 +74,13 @@ from app.services.notifier import (
 )
 from app.tasks import as_bool, record_task_run
 from app.tasks.library_check import scrape_runner
+# tasks 层公共纯函数（app.utils，仅标准库）：统一时间源与夸克路径拆分
+from app.utils import now_utc_naive as _now, split_quark_path
+
+# 公共化（tasks 层 utils）：_split_quark_path 实现迁至 app.utils（本文件原实现
+# 原样搬移，与 recovery.py 原实现一致），保留局部名称使调用点不变
+# （library_check 等以 transfer_mod._split_quark_path 延迟导入引用）。
+_split_quark_path = split_quark_path
 
 logger = logging.getLogger(__name__)
 
@@ -179,11 +186,6 @@ def _spawn(coro_factory) -> None:
     task = asyncio.create_task(coro_factory())
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
-
-
-def _now() -> datetime:
-    """统一时间源（naive UTC，与 tasks/__init__._now 一致）。"""
-    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _normalize_name(name: str) -> str:
@@ -304,21 +306,6 @@ async def _get_link_wait_visible(file_name: str, timeout: float = _LINK_WAIT_TIM
         f"最近 list_dir 前 {len(recent_names)} 条目: {recent_names}；"
         f"请用 alist 管理 API /api/admin/storage/list 核对 quark_default_folder 是否为 root_folder_id"
     )
-
-
-def _split_quark_path(path: str) -> tuple[str, list[str]]:
-    """把夸克完整路径拆为 (dir, [name])，适配 alist.remove(names, dir) 契约（同 recovery.py 拆法）。
-
-    例如 /quark/movie.mkv → ("/quark/", ["movie.mkv"])；dir 以 / 结尾。
-    """
-    path = (path or "").strip()
-    if not path:
-        return "/", []
-    path = path.rstrip("/")
-    if "/" in path:
-        dir_part, name = path.rsplit("/", 1)
-        return (dir_part or "/") + "/", [name]
-    return "/", [path]
 
 
 def _extract_save_task_id(data) -> str | None:
@@ -669,6 +656,14 @@ async def _record_alert(media_id, message, category=None, bucket=None) -> None:
     使"容量不足/容量不可用"10 分钟内对同一 media 只 notify 一次（任务 P3-2 要求）。
     """
     t0 = _time.monotonic()  # Q8①：真实耗时
+    # P2-2 TTL 清理（公共化）：冷却项停留超过 2 倍窗口即不可能再被命中——同 key
+    # 距上次 notify 已超 2*窗口，之后任何触发必然走「新告警」分支（重新写时间戳），
+    # 旧条目对节流判定无影响；遍历删除防 dict 随 media 删除/类别变化长期无界增长。
+    # 每次入口 O(n) 清理一次；conftest 按测试边界 clear() 的重置语义不受影响。
+    _now_m = _time.monotonic()
+    for _key, (_ts, _b) in list(_alert_cooldown.items()):
+        if _now_m - _ts > 2 * _ALERT_COOLDOWN_SECONDS:
+            _alert_cooldown.pop(_key, None)
     logger.warning("[transfer] %s", message)
     async with async_session() as s:
         await record_task_run(s, "transfer", "error", message, media_id,

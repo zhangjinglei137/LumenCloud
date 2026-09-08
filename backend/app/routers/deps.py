@@ -8,7 +8,7 @@
 """
 from typing import AsyncGenerator, Optional
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -52,14 +52,26 @@ async def _decode_user_id(token: str) -> Optional[int]:
 
 
 async def get_current_user(
+    request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
     session: AsyncSession = Depends(get_session),
 ) -> User:
-    """JWT 鉴权依赖：token 缺失/非法/用户不存在 → 401。"""
-    if credentials is None:
+    """JWT 鉴权依赖：token 缺失/非法/用户不存在 → 401。
+
+    Task 3 双通道（渐进式）：Authorization header 优先；header 缺失时回退
+    httpOnly cookie `access_token`（login 时 Set-Cookie）。header 优先于
+    cookie——同时存在时以 header 为准，保持既有 401 语义。
+    """
+    token = None
+    if credentials is not None:
+        token = credentials.credentials
+    else:
+        token = request.cookies.get("access_token")
+
+    if not token:
         raise HTTPException(status_code=401, detail="未提供身份令牌")
 
-    user_id = await _decode_user_id(credentials.credentials)
+    user_id = await _decode_user_id(token)
     if user_id is None:
         raise HTTPException(status_code=401, detail="令牌无效或已过期")
 

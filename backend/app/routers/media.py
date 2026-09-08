@@ -13,10 +13,19 @@ import re
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import DownloadTask, EpisodeState, Media, TaskRun, TransferQueue, User
+from app.models import (
+    DownloadQueue,
+    DownloadTask,
+    EpisodeState,
+    Media,
+    TaskQueue,
+    TaskRun,
+    TransferQueue,
+    User,
+)
 from app.routers.deps import get_current_admin, get_current_user, get_session
 from app.services import tmdb
 from app.services.tmdb import TMDBUnavailable
@@ -30,11 +39,29 @@ _GB = 1024**3
 _VALID_STATUSES = ("tracking", "paused")
 
 
-# B-1/B-2（P1）：「进行中任务」检查——transfer_queue(pending/transferring/downloading) ∪
-# episode_state(queued/transferring/downloading) ∪ download_task(downloading)；有任一即 True。
+# 两队列重设计状态集：新表「进行中」判定（其余为终态）
+_DQ_ACTIVE_STATUSES = ("pending", "transferring", "downloading", "scrape", "library", "quota_wait")
+_TQ_ACTIVE_STATUSES = ("pending", "probing", "ready")
+
+
+# B-1/B-2（P1）：「进行中任务」检查——新表 task_queue(pending/probing/ready) ∪
+# download_queue(pending/transferring/downloading/scrape/library/quota_wait) 任一命中即 True；
+# 旧三表 transfer_queue / episode_state / download_task 保留（遗留数据兼容）。有任一即 True。
 async def _has_in_progress_tasks(session: AsyncSession, media_id: int) -> bool:
     return bool(
         await session.scalar(
+            select(TaskQueue.id).where(
+                TaskQueue.media_id == media_id,
+                TaskQueue.status.in_(_TQ_ACTIVE_STATUSES),
+            ).limit(1)
+        )
+        or await session.scalar(
+            select(DownloadQueue.id).where(
+                DownloadQueue.media_id == media_id,
+                DownloadQueue.status.in_(_DQ_ACTIVE_STATUSES),
+            ).limit(1)
+        )
+        or await session.scalar(
             select(TransferQueue.id).where(
                 TransferQueue.media_id == media_id,
                 TransferQueue.status.in_(("pending", "transferring", "downloading")),
@@ -146,6 +173,57 @@ def _tq_dto(row: TransferQueue, is_admin: bool) -> dict:
     return dto
 
 
+def _dq_episode_dto(row: DownloadQueue, is_admin: bool) -> dict:
+    """单集状态 DTO（新表 download_queue 行，两队列重构后详情 episode_state 主数据源）。
+
+    字段对齐旧 _episode_dto 前端契约：state=status（执行层状态直接沿用），
+    size_gb/season/episode_number 由 file_size/episode 推导；§9.1 脱敏同旧表：
+    share_code/aria2_gid/quark_path guest 不返回，admin 的 share_code 仅后 4 位。
+    """
+    season, episode_number = _parse_episode(row.episode)
+    dto = {
+        "id": row.id,
+        "episode": row.episode,
+        "state": row.status,
+        "status": row.status,  # 前端契约别名
+        "file_name": row.file_name,
+        "file_size": row.file_size,
+        "size_gb": round(row.file_size / _GB, 2) if row.file_size else None,  # 前端契约别名（GB）
+        "season": season,          # 前端契约别名
+        "episode_number": episode_number,  # 前端契约别名
+        "retry_count": row.retry_count,
+        "error": row.error,
+        "updated_at": row.updated_at,
+    }
+    if is_admin:
+        dto["share_code"] = _mask_share_code(row.share_code)
+        dto["aria2_gid"] = row.aria2_gid
+        dto["quark_path"] = row.quark_path
+    return dto
+
+
+def _task_queue_dto(row: TaskQueue, is_admin: bool) -> dict:
+    """探测队列 DTO（新表 task_queue 行，两队列重构后详情 transfer_queue 主数据源）。
+
+    §9.1 脱敏：guest 不返回 share_code；admin 仅回显后 4 位（_mask_share_code）。
+    """
+    dto = {
+        "id": row.id,
+        "media_id": row.media_id,
+        "episode": row.episode,
+        "file_name": row.file_name,
+        "file_size": row.file_size,
+        "file_size_gb": round(row.file_size / _GB, 2) if row.file_size else None,
+        "status": row.status,
+        "error": row.error,
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
+    }
+    if is_admin:
+        dto["share_code"] = _mask_share_code(row.share_code)
+    return dto
+
+
 def _media_dto(m: Media) -> dict:
     return {
         "id": m.id,
@@ -184,24 +262,68 @@ async def list_media(
         return []
     media_ids = [m.id for m in media_rows]
 
-    # episode_state 统计（一次聚合，避免 N+1）
+    # episode_state 统计（两队列重构后「新表为主、旧表兼容」）：对每部 media 按
+    # (media_id, episode) 键在 task_queue ∪ download_queue ∪ episode_state 三表
+    # 去重合并后统计。同键多行以最「重」状态为准（in_progress > failed > done）；
+    # download_queue 为执行层权威源，task_queue 探测态计 in_progress，
+    # episode_state 保留兼容遗留数据。一次聚合，避免 N+1。
     counts: dict[int, dict[str, int]] = {}
-    stat_rows = await session.execute(
-        select(EpisodeState.media_id, EpisodeState.state, func.count(EpisodeState.id))
-        .where(EpisodeState.media_id.in_(media_ids))
-        .group_by(EpisodeState.media_id, EpisodeState.state)
+    _rank: dict[int, dict[str, int]] = {}  # media_id -> episode -> 最高状态优先级
+
+    def _bump(media_id: int, episode: str, rank: int) -> None:
+        d = _rank.setdefault(media_id, {})
+        if episode not in d or rank > d[episode]:
+            d[episode] = rank
+
+    dq_agg = await session.execute(
+        select(DownloadQueue.media_id, DownloadQueue.episode, DownloadQueue.status)
+        .where(DownloadQueue.media_id.in_(media_ids))
     )
-    for media_id, state, cnt in stat_rows:
-        entry = counts.setdefault(
-            media_id, {"total": 0, "done": 0, "failed": 0, "in_progress": 0}
-        )
-        entry["total"] += cnt
+    for media_id, episode, status in dq_agg:
+        if status == "done":
+            _bump(media_id, episode, 1)
+        elif status == "failed":
+            _bump(media_id, episode, 2)
+        elif status in _DQ_ACTIVE_STATUSES:
+            _bump(media_id, episode, 3)
+        else:
+            _bump(media_id, episode, 0)  # skipped 等终态仅计入 total
+
+    tq_agg = await session.execute(
+        select(TaskQueue.media_id, TaskQueue.episode, TaskQueue.status)
+        .where(TaskQueue.media_id.in_(media_ids))
+    )
+    for media_id, episode, status in tq_agg:
+        if status in _TQ_ACTIVE_STATUSES:
+            _bump(media_id, episode, 3)
+        else:
+            _bump(media_id, episode, 0)  # done/unmatched/error 仅计入 total
+
+    es_agg = await session.execute(
+        select(EpisodeState.media_id, EpisodeState.episode, EpisodeState.state)
+        .where(EpisodeState.media_id.in_(media_ids))
+    )
+    for media_id, episode, state in es_agg:
         if state == "done":
-            entry["done"] += cnt
+            _bump(media_id, episode, 1)
         elif state == "failed":
-            entry["failed"] += cnt
+            _bump(media_id, episode, 2)
         elif state in ("queued", "transferring", "downloading"):
-            entry["in_progress"] += cnt
+            _bump(media_id, episode, 3)
+        else:
+            _bump(media_id, episode, 0)
+
+    for media_id, ep_map in _rank.items():
+        entry = counts[media_id] = {
+            "total": len(ep_map), "done": 0, "failed": 0, "in_progress": 0,
+        }
+        for rank in ep_map.values():
+            if rank == 1:
+                entry["done"] += 1
+            elif rank == 2:
+                entry["failed"] += 1
+            elif rank == 3:
+                entry["in_progress"] += 1
 
     # 最近一条 task_run（按时间倒序，取每条 media 首条）
     latest: dict[int, dict] = {}
@@ -320,34 +442,70 @@ async def get_media(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """详情：media 字段 + episode_state 列表 + transfer_queue 摘要（按角色脱敏）。"""
+    """详情：media 字段 + episode_state 列表 + transfer_queue 摘要（按角色脱敏）。
+
+    两队列重构后「新表为主、旧表兼容」：
+    - episode_state 以 download_queue 行（DTO state=status）为主，合并旧
+      episode_state 中无对应 download_queue 行（同 media+episode）的遗留行；
+    - transfer_queue 以 task_queue 行为主，合并旧 transfer_queue 中无对应
+      task_queue 行的遗留行。排序沿用 updated_at desc, id desc。
+    """
     is_admin = user.role == "admin"
     media = await session.get(Media, media_id)
     if media is None:
         raise HTTPException(status_code=404, detail="影视不存在")
 
-    episodes = (
+    dq_rows = (
         (
             await session.execute(
-                select(EpisodeState)
-                .where(EpisodeState.media_id == media_id)
-                .order_by(EpisodeState.updated_at.desc(), EpisodeState.id.desc())
+                select(DownloadQueue)
+                .where(DownloadQueue.media_id == media_id)
+                .order_by(DownloadQueue.updated_at.desc(), DownloadQueue.id.desc())
             )
         )
         .scalars()
         .all()
     )
+    es_rows = (
+        (
+            await session.execute(
+                select(EpisodeState).where(EpisodeState.media_id == media_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    dq_keys = {(r.media_id, r.episode) for r in dq_rows}
+    episode_rows = list(dq_rows) + [
+        e for e in es_rows if (e.media_id, e.episode) not in dq_keys
+    ]
+    episode_rows.sort(key=lambda r: (r.updated_at or datetime.min, r.id), reverse=True)
+
     tq_rows = (
         (
             await session.execute(
-                select(TransferQueue)
-                .where(TransferQueue.media_id == media_id)
-                .order_by(TransferQueue.enqueued_at.desc(), TransferQueue.id.desc())
+                select(TaskQueue)
+                .where(TaskQueue.media_id == media_id)
+                .order_by(TaskQueue.updated_at.desc(), TaskQueue.id.desc())
             )
         )
         .scalars()
         .all()
     )
+    legacy_tq_rows = (
+        (
+            await session.execute(
+                select(TransferQueue).where(TransferQueue.media_id == media_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    tq_keys = {(r.media_id, r.episode) for r in tq_rows}
+    transfer_rows = list(tq_rows) + [
+        r for r in legacy_tq_rows if (r.media_id, r.episode) not in tq_keys
+    ]
+    transfer_rows.sort(key=lambda r: (r.updated_at or datetime.min, r.id), reverse=True)
 
     latest_run = (
         (
@@ -379,8 +537,14 @@ async def get_media(
     return {
         **media_dto,
         "media": media_dto,
-        "episode_state": [_episode_dto(e, is_admin) for e in episodes],
-        "transfer_queue": [_tq_dto(r, is_admin) for r in tq_rows],
+        "episode_state": [
+            _dq_episode_dto(r, is_admin) if isinstance(r, DownloadQueue) else _episode_dto(r, is_admin)
+            for r in episode_rows
+        ],
+        "transfer_queue": [
+            _task_queue_dto(r, is_admin) if isinstance(r, TaskQueue) else _tq_dto(r, is_admin)
+            for r in transfer_rows
+        ],
     }
 
 
@@ -423,9 +587,12 @@ async def delete_media(
 ) -> dict:
     """admin 删除影视：先做进行中任务前置检查（并发安全），再按外键依赖顺序删子表。
 
-    删除顺序：episode_state → download_task → transfer_queue → media。
-    download_task.transfer_id 外键指向 transfer_queue.id，必须先删 download_task
-    再删 transfer_queue，否则 SQLite(foreign_keys=ON)/PostgreSQL 会报外键冲突。
+    删除顺序：episode_state → download_task → transfer_queue → download_queue →
+    task_queue → media。
+    - download_task.transfer_id 外键指向 transfer_queue.id，必须先删 download_task
+      再删 transfer_queue，否则 SQLite(foreign_keys=ON)/PostgreSQL 会报外键冲突。
+    - 两队列新表：download_queue.task_queue_id 外键指向 task_queue.id，必须先删
+      download_queue 再删 task_queue（与旧表无 FK 关联，放现有删除之后）。
 
     B-2（P1）：检查+删除+commit 整体置于 scan 的 per-media 锁（_media_lock）内，
     与 scan 入队互斥，防「检查通过后、删除前 _enqueue 写入新子表记录」的孤儿数据竞态。
@@ -444,6 +611,10 @@ async def delete_media(
         await session.execute(delete(EpisodeState).where(EpisodeState.media_id == media_id))
         await session.execute(delete(DownloadTask).where(DownloadTask.media_id == media_id))
         await session.execute(delete(TransferQueue).where(TransferQueue.media_id == media_id))
+        # 两队列新表：download_queue.task_queue_id 外键指向 task_queue.id，
+        # 必须先删 download_queue 再删 task_queue（与旧表无 FK 关联）。
+        await session.execute(delete(DownloadQueue).where(DownloadQueue.media_id == media_id))
+        await session.execute(delete(TaskQueue).where(TaskQueue.media_id == media_id))
         await session.delete(media)
         await session.commit()
         return {"ok": True}

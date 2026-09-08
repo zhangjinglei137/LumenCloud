@@ -194,7 +194,8 @@ def test_change_password_api_flow():
             "/api/auth/login", json={"username": "admin", "password": admin_password}
         ).json()["access_token"]
 
-        # 未登录 → 401
+        # 未登录 → 401（双通道 cookie：登录 Set-Cookie 会兜底鉴权，断言前须清 cookie）
+        client.cookies.clear()
         r = client.post(
             "/api/auth/change-password",
             json={"old_password": admin_password, "new_password": "newpass123"},

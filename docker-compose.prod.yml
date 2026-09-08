@@ -3,7 +3,7 @@
 # 用法：
 #   IMAGE_TAG=1.0.0 docker compose -f docker-compose.prod.yml up -d
 #
-# ★ 无需 .env.prod / 任何环境变量（Phase 8）：
+# ★ 无需 .env.prod（Phase 8）——唯一例外是数据库密码 POSTGRES_PASSWORD（必填）：
 #   1. 服务凭据（alist/cloudSaver/aria2/NasTools/Emby/TMDB/PushPlus/夸克）→
 #      设置页「服务凭据配置」保存到数据库，保存即生效、无需重启；
 #   2. JWT 密钥 → 首启自动生成落盘 ./data/.jwt_secret（chmod 600）；
@@ -16,10 +16,25 @@
 #   1. 健康检查：/api/health（应用）与 pg_isready（数据库）
 #   2. 日志轮转：json-file driver 按 10m/5 文件轮转（admin 初始密码在 docker logs）
 #   3. 资源限制：deploy.resources.limits（cpus 1.0 / memory 512M，按宿主规格调）
-#   4. 数据备份：宿主 crontab 参考
-#      python scripts/backup_db.py            # Postgres 用 pg_dump 指引
-#      （建议: 0 3 * * * docker exec lumencloud python scripts/backup_db.py）
-#   5. 数据库凭据在下方两处配置并保持一致，生产请改强密码
+#   4. 数据备份：宿主 crontab 建议已存在，推荐直接使用：
+#      0 3 * * * docker exec lumencloud python scripts/backup_db.py
+#      （容器内 SQLite 在线备份 → /app/scripts/backup，--keep 14 自动清理旧档）
+#      可选：cron 容器内定时备份（仅为命令参考，不新增 compose 服务、
+#      避免引入未经测试的部署拓扑）：
+#      docker run -d --name lumencloud-cron --restart unless-stopped \
+#        -v /var/run/docker.sock:/var/run/docker.sock alpine:3.20 \
+#        sh -c "apk add --no-cache docker-cli \
+#          && echo '0 3 * * * docker exec lumencloud python scripts/backup_db.py' > /etc/crontabs/root \
+#          && crond -f -l 8"
+#      ⚠️ 挂载 docker.sock 等同宿主 root 权限，请自行评估安全风险
+#   5. 数据库密码必须经环境变量强注入（fail-closed）：
+#      POSTGRES_PASSWORD=xxxx docker compose -f docker-compose.prod.yml up -d
+#      未设置时 compose 直接报错拒绝启动，杜绝硬编码弱密码进生产。
+#      db 服务与 lumencloud 服务取同一变量（两处同步），改一处不如改两处。
+#   6. 宿主卷权限（非 root 运行）：容器内以 UID 1000 写 /app/data；
+#      部署前先执行 chown 1000:1000 ./data（或首次以 root 启动一次再 chown），
+#      否则 bind-mount 落盘会 Permission denied。
+#      ./pgdata 由 postgres 镜像 entrypoint 自动处理属主，无需手动 chown。
 # ============================================
 services:
   db:
@@ -27,7 +42,8 @@ services:
     container_name: lumencloud-db
     environment:
       POSTGRES_USER: lumen
-      POSTGRES_PASSWORD: lumencloud
+      # fail-closed：未设置 POSTGRES_PASSWORD 时 compose 报错、拒绝启动
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?生产环境必须设置 POSTGRES_PASSWORD}
       POSTGRES_DB: lumencloud
     volumes:
       - ./pgdata:/var/lib/postgresql/data
@@ -44,13 +60,16 @@ services:
     ports:
       - "${PORT:-8000}:8000"
     environment:
-      # 连接 db 服务（compose 内服务名解析；密码与 db.environment 保持一致）
-      DATABASE_URL: postgresql+asyncpg://lumen:lumencloud@db:5432/lumencloud
+      # 连接 db 服务（compose 内服务名解析；密码与 db.environment 取同一变量）
+      DATABASE_URL: postgresql+asyncpg://lumen:${POSTGRES_PASSWORD:?生产环境必须设置 POSTGRES_PASSWORD}@db:5432/lumencloud
     depends_on:
       db:
         condition: service_healthy
     volumes:
-      # JWT 密钥文件（.jwt_secret）+ 备份目录等
+      # JWT 密钥文件（.jwt_secret）+ SQLite/备份目录等
+      # ⚠️ 非 root 运行：容器内以 UID 1000（lumencloud）写 /app/data。
+      #   部署前 chown 1000:1000 ./data（或首次以 root 启动一次后再 chown），
+      #   否则 bind-mount 落盘 Permission denied。
       - ./data:/app/data
     restart: unless-stopped
 
@@ -75,3 +94,6 @@ services:
         limits:
           cpus: "1.0"
           memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 256M

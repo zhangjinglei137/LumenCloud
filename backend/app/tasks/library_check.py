@@ -47,7 +47,7 @@ node 维度的职责）。
 import asyncio
 import logging
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 from sqlalchemy import delete, select, update
 
@@ -60,6 +60,8 @@ from app.services.notifier import (
     notifier,
 )
 from app.tasks import get_config_value, nastools_sync
+# tasks 层公共纯函数（app.utils，仅标准库）：统一时间源与集级匹配函数
+from app.utils import fmt_episode, now_utc_naive as _now, parse_episode_num
 
 logger = logging.getLogger(__name__)
 
@@ -78,11 +80,6 @@ _background_tasks: set[asyncio.Task] = set()
 # nastools_sync 内部 _sync_lock 已防 NasTools 双重启；此锁进一步避免重复的全量
 # 同步（下载完成事件刚落，job 兜底又同步一轮属浪费）。
 _scrape_lock = asyncio.Lock()
-
-
-def _now() -> datetime:
-    """统一时间源（naive UTC，与 tasks/__init__._now 一致）。"""
-    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _spawn(coro_factory) -> None:
@@ -220,16 +217,11 @@ async def scrape_runner() -> None:
 _RE_SXXEXX = re.compile(r"[Ss](\d{1,2})[Ee](\d{1,3})")
 _RE_CN_EP = re.compile(r"第\s*(\d{1,3})\s*[集话]")
 
-
-def _fmt_episode(season: int, ep: int) -> str:
-    """规范化集 key：S01E01（两位）；三位集数（如 S01E100）保留三位（同 scan.py）。"""
-    ep_s = f"E{ep:03d}" if ep >= 100 else f"E{ep:02d}"
-    return f"S{season:02d}{ep_s}"
-
-
-def _ep_num(key: str) -> int | None:
-    m = re.search(r"E(\d{2,3})$", key or "")
-    return int(m.group(1)) if m else None
+# 公共化（tasks 层 utils）：_fmt_episode / _ep_num 实现迁至 app.utils
+# （library_check.py 与 scan.py 原实现完全一致），这里保留局部名称使调用点不变；
+# _RE_SXXEXX / _RE_CN_EP 常量保留在本文件。
+_fmt_episode = fmt_episode
+_ep_num = parse_episode_num
 
 
 def _episode_in_missing(episode: str, missing_codes: set[str]) -> bool:

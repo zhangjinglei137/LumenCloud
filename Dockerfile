@@ -67,8 +67,8 @@ COPY backend/app /app/backend/app
 COPY backend/alembic /app/backend/alembic
 
 # 运维脚本（迁移/探测/备份/校验；阶段 4 用 docker exec 执行 migrate_from_n8n.py / backup_db.py）
-# scripts/backup 目录不预建：备份脚本运行时 mkdir（root 用户 /app 下可写），
-# 与 migrate_from_n8n.py 的 export_backup 一致，避免空目录被 COPY 进镜像
+# ⚠️ scripts/backup 是备份输出目录：非 root 运行后应用无法在运行时自行创建
+#    （父目录 /app/scripts 归 root），故在下方 useradd 阶段预建并 chown。
 COPY scripts /app/scripts
 
 # 前端构建产物 → FastAPI 静态直出
@@ -79,9 +79,21 @@ COPY --from=frontend-builder /build/backend/static /app/backend/static
 # supervisord 配置
 COPY supervisord.conf /etc/supervisor/conf.d/lumencloud.conf
 
-# SQLite 数据目录（volume 挂载）
-RUN mkdir -p /app/data
+# 非 root 运行用户（UID/GID 1000，与宿主常用数据属主一致，便于 bind-mount）：
+#   - 需 root 的 apt/pip 等构建期操作全部在上方完成，此处建用户已无特权需求；
+#   - /app/data：SQLite 库 + .jwt_secret（volume 挂载），属主交还用户；
+#   - /app/scripts/backup：备份输出目录（backup_db.py / migrate_from_n8n.py 写入），
+#     非 root 运行时无法自行 mkdir，必须预建 + chown。
+# ⚠️ 前端静态产物为 COPY 默认权限（644 文件 / 755 目录），lumencloud 可读；
+#   宿主 ./data 卷属主需 chown 1000:1000（详见 compose 注释）。
+RUN useradd --uid 1000 --create-home lumencloud \
+    && mkdir -p /app/data /app/scripts/backup \
+    && chown -R lumencloud:lumencloud /app/data /app/scripts/backup
 
 EXPOSE 8000
+
+# 切换到非 root 用户运行（supervisord → uvicorn；supervisord.conf 的
+# program.user=lumencloud 须与此一致）
+USER lumencloud
 
 CMD ["supervisord", "-n", "-c", "/etc/supervisor/conf.d/lumencloud.conf"]

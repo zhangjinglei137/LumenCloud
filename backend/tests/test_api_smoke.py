@@ -128,6 +128,8 @@ def test_full_auth_and_api_flow():
 
         # 无效 token / 缺 token → 401
         assert client.get("/api/auth/me", headers=_auth("bad.token.here")).status_code == 401
+        # 双通道 cookie：登录 Set-Cookie 会兜底鉴权，断言「缺 token」前须清 cookie
+        client.cookies.clear()
         assert client.get("/api/auth/me").status_code == 401
 
         # ---------- 邀请码管理 ----------
@@ -260,6 +262,8 @@ def test_full_auth_and_api_flow():
         # ---------- tmdb.search：登录可用；无 key 时 503 可接受；未登录 401 ----------
         r = client.get("/api/tmdb/search", params={"q": "测试"}, headers=_auth(guest_tok))
         assert r.status_code in (200, 503)
+        # 双通道 cookie：guest 登录 Set-Cookie 会兜底鉴权（进入 TMDB 返回 503），断言「未登录」前须清 cookie
+        client.cookies.clear()
         assert client.get("/api/tmdb/search", params={"q": "x"}).status_code == 401
 
         # ---------- 审批流：guest 提交 → admin 批准 → media 新增 ----------

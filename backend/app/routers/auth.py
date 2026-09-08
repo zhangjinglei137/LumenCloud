@@ -9,11 +9,13 @@
 """
 import logging
 import secrets
+import time
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import bcrypt
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from jose import jwt
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
@@ -28,6 +30,48 @@ from app.routers.deps import get_current_user, get_session
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+# ---------------------------------------------------------------------------
+# 登录失败限流（安全加固，单 worker 进程内内存）
+# ---------------------------------------------------------------------------
+# 与 config_store 同风格注释：单 worker 部署（uvicorn --workers 1）下模块级 dict
+# 读写原子性足够，不引入锁/外部存储。键 = f"{client.host}:{username}"，值 =
+# 最近失败时间戳 deque。先判后记：窗口内失败数 >= LOGIN_FAIL_LIMIT 直接 429 且
+# 不再记录（deque 天然封顶在 LIMIT，防单键高频灌入内存膨胀）；未超限才记录失败
+# 事件并 401；校验成功清除该键（成功登录重置计数器）。
+# 边界：_LOGIN_FAIL_MAX_KEYS 上限防恶意海量用户名撑爆内存——超限时清空整表并
+# 告警（简单方案；攻击者需伪造大量不同用户名才触发，清空即失效，可接受）。
+_LOGIN_FAIL_MAX_KEYS = 10000
+_login_failures: dict[str, deque] = {}
+
+
+def _record_login_failure(key: str) -> None:
+    """记录一次登录失败事件（仅保留窗口内时间戳，超限清空全表防内存膨胀）。"""
+    now = time.monotonic()
+    if key not in _login_failures and len(_login_failures) >= _LOGIN_FAIL_MAX_KEYS:
+        logger.warning("登录失败限流表超 %d 键，清空重建", _LOGIN_FAIL_MAX_KEYS)
+        _login_failures.clear()
+    dq = _login_failures.setdefault(key, deque())
+    dq.append(now)
+    cutoff = now - settings.LOGIN_FAIL_WINDOW_SECONDS
+    while dq and dq[0] < cutoff:
+        dq.popleft()
+
+
+def _login_failure_count(key: str) -> int:
+    """窗口内该键累计失败次数。"""
+    return len(_login_failures.get(key, ()))
+
+
+def _reset_login_failures(key: str) -> None:
+    """登录成功清除该键（成功登录重置失败计数器）。"""
+    _login_failures.pop(key, None)
+
+
+def _login_rate_key(request: Request, username: str) -> str:
+    """限流键：client IP + 用户名（client 缺失时兜底 "unknown"）。"""
+    host = request.client.host if request.client is not None else "unknown"
+    return f"{host}:{username}"
 
 # ---------------------------------------------------------------------------
 # 密码哈希（bcrypt）
@@ -142,16 +186,46 @@ async def register(
 
 @router.post("/login")
 async def login(
+    request: Request,
+    response: Response,
     payload: LoginRequest,
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """登录：bcrypt 校验密码 → 签发 JWT。"""
+    """登录：bcrypt 校验密码 → 签发 JWT；失败限流 + httpOnly cookie 双通道。
+
+    - 限流（Task 2）：先判后记——未超限先记录失败事件再 401；窗口内失败数
+      超限直接 429（不再记录，deque 封顶防内存膨胀）；成功登录清除限流键。
+    - cookie（Task 3）：成功响应附带 Set-Cookie（access_token，httpOnly），供
+      浏览器后续无 Authorization header 的请求鉴权（deps.get_current_user 兜底）。
+    """
     username = payload.username.strip()
+    key = _login_rate_key(request, username)
+
     user = await session.scalar(select(User).where(User.username == username))
     if user is None or not verify_password(payload.password, user.password_hash):
+        # 先判后记：未超限才记录失败事件（deque 封顶在 LOGIN_FAIL_LIMIT，
+        # 防单键窗口内无界增长）；已超限直接 429，不再 append。
+        if _login_failure_count(key) >= settings.LOGIN_FAIL_LIMIT:
+            raise HTTPException(status_code=429, detail="尝试过于频繁，请稍后再试")
+        _record_login_failure(key)
         raise HTTPException(status_code=401, detail="用户名或密码错误")
 
+    # 校验成功 → 清除该键（成功登录重置失败计数器）
+    _reset_login_failures(key)
+
     token = create_access_token(user)
+    # cookie 有效期与 JWT 一致：config 无 JWT_EXPIRE_MINUTES 字段，用现有
+    # JWT_EXPIRE_HOURS（默认 168h = 7 天）换算为秒。
+    max_age = settings.JWT_EXPIRE_HOURS * 3600
+    response.set_cookie(
+        key="access_token",
+        value=token,
+        path="/",
+        httponly=True,
+        samesite="lax",
+        max_age=max_age,
+        secure=settings.COOKIE_SECURE,
+    )
     return {
         "access_token": token,
         "token_type": "bearer",
