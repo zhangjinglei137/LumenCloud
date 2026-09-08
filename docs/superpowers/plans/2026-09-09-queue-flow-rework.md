@@ -192,14 +192,14 @@ git commit -m "refactor(transfer): 下载名称改为转存落盘后格式化，
 - Consumes: `_base_url()`/`_serialized_headers()`/认证（emby.py 既有内部结构，按需复用 `_get`/`httpx` 模式）。
 - Produces: `async def refresh_library() -> None` — `POST {base}/Library/Refresh`（管理端认证，Admin 角色），成功/失败均返回；失败抛 `EmbyUnavailable`（调用方降级）。`trigger_emby_refresh()` fire-and-forget helper：互斥锁防并发全库扫描，调用 `refresh_library()` 失败仅告警（轮询兜底）。
 
-- [ ] **Step 1: 写失败测试**：在 `test_emby_series_status.py` 增加用例：mock `httpx` 断言请求 `POST .../Library/Refresh` 且带认证头；非 2xx 抛 `EmbyUnavailable`。
-- [ ] **Step 2: 运行确认失败**：`cd backend && python -m pytest tests/test_emby_series_status.py -q -k refresh`
-- [ ] **Step 3: 修改实现**：
+- [x] **Step 1: 写失败测试**：在 `test_emby_series_status.py` 增加用例：mock `httpx` 断言请求 `POST .../Library/Refresh` 且带认证头；非 2xx 抛 `EmbyUnavailable`。
+- [x] **Step 2: 运行确认失败**：`cd backend && python -m pytest tests/test_emby_series_status.py -q -k refresh`
+- [x] **Step 3: 修改实现**：
   1. `emby.py` 新增 `refresh_library()`（复用 `_base_url`/token 逻辑；`timeout` 放宽到 60s——全库扫描异步返回）。
   2. `library_check.py` 新增 `trigger_emby_refresh()`（互斥锁 + fire-and-forget），在 `_scrape_impl` 成功推进 scrape→library 后调用。
   3. `nastools_notify.py` `_handle_transfer_finished` 成功推进后同样调用 `trigger_emby_refresh()`。
-- [ ] **Step 4: 全量运行** `test_emby_series_status.py`+`test_nastools_notify.py`+`test_library_check.py` 通过。
-- [ ] **Step 5: Commit**
+- [x] **Step 4: 全量运行** `test_emby_series_status.py`+`test_nastools_notify.py`+`test_library_check.py` 通过。
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/app/services/emby.py backend/app/tasks/library_check.py backend/app/routers/nastools_notify.py backend/tests/test_emby_series_status.py
