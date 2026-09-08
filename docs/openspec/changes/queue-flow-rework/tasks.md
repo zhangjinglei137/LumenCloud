@@ -17,8 +17,8 @@
 
 ## 4. 转存后格式化名称
 
-- [ ] 4.1 将 download_name 生成时机从 scan promote 前置改为「转存链落盘成功后」格式化（复用 _format_download_name），并保证失败重试幂等（同一文件只格式化一次）；验证 test_transfer.py 中命名用例通过
-- [ ] 4.2 aria2 out / quark_path / 转移 / 入库全程沿用格式化名；验证端到端命名一致性用例（test_fix_p0_recovery_cleanup_transfer 适配）
+- [x] 4.1 将 download_name 生成时机从 scan promote 前置改为「转存链落盘成功后」格式化（复用 _format_download_name），并保证失败重试幂等（同一文件只格式化一次）；验证 test_transfer.py 中命名用例通过
+- [x] 4.2 aria2 out / quark_path / 转移 / 入库全程沿用格式化名；验证端到端命名一致性用例（test_fix_p0_recovery_cleanup_transfer 适配）
 
 ## 5. 转移 → Emby 扫描 → 入库确认 → 续跑闭环
 

@@ -168,14 +168,14 @@ git commit -m "feat(queue): 巡检入队与入库完成事件触发下载队列�
 - Consumes: `_format_download_name(file_name, title, media_type, episode_key)`（transfer.py L101 既有）；`_get_link_wait_visible(rename_to=...)`。
 - Produces: `download_name` 在**转存链 `_get_link_wait_visible` 落盘可见后**生成：`dq.download_name` 为空时按 `_format_download_name` 计算并落库（CAS 防重写），后续 aria2 `out`/`quark_path`/`local_path` 沿用。重试幂等：已生成则跳过。
 
-- [ ] **Step 1: 写失败测试**：在 `test_transfer.py` 修改命名相关用例：断言 `download_name` 仅在转存落盘成功后写入 DQ（转存前 DQ 行 `download_name` 为 NULL）；重试路径不重复改名。
-- [ ] **Step 2: 运行确认失败**：`cd backend && python -m pytest tests/test_transfer.py -q -k naming`
-- [ ] **Step 3: 修改实现**：
+- [x] **Step 1: 写失败测试**：在 `test_transfer.py` 修改命名相关用例：断言 `download_name` 仅在转存落盘成功后写入 DQ（转存前 DQ 行 `download_name` 为 NULL）；重试路径不重复改名。
+- [x] **Step 2: 运行确认失败**：`cd backend && python -m pytest tests/test_transfer.py -q -k naming`
+- [x] **Step 3: 修改实现**：
   1. `scan.py` enqueue 段删除 `download_name` 计算与落库（Task 2 后此处已无 DQ 写入，同步移除变量）。
   2. `transfer.py _transfer_chain`：`_get_link_wait_visible(file_name, ..., rename_to=download_name)` 前，若 `download_name` 为空 → 查 media.title/type → `_format_download_name` 生成 → CAS 更新 DQ (`WHERE status='transferring'`) 落 `download_name`；此时 quark 文件以该名改名。
   3. 失败回退 `_fail_transfer` 清理用最终名（沿用 `final_quark_path` 语义）。
-- [ ] **Step 4: 全量运行** `tests/test_transfer.py`+`test_fix_p0_recovery_cleanup_transfer.py` 通过。
-- [ ] **Step 5: Commit**
+- [x] **Step 4: 全量运行** `tests/test_transfer.py`+`test_fix_p0_recovery_cleanup_transfer.py` 通过。
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/app/tasks/scan.py backend/app/tasks/transfer.py backend/tests/test_transfer.py
