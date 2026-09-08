@@ -21,7 +21,7 @@ import json
 import logging
 import re
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
@@ -61,9 +61,11 @@ _RE_CN_EP = re.compile(r"第\s*(\d{1,3})\s*[集话]")
 
 # queue-flow-rework Task 2 起：巡检入队只写 task_queue（status='ready'，转存凭据收集
 # 完毕），不再同步 promote 双写 download_queue——下载队列随后从 task_queue 取件（Task 4）。
-# scan 探测阶段由 _enqueue 事务内先查 task_queue 同键记录（存在即跳过）防重，不再用
-# 状态集合判断（unmatched 静默由 _mark_unmatched 管理；failed 需人工 retry，不可被
-# scan 自动重新入队——撞 task_queue UNIQUE(media_id, episode) 即跳过）。
+# Task 3 起：unmatched 静默机制移除——缺失集搜索失败不再写 status='unmatched' +
+# silent_until，本轮跳过、下轮全局巡检自然重试（TaskQueue 状态集收敛为
+# pending/ready/error/done）。scan 探测阶段由 _enqueue 事务内先查 task_queue 同键
+# 记录（存在即跳过）防重；failed 需人工 retry，不可被 scan 自动重新入队——撞
+# task_queue UNIQUE(media_id, episode) 即跳过。
 
 # 巡检 5 阶段键（契约固定，前端按此渲染进度）：
 #   check → Emby 基线（查缺/Emby 基线）；search → cloudSaver 搜索；
@@ -193,8 +195,8 @@ def _result_detail_skeleton(failed_phase: str | None = None,
         "share_info_ok": 0,
         "share_info_fail": 0,
         "walk_fail": 0,
-        # 静默 unmatched 预过滤（§4.1 效率优化）：本轮因静默期（已确认无资源）跳过
-        # 搜索的缺失集数；无静默则为 0（结构稳定键，JSON 键全集固定）
+        # 静默 unmatched 预过滤计数（queue-flow-rework Task 3 后恒 0——静默机制移除，
+        # 缺失集不再静默跳过、下轮巡检自然重试；键保留兼容，JSON 键全集固定）
         "unmatched_silent_skipped": 0,
         "missing_items": [],
     }
@@ -1017,84 +1019,10 @@ async def _enqueue(media_id: int, episode_key: str, file_name: str, file_size: i
                 return "conflict"
 
 
-async def _mark_unmatched(media_id: int, missing_keys: set[str], matched_keys: set[str]) -> int:
-    """搜索后确认无资源的缺失集 → task_queue 标 unmatched + 静默 N 天（影视下载两队列重设计 §4.1）。
-
-    巡检主循环只把「匹配到文件的缺失集」入队（task_queue ready + promote），对
-    missing_keys 中**确实搜索过但没匹配到任何网盘文件**的集，在此补标 unmatched：
-    - searched 语义：只有本轮确实走了搜索（有候选且 share-info 验证过）才标记——
-      搜索服务故障/无候选不算（那由 scan_detail 的 search_status 表达），避免误标。
-    - 静默重试：silent_until = now + N 天（system_config `task_queue_unmatched_silent_days`，
-      默认 2）；静默期内不再重探，到期后由 probe 执行器恢复 pending 重新探测。
-    - 幂等：同 (media_id, episode) 已有 task_queue 行（含已 ready/download 的）→ 跳过；
-      已 unmatched 且静默未到期 → 跳过（不刷新静默窗，防每次巡检顺延）。
-    返回本次新标记的 unmatched 条数。
-    """
-    if not missing_keys:
-        return 0
-    # 读取静默天数配置（独立短事务；失败回退默认 2 天，绝不因配置读取失败阻断）
-    try:
-        async with async_session() as s:
-            silent_days = float(
-                await get_config_value(s, "task_queue_unmatched_silent_days", 2)
-            )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[scan] 读取 task_queue_unmatched_silent_days 失败，回退默认 2 天: %s", exc)
-        silent_days = 2.0
-    if not silent_days:
-        silent_days = 2.0  # 0/空值回退默认
-    silent_until = _now() + timedelta(days=silent_days)
-    now = _now()
-    marked = 0
-    for episode in missing_keys - matched_keys:
-        async with async_session() as tx:
-            async with tx.begin():
-                existing = (
-                    await tx.execute(
-                        select(TaskQueue.id, TaskQueue.status, TaskQueue.silent_until).where(
-                            TaskQueue.media_id == media_id,
-                            TaskQueue.episode == episode,
-                        )
-                    )
-                ).first()
-                if existing is not None:
-                    # 已有行：ready/queued/下载中 → 跳过；unmatched 且静默未到期 → 跳过
-                    if existing.status != "unmatched" or (
-                        existing.silent_until is not None and existing.silent_until > now
-                    ):
-                        continue
-                    # unmatched 已到期 → 本轮重新探测（回到 pending），不刷新静默
-                    if existing.status == "unmatched" and (
-                        existing.silent_until is None or existing.silent_until <= now
-                    ):
-                        await tx.execute(
-                            update(TaskQueue)
-                            .where(
-                                TaskQueue.media_id == media_id,
-                                TaskQueue.episode == episode,
-                            )
-                            .values(
-                                status="pending",
-                                probe_attempt=TaskQueue.probe_attempt + 1,
-                                silent_until=None,
-                                updated_at=now,
-                            )
-                        )
-                        continue
-                    continue
-                # 无记录 → 新建 unmatched（带静默到期时间）
-                tx.add(TaskQueue(
-                    media_id=media_id,
-                    episode=episode,
-                    status="unmatched",
-                    probe_attempt=0,
-                    silent_until=silent_until,
-                    error="搜索确认无网盘资源，静默 N 天后自动重试",
-                    created_at=now,
-                    updated_at=now,
-                ))
-                marked += 1
-    return marked
+# queue-flow-rework Task 3：unmatched 静默机制已移除。缺失集搜索确认无资源后**不再**
+# 写 status='unmatched' + silent_until（不再 2 天休眠）——本轮跳过，下一轮全局巡检
+# 自然重试（TaskQueue 状态集收敛为 pending/ready/error/done，unmatched 不再产生）。
+# scan_detail 保留 unmatched_marked / unmatched_silent_skipped 恒 0 键（JSON 结构稳定）。
 
 
 async def _trigger_transfer() -> None:
@@ -1123,9 +1051,10 @@ def trigger_scan_background(media_id: int, *, manual: bool = False) -> None:
     防止 504 与 FastAPI 取消协程中断巡检）。复用 _background 强引用集合防 GC
     （与 _trigger_transfer 同模式）；内部持 per-media 锁（scan_media 自带）。
 
-    manual=True（所有手动触发点：media 扫描按钮 / queue 探测 / 加集 / 审批通过）：
-    用户主动操作=明确要立即重试，_scan_one 跳过静默 unmatched 预过滤（不受
-    silent_until 拦截），缺失集全部照常搜索；False（定时调度）保持静默期优化。
+    manual=True（所有手动触发点：media 扫描按钮 / queue 探测 / 加集 / 审批通过）。
+    queue-flow-rework Task 3 起：静默 unmatched 预过滤已移除，manual 不再改变
+    _scan_one 行为（缺失集一律照常搜索，搜不到下轮自然重试）；参数保留仅为
+    兼容既有调用契约（路由层仍按 manual=True 触发）。
     """
     async def _run() -> None:
         try:
@@ -1171,8 +1100,8 @@ def _scan_lock_idle(lock: asyncio.Lock) -> bool:
 async def scan_media(media_id: int, *, manual: bool = False) -> int | None:
     """单影视巡检（API /api/media/{id}/scan 手动触发入口），返回最近一条 task_run id。
 
-    manual=True（手动触发）：_scan_one 跳过静默 unmatched 预过滤——用户主动操作
-    视为明确要立即重试，不受 silent_until 拦截；False（定时调度）保持静默期优化。
+    manual（queue-flow-rework Task 3 起为兼容保留）：静默 unmatched 预过滤已移除，
+    手动/定时触发行为一致——缺失集一律照常搜索，搜不到下轮自然重试。
 
     P2-11（延后项）：巡检完成后清理 _scan_locks 中该 media 的锁，防 media 删除后
     锁对象永久泄漏。清理必须保证不破坏并发互斥（等待中的调用方不可被丢下）。
@@ -1329,6 +1258,9 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
     _read_size_limits、_enqueue 均各自开启/关闭 session）。database.async_session
     expire_on_commit=False，开头短会话读出的 media 为 detached 对象，已加载属性
     （id/status/title/tmdb_id/media_type 等）可安全继续使用。
+
+    manual（queue-flow-rework Task 3 起为兼容保留）：静默 unmatched 预过滤已移除，
+    手动/定时调度行为一致——缺失集一律照常搜索，搜不到下轮全局巡检自然重试。
     """
     t0 = time.monotonic()  # Q8①：真实耗时（单部巡检）
 
@@ -1414,49 +1346,13 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
     except Exception as exc:  # noqa: BLE001
         logger.warning("[scan] media=%s done 防重解除失败（不阻断巡检）: %s", media_id, exc)
 
-    # 2c. 静默 unmatched 预过滤（两队列 §4.1 效率优化，对齐 n8n「解析遗漏集」搜索前
-    #     排除已派发/静默中的集）：上一轮搜索确认无资源的缺失集已被 _mark_unmatched
-    #     标 status='unmatched' + silent_until（默认 2 天），静默期内不再重复搜索+walk
-    #     （每轮 80 分享探测 + 189 文件遍历的浪费），到期后由 probe 执行器恢复 pending
-    #     重新探测。仅 tv 模式（有明确缺失集键）适用；movie/tv 未收录全量模式
-    #     （movie_missing，episode=文件名/实体未知）不适用，保持原行为。
-    #     预过滤是软优化：查询失败仅告警，缺失集照常搜索，绝不阻断巡检。
-    #     manual=True（手动触发：media 扫描按钮 / queue 探测 / 加集 / 审批通过）：
-    #     用户主动操作=明确要立即重试，**跳过静默预过滤**，缺失集全部照常搜索；
-    #     False（定时调度）保持静默期优化。
-    silent_filtered: set[str] = set()
-    if not manual and not movie_missing and missing_keys:
-        try:
-            async with async_session() as s:
-                silent_eps = (
-                    await s.execute(
-                        select(TaskQueue.episode).where(
-                            TaskQueue.media_id == media_id,
-                            TaskQueue.status == "unmatched",
-                            TaskQueue.silent_until > _now(),
-                        )
-                    )
-                ).scalars().all()
-            silent_filtered = {ep for ep in silent_eps if ep in missing_keys}
-            if silent_filtered:
-                missing_keys.difference_update(silent_filtered)
-                logger.info(
-                    "[scan] media=%s 静默期跳过 %s 个缺失集搜索: %s",
-                    media_id, len(silent_filtered), sorted(silent_filtered),
-                )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "[scan] media=%s 静默 unmatched 预过滤查询失败（不阻断，照常搜索）: %s",
-                media_id, exc,
-            )
-
     # scan_detail 装配：拿到 aired-only 后的 Emby 基线即可填充 missing_items
     # （每个缺失集 episode → result 初始 not_found；入队成功后改 enqueued）。
-    # 2c 静默过滤后只装配本轮实际待搜索的缺失集（静默集以 unmatched_silent_skipped
-    # 计数，missing_total/missing_items 不掺入静默集）。
+    # queue-flow-rework Task 3：静默 unmatched 预过滤已移除——缺失集一律照常搜索，
+    # 本轮搜不到下轮全局巡检自然重试（不再有 silent 剔除，scan_missing 即全体 missing）。
     # 全量模式（movie_missing / tv 未收录软处理）：episode 用文件名；搜索结果在
     # 主循环里实时补入（缺失集实体不预知，missing_total 以基线长度表达 + 动态追加）。
-    scan_missing = [m for m in missing if m not in silent_filtered]
+    scan_missing = list(missing)
     missing_total = len(scan_missing)
     missing_items: list[dict] = []
     missing_items_by_key: dict[str, dict] = {}
@@ -1472,18 +1368,6 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
     scan_detail["missing_items"] = missing_items
 
     if not missing_keys and not movie_missing:
-        if silent_filtered:
-            # 全部缺失集均处于静默期（已确认无资源）→ 直接收尾，不做搜索+walk；
-            # 静默到期后由 probe 执行器恢复 pending 重新探测（_mark_unmatched 语义）。
-            _phase_skip_remaining(phases, "search")  # 后续阶段未执行 → skipped
-            scan_detail["search_status"] = "skipped"
-            scan_detail["unmatched_silent_skipped"] = len(silent_filtered)
-            return await _finish(
-                "skipped",
-                f"缺失集均在静默期（{len(silent_filtered)} 集已确认无资源），"
-                "跳过搜索，到期后自动重试",
-                touch_last_scan_at=True,
-            )
         # 无遗漏 → 短路结束（消灭 P3 空跑）
         _phase_skip_remaining(phases, "search")  # 后续阶段未执行 → skipped
         return await _finish(
@@ -1537,9 +1421,6 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
     enqueue_limited = False  # A4：全量模式限批触发标记（停止遍历后续分享/文件）
     unmatched_files: list[str] = []  # 未匹配文件名样例（至多收集 3 个，供 message 定位）
     share_info_ok = share_info_fail = walk_fail = tried = 0
-    # 影视下载两队列重设计：记录本轮确认「有资源/已入队」的缺失集（_mark_unmatched 用——
-    # 搜过但无资源的集标 unmatched 静默重试，见 §4.1）
-    matched_keys: set[str] = set()
     _phase_start(phases, "match")
     _phase_start(phases, "enqueue")  # 匹配+入队同循环内推进；先统一标 process
     for cand in candidates:
@@ -1656,13 +1537,11 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
             res = await _enqueue(media_id, matched_key, file_name, file_size, share_code, payload)
             if res == "enqueued":
                 enqueued += 1
-                matched_keys.add(matched_key)
                 item = missing_items_by_key.get(matched_key)
                 if item is not None:
                     item["result"] = "enqueued"
             elif res == "existing":
                 existing_skipped += 1  # 防重命中：该集已有任务（视为有资源，不标 unmatched）
-                matched_keys.add(matched_key)
             else:
                 existing_skipped += 1  # conflict（行级并发冲突）视为跳过；不标 matched，
                 #                      防误把并发中任务标 unmatched（下轮会重新入队）
@@ -1674,15 +1553,10 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
     _phase_done(phases, "match")
     _phase_done(phases, "enqueue")
 
-    # 影视下载两队列重设计 §4.1：搜过但无资源的缺失集 → task_queue 标 unmatched + 静默。
-    # 仅 tv 模式（有明确缺失集）且本轮确实搜索过（share_info_ok>0）才标记——搜索服务
-    # 故障/无候选不算（那由 search_status 表达）；movie 全量模式缺集实体不预知，不适用。
+    # queue-flow-rework Task 3：unmatched 静默机制已移除——缺失集搜索失败不再写
+    # status='unmatched' + silent_until，本轮跳过、下轮全局巡检自然重试。
+    # unmatched_marked 保留恒 0（JSON 结构稳定，不再有「本轮新标静默」语义）。
     unmatched_marked = 0
-    if not movie_missing and share_info_ok > 0:
-        try:
-            unmatched_marked = await _mark_unmatched(media_id, missing_keys, matched_keys)
-        except Exception as exc:  # noqa: BLE001  unmatched 落库失败不阻断巡检
-            logger.warning("[scan] media=%s 标记 unmatched 失败（不阻断）: %s", media_id, exc)
 
     # 7. 原地 UPDATE 同一条 task_run 终态 + 更新 last_scan_at（独立短事务）——phase: finish
     #     message 缺集语义修复：parts 全空（无候选/无入队/无计数）且缺集 >0 时，
@@ -1710,13 +1584,13 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
         "existing_skipped": existing_skipped,
         "size_filtered": size_filtered,
         "unmatched": unmatched,
-        "unmatched_marked": unmatched_marked,  # 两队列：本轮新标静默的缺失集数（§4.1）
+        "unmatched_marked": unmatched_marked,  # 恒 0（Task 3 静默机制移除后不再新标）
         "non_video": non_video,
         "unrelated_filtered": unrelated_filtered,  # A2：全量模式无关/超集号文件过滤数
         "share_info_ok": share_info_ok,
         "share_info_fail": share_info_fail,
         "walk_fail": walk_fail,
-        "unmatched_silent_skipped": len(silent_filtered),
+        "unmatched_silent_skipped": 0,  # 恒 0（Task 3 静默机制移除，键保留兼容）
     })
     _phase_start(phases, "finish")
     _phase_done(phases, "finish")
