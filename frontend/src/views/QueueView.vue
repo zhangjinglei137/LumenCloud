@@ -104,7 +104,7 @@ function flatStatusColor(row: QueueTaskItem): string | null {
 
 /** 行展示标签：「影视名 - SxxExx」 */
 function rowLabel(row: QueueTaskItem): string {
-  return `${row.title || '该任务'} ${row.episode || ''}`.trim()
+  return `${row.title || '该任务'} - ${row.episode || '—'}`
 }
 
 // ---------- 下载队列 Tab（扁平列表） ----------

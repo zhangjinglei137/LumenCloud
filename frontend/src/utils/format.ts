@@ -119,7 +119,7 @@ export function queueNodeType(node: string | null | undefined): string {
 
 /**
  * TaskQueue 探测层状态 → [中文标签, tag type, 自定义色]
- * 状态色约定：pending 灰 / probing 蓝 / ready 青 / unmatched 灰紫（弱化）/ error 红 / done 绿。
+ * 状态色约定：pending 灰 / probing 蓝 / ready 青 / error 红 / done 绿。
  * Element tag type 无法表达「青」「灰紫」，第三元素为自定义 hex，
  * 由视图层 el-tag color 属性应用（designer Top-5 约定）。
  */

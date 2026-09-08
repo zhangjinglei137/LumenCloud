@@ -2,7 +2,6 @@ import http from './http'
 import { getToken } from './http'
 import axios from 'axios'
 import type {
-  AddQueueTaskRequest,
   ApprovalItem,
   Capacity,
   ChangePasswordRequest,
@@ -23,7 +22,6 @@ import type {
   QueueSortDirection,
   QueueTaskItem,
   QuarkVerifyResult,
-  ScanTaskDetail,
   SettingsResponse,
   TmdbSearchResult,
   User,
@@ -163,16 +161,6 @@ export function skipQueueItemApi(id: number) {
  */
 export function promoteQueueItemApi(id: number) {
   return http.post(`/queue/${id}/promote`).then((r) => r.data)
-}
-
-/** 手动触发单影视探测（TaskQueue 补集） */
-export function probeMediaApi(mediaId: number) {
-  return http.post(`/queue/probe/${mediaId}`).then((r) => r.data)
-}
-
-/** 手动加集（admin 直接指定 SxxExx 入 TaskQueue） */
-export function addQueueTaskApi(body: AddQueueTaskRequest) {
-  return http.post('/queue/tasks', body).then((r) => r.data)
 }
 
 /** 排序（调整准入顺序；direction=up/down/top，移动端降级上下移按钮同源） */
@@ -315,15 +303,6 @@ export function listLogsApi(params: {
     Object.entries(params).filter(([, value]) => value !== undefined && value !== null && value !== ''),
   )
   return http.get<LogItem[]>('/logs', { params: query }).then((r) => r.data)
-}
-
-/**
- * 巡检任务详情（GET /api/logs/{id}）。
- * 返回 ScanTaskDetail：含 5 阶段 phases 与结果明细 scan_detail。
- * 后端未完成改造时可能返回 404/缺字段，由调用方兜底展示。
- */
-export function getScanTaskDetailApi(id: number) {
-  return http.get<ScanTaskDetail>(`/logs/${id}`).then((r) => r.data)
 }
 
 // ---------- 通知 ----------
