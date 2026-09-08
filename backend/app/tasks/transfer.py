@@ -155,13 +155,15 @@ async def _ensure_download_name(dq_id: int, media_id: int, episode: str,
     - 计算源：media.title / media.media_type + episode_key，规则原样复用
       _format_download_name（「影视名 - SxxExx - 第 N 集」，对齐 n8n）；
     - 落库用条件更新 WHERE status='transferring'（rowcount 门控，CAS 防重写）：
-      并发方（recovery 超时回退 / 人工 retry）已变动 → 命中 0 行 → 返回 None，
-      沿用原始名继续（后续 _commit_downloading 的同类 CAS 会兜底冲突处理）；
+      并发方（recovery 超时回退 / 人工 retry）已变动 → 命中 0 行 → **回读该行
+      当前 download_name**：并发方已写入则返回之（rename/out 与并发方保持一致，
+      防命名分叉）；行被重置且无 download_name → 返回 None（沿用原始名兜底）；
     - 重试幂等：调用方仅在 download_name 为空时调用本函数；已生成则跳过——
       绝不重复格式化/改名（改名动作由 _get_link_wait_visible(rename_to=...) 完成，
       这里只负责计算与落库）。
 
-    返回格式化结果（CAS 命中）或 None（CAS 未命中 / 无可格式化名）。
+    返回格式化结果（CAS 命中）或回读的已落库名 / None（CAS 未命中且行内无
+    download_name / 无可格式化名）。
     """
     async with async_session() as s:
         media = await s.get(Media, media_id)
@@ -182,6 +184,20 @@ async def _ensure_download_name(dq_id: int, media_id: int, episode: str,
                 .values(download_name=formatted, updated_at=now)
             )
     if r.rowcount != 1:
+        # CAS 未命中（并发方已改动该行，如 recovery 回退 / 人工 retry）：
+        # 回读该行当前 download_name——并发方已写入则返回之，rename/out 与其
+        # 保持一致（不返回 None 导致 aria2 out / DB download_name / quark_path
+        # 三方命名分叉）；行被重置且无 download_name（recovery 只回退状态未写名）
+        # → 返回 None 沿用原始名（保守兜底，后续 _commit_downloading 同类 CAS
+        # 兜底冲突处理）。
+        async with async_session() as s:
+            row = await s.get(DownloadQueue, dq_id)
+        if row is not None and row.download_name:
+            logger.info(
+                "[transfer] 转存后 download_name CAS 未命中，回读已落库名: %s",
+                row.download_name,
+            )
+            return row.download_name
         return None
     logger.info("[transfer] 转存后生成 download_name: %s", formatted)
     return formatted

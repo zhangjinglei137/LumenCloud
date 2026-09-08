@@ -1040,3 +1040,66 @@ def test_transfer_retry_reuses_persisted_download_name(db, env, monkeypatch):
     dq = run(read_row(db, DownloadQueue, dq_id))
     assert dq.download_name == "旧轮保留名.mkv"
     assert dq.quark_path == "/quark/旧轮保留名.mkv"
+
+
+def test_ensure_download_name_cas_miss_rereads_persisted_name(db, env, monkeypatch):
+    """CAS 未命中（行状态非 transferring，并发方已回退/写入）→ 回读行为：
+    - 行内已有并发方写入的 download_name → 返回该名（不返回 None，防命名分叉）；
+    - 行被重置且无 download_name → 返回 None（沿用原始名，保守兜底）。"""
+    patch_db(monkeypatch, db)
+    mid, dq_id = run(seed_pending(db, file_name="ep.mkv", episode="S01E01"))
+
+    # 分支一：行内无 download_name（如 recovery 只回退状态未写名）→ None
+    assert run(transfer_mod._ensure_download_name(
+        dq_id, mid, "S01E01", "ep.mkv")) is None
+
+    # 分支二：并发方已写入 download_name（状态仍非 transferring → 更新必 miss）
+    async def _concurrent_write():
+        async with db() as s:
+            await s.execute(
+                update(DownloadQueue).where(DownloadQueue.id == dq_id)
+                .values(download_name="并发方写入名.mkv", updated_at=_now())
+            )
+            await s.commit()
+    run(_concurrent_write())
+
+    assert run(transfer_mod._ensure_download_name(
+        dq_id, mid, "S01E01", "ep.mkv")) == "并发方写入名.mkv"  # 回读并发方已落库名
+
+
+def test_transfer_cas_miss_uses_persisted_download_name(db, env, monkeypatch):
+    """链级 CAS 未命中：save 受理期间并发方回退状态并写入 download_name →
+    _ensure_download_name 回读该名，rename_to / aria2 out 均用并发方已落库名
+    （不落原始名造成命名分叉）；提交阶段 CAS 冲突 → 清理孤儿 aria2 任务。"""
+    patch_db(monkeypatch, db)
+    mid, dq_id = run(seed_pending(db, file_name="ep.mkv"))
+
+    async def _concurrent_revert():
+        async with db() as s:
+            await s.execute(
+                update(DownloadQueue).where(DownloadQueue.id == dq_id)
+                .values(status="pending", download_name="并发方写入名.mkv",
+                        retry_count=1, updated_at=_now())
+            )
+            await s.commit()
+
+    orig_save = env["cloudsaver"].save
+
+    async def save_with_race(params):
+        res = await orig_save(params)
+        await _concurrent_revert()
+        return res
+
+    env["cloudsaver"].save = save_with_race
+
+    run(transfer_mod.process_transfer_queue())
+
+    # 命名沿用并发方已落库名（rename_to / aria2 out 均非原始名 ep.mkv）
+    assert env["alist"].rename_calls == [
+        ("/quark/ep.mkv", "并发方写入名.mkv", True)
+    ]
+    assert len(env["aria2"].add_uri_calls) == 1
+    _, kwargs = env["aria2"].add_uri_calls[0]
+    assert kwargs["out"] == "并发方写入名.mkv"
+    # 提交阶段 CAS 冲突 → best-effort 清理已提交的孤儿 aria2 任务（P2-4 同语义）
+    assert env["aria2"].removed == ["gid-1"]
