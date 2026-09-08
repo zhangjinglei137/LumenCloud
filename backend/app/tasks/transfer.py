@@ -715,13 +715,14 @@ async def _read_reserved() -> int:
     自动计入、离开集合（→done/failed/downloading/回退 pending）自动释放，无需记账。
     """
     async with async_session() as s:
-        return (
-            await s.scalar(
-                select(func.coalesce(func.sum(DownloadQueue.file_size), 0)).where(
-                    DownloadQueue.status.in_(_INFLIGHT_STATUSES)
-                )
+        total = await s.scalar(
+            select(func.coalesce(func.sum(DownloadQueue.file_size), 0)).where(
+                DownloadQueue.status.in_(_INFLIGHT_STATUSES)
             )
-        ) or 0
+        )
+    # PG 下 SUM(NUMERIC) 返回 decimal.Decimal；统一转 int（字节计），否则下游
+    # `reserved + file_size` → capacity.check() 里 float + Decimal TypeError
+    return int(total or 0)
 
 
 async def _preflight_quark_mount(dq_id, media_id, episode, file_name, retry_snapshot,
@@ -1136,13 +1137,13 @@ async def _try_admit_one(t0) -> str:
 
 async def _read_reserved_in_tx(s) -> int:
     """在调用方事务内读 reserved 聚合（事务级锁已获取时读到最新已提交 in-flight）。"""
-    return (
-        await s.scalar(
-            select(func.coalesce(func.sum(DownloadQueue.file_size), 0)).where(
-                DownloadQueue.status.in_(_INFLIGHT_STATUSES)
-            )
+    total = await s.scalar(
+        select(func.coalesce(func.sum(DownloadQueue.file_size), 0)).where(
+            DownloadQueue.status.in_(_INFLIGHT_STATUSES)
         )
-    ) or 0
+    )
+    # 同 _read_reserved：PG 下 SUM 为 Decimal，统一转 int 防下游 float+Decimal
+    return int(total or 0)
 
 
 async def _admit_batch() -> None:
