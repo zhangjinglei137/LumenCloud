@@ -84,11 +84,11 @@ git commit -m "refactor(scan): 巡检入队只写 task_queue，移除同步 prom
 - Consumes: 现有 `_mark_unmatched` 调用点。
 - Produces: 缺失集搜索失败后**不再**写 `unmatched` 状态或 `silent_until`；本轮跳过、下轮巡检自然重试。`TaskQueue` 状态集收敛为 `pending/ready/error/done`。
 
-- [ ] **Step 1: 写失败测试**：改写 `test_scan_silent_filter.py`：断言静默过滤不再生效（缺失集可在下轮巡检重新入队），`silent_until` 不被写入。
-- [ ] **Step 2: 运行确认失败**：`cd backend && python -m pytest tests/test_scan_silent_filter.py -q`
-- [ ] **Step 3: 修改实现**：删除/短路 `_mark_unmatched` 中写 `status="unmatched"+silent_until` 的分支（函数保留为空操作或直接移除调用点）；`probing` 状态不再产生。
-- [ ] **Step 4: 全量运行** `tests/test_scan_silent_filter.py` + `test_scan_baseline.py` + `test_scan_run_phases.py` 通过。
-- [ ] **Step 5: Commit**
+- [x] **Step 1: 写失败测试**：改写 `test_scan_silent_filter.py`：断言静默过滤不再生效（缺失集可在下轮巡检重新入队），`silent_until` 不被写入。
+- [x] **Step 2: 运行确认失败**：`cd backend && python -m pytest tests/test_scan_silent_filter.py -q`
+- [x] **Step 3: 修改实现**：删除/短路 `_mark_unmatched` 中写 `status="unmatched"+silent_until` 的分支（函数保留为空操作或直接移除调用点）；`probing` 状态不再产生。
+- [x] **Step 4: 全量运行** `tests/test_scan_silent_filter.py` + `test_scan_baseline.py` + `test_scan_run_phases.py` 通过。
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/app/tasks/scan.py backend/tests/test_scan_silent_filter.py
