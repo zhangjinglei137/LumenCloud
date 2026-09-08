@@ -527,13 +527,11 @@ async def _walk_share(share_code: str, info: dict, max_depth: int = 4,
         - 深度 > max_depth → 停止下钻；单次 share-list 失败 try/except 跳过该目录继续。
     服务端友好：每条 share-list 调用之间 asyncio.sleep(0.3)。
 
-    size 处理（递归内层文件 size 字段可能缺失，阶段 1 Q2 结论 3）：
-        - 优先取 it.size / it.fileSize；缺失（0 或 None）时：
-          a) 该分享顶层仅 1 个条目（单文件/单文件夹分享）且 share-info 有 fileSize → 用分享总大小；
-          b) 否则保留 size=0 并标记 size_unknown=True（fail-closed：未知大小不参与转存决策）。
+    size 处理（cloudSaver share-list 实测不返回单文件 size，阶段 1 Q2 结论 3）：
+        - 优先取 it.size / it.fileSize；缺失（0 或 None）时留 size_unknown=True，
+          待整棵遍历完成后按「分享总大小 / 视频文件数」均摊估算（share_size 缺失
+          时不估算，保持 fail-closed 跳过）
     """
-    top_count = 0  # 根目录条目总数（share-info fileSize 兜底的判定前提）
-    top_done = False
     files: list[dict] = []
     stopped = False
     # P2-12（延后项）：已下钻目录判重（按 pdir_fid 字符串），
@@ -544,7 +542,7 @@ async def _walk_share(share_code: str, info: dict, max_depth: int = 4,
                      or info.get("size") or info.get("totalSize") or 0)
 
     async def list_dir(pdir_fid: str, depth: int, rel_path: str) -> None:
-        nonlocal top_count, top_done, stopped
+        nonlocal stopped
         if stopped:
             return
         if pdir_fid in visited:
@@ -574,9 +572,6 @@ async def _walk_share(share_code: str, info: dict, max_depth: int = 4,
         items: list[dict] = [
             x for x in (data.get("list") or []) if isinstance(x, dict)
         ]
-        if not top_done:
-            top_count = len(items)
-            top_done = True
 
         for it in items:
             if stopped:
@@ -598,9 +593,11 @@ async def _walk_share(share_code: str, info: dict, max_depth: int = 4,
                 continue
             size = int(it.get("size") or it.get("fileSize") or 0)
             size_unknown = size <= 0
-            if size_unknown and top_count == 1 and share_size > 0:
-                size = share_size  # 单条目分享：文件缺失大小用分享总大小兜底
-                size_unknown = False
+            # 移除「顶层单条目 → 分享总大小兜底」：cloudSaver share-list 实测不返回
+            # 单文件 size（条目仅 fileId/fileIdToken/fileName/isFolder），单顶层文件夹
+            # 分享会把分享总大小（如 361GB）赋给每个文件 → 5GB 上限误杀真实合理的单集
+            # （凡人修仙传 190.mkv 案例）。未知大小统一留待 walk 完成后按
+            # 「分享总大小 / 文件数」均摊估算（见函数末尾）。
             files.append({
                 "file_name": name,
                 "file_size": size,
@@ -615,6 +612,23 @@ async def _walk_share(share_code: str, info: dict, max_depth: int = 4,
                 logger.info("[scan] %s 文件数达上限 %s，停止遍历", share_code, max_files)
 
     await list_dir("", 0, "")
+
+    # 均摊估算：cloudSaver share-list 实测不返回单文件 size，对 size_unknown 文件用
+    # share-info 总大小 / 视频文件数估算（4K 剧集各集大小相对均匀，361GB/190≈1.9GB，
+    # 偏差对单集可接受）。share_size 缺失时不估算 → 保持 size_unknown=True 走
+    # fail-closed 跳过（语义不变，宁缺勿滥仍对「完全无大小信息」生效）。
+    est_targets = [f for f in files if f.get("size_unknown")]
+    if est_targets and share_size > 0 and files:
+        estimated = max(1, share_size // len(files))
+        for f in est_targets:
+            f["file_size"] = estimated
+            f["size_unknown"] = False
+            f["size_estimated"] = True
+        logger.info(
+            "[scan] %s %d 个文件 size 缺失，按分享总大小 %d / %d 文件均摊估算 %d 字节/文件",
+            share_code, len(est_targets), share_size, len(files), estimated,
+        )
+
     logger.info("[scan] share %s 递归遍历完成：%d 个文件", share_code, len(files))
     return files
 

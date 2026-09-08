@@ -2,8 +2,10 @@
 
 覆盖：
 - _walk_share：share-list 递归目录树（根 → 文件夹 → 具体文件），断言收集到的
-  file_id / fid_token / size / path 正确；size 缺失（0/None）→ size_unknown 标记
-- _walk_share：单条目分享 size 缺失时用 share-info fileSize 兜底（结论 3 case a）
+  file_id / fid_token / size / path 正确；大小缺失（0/None）→ walk 完成后按
+  「分享总大小 / 文件数」均摊估算（size_estimated=True，见 test_scan_walk_size.py）
+- _walk_share：share-size 缺失（share-info 无 fileSize）→ 无法估算 → size_unknown
+  保持 True → fail-closed 跳过
 - _walk_share：子目录 share-list 失败 → 跳过该分支，其余文件仍收集
 - _enqueue_payload：G1 修复——info 自带顶层 fids（文件夹 fid）时仍输出「具体文件」fids
 """
@@ -75,10 +77,12 @@ def test_walk_share_recurses_into_folder(monkeypatch):
     assert f1["path"] == "流浪地球2(2023)4K/S01E01.mkv"  # 相对路径含父目录
     assert f1["size_unknown"] is False
 
-    # size 缺失且顶层 2 个条目（不满足单条目兜底）→ size=0 + size_unknown=True
+    # size 缺失 → walk 完成后均摊估算（share-info 总大小 9999 / 3 个文件 = 3333），
+    # 不再虚报（旧兜底把总大小赋给单个文件会误杀合理文件）
     f2 = by_id["file_2"]
-    assert f2["file_size"] == 0
-    assert f2["size_unknown"] is True
+    assert f2["file_size"] == 3333
+    assert f2["size_unknown"] is False
+    assert f2["size_estimated"] is True
 
     pic = by_id["pic_file"]
     assert pic["path"] == "海报.jpg"  # 根目录文件 path 即文件名
