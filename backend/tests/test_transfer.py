@@ -12,8 +12,9 @@ aria2/cloudsaver/alist/capacity/notifier/scrape_runner/async_session），
   容量异常（CapacityUnavailable）→ 保持 pending 且 quota_reject_count 不变 + flow_error
 - 阶段 B：save 连续失败 3 次 → failed + retry_count=3
 - 容量预算并发（§5）：准入无并发数上限（唯一约束=网盘容量）；reserved 聚合计入容量 check
-- GID 校验：tell_active 返回陌生 comment 任务 → 整批跳过 + 不转存 + flow_error；
-  本系统 comment 任务 → 不阻断正常转存提交；tell_active 故障 → fail-closed
+- GID 校验：tell_active/tell_waiting 返回陌生 gid 任务 → 告警 + 跳过本轮（不转存 +
+  flow_error），陌生任务消失后下轮自动续跑（不整批停摆）；本系统已签发 gid 任务
+  → 不阻断正常转存提交；tell_active 故障 → 告警 + 跳过本轮
 - aria2 回调推进（§6.2）：trigger_download_complete 反查 gid → downloading→scrape；
   幂等（二次 False）；未知 gid → False
 - P2：aria2 落盘名 = dq.download_name（缺失回退原始名）
@@ -633,21 +634,31 @@ def test_reserved_aggregation_included_in_capacity_check(db, env, monkeypatch):
 # 阶段 B：GID 来源校验兜底（§12.2 简化版）
 # ---------------------------------------------------------------------------
 
-def test_gid_source_check_blocks_foreign_task(db, env, monkeypatch):
-    """存在陌生 aria2 活动任务（gid 不在本系统 download_queue 已签发集合）→ 整批跳过
-    + 不转存 + quota/retry 计数不变。"""
+def test_gid_source_check_skips_round_then_resumes(db, env, monkeypatch):
+    """陌生 aria2 活动任务（gid 不在本系统 download_queue 已签发集合）→ 告警 + 跳过本轮
+    （不转存、不 ++quota_reject、不耗 retry、非抛错挂起）；陌生任务消失后下一轮自动
+    恢复准入（下轮续跑，一过性陌生任务不再造成整批永久停摆）。"""
     patch_db(monkeypatch, db)
     mid, dq_id = run(seed_pending(db))
     env["aria2"].actives = [{"gid": "n8n-gid", "status": "active", "comment": "n8n:legacy"}]
 
+    # 第一轮：存在陌生任务 → 告警 + 本轮跳过（_admit_batch 正常返回，不抛错不挂起）
     run(transfer_mod.process_transfer_queue())
 
     dq = run(read_row(db, DownloadQueue, dq_id))
-    assert dq.status == "pending"            # 不处理
+    assert dq.status == "pending"            # 本轮不处理
     assert dq.quota_reject_count == 0        # 不 ++ quota_reject
     assert dq.retry_count == 0               # 不耗 retry
     assert env["cloudsaver"].save_calls == []  # 不转存
     assert any(e.event_type == "flow_error" for e in env["notifier"].events)
+
+    # 第二轮：陌生任务消失（下载完成/被人工移除）→ 下轮续跑，正常准入转存
+    env["aria2"].actives = []
+    run(transfer_mod.process_transfer_queue())
+
+    dq = run(read_row(db, DownloadQueue, dq_id))
+    assert dq.status == "downloading"
+    assert len(env["cloudsaver"].save_calls) == 1
 
 
 def test_gid_source_check_accepts_known_gid(db, env, monkeypatch):

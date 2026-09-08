@@ -1283,8 +1283,8 @@ async def _admit_batch() -> None:
          （null pending 时若先空跑返回，ready 任务将永不取件，下载停摆）。
       1. 准入唯一约束 = 网盘容量（不再设并发数上限）：每轮准入数量 = 容量可容纳数；
          容量不足 → quota_wait 按网盘空间排队（空间释放后由下轮入口唤醒重试）。
-      2. GID 来源校验（§12.2 简化版）整批一次：存在陌生 aria2 活动/等待任务 → 整批
-         停止（fail-closed，防 n8n 误启动双转存）。
+      2. GID 来源校验（§12.2 简化版）整批一次：存在陌生 aria2 活动/等待任务 → 告警
+         并跳过本轮（下轮续跑，防 n8n 误启动双转存；一过性陌生任务不造成整批停摆）。
       3. 准入循环内每任务走 _try_admit_one；容量不足/容量不可用/任务失败回退后停止
          本批（等价原版一次处理一个 + 续跑语义，下一轮 job/事件续跑）。
     """
@@ -1360,10 +1360,12 @@ async def _admit_batch() -> None:
             logger.info("[transfer] 无 pending 任务待转存，本轮空跑")
             return
 
-    # 2) GID 来源校验兜底（§12.2）：存在陌生 aria2 活动/等待任务 → 整批跳过并
-    #    告警（不处理、不 ++quota_reject_count；防 n8n 被误启动时的双转存）。
+    # 2) GID 来源校验兜底（§12.2）：存在陌生 aria2 活动/等待任务 → 告警并跳过本轮
+    #    （不处理、不 ++quota_reject_count；防 n8n 被误启动时的双转存）。陌生任务
+    #    消失后下轮自动续跑——一过性外来任务不再造成整批永久停摆（queue-flow-rework
+    #    Task 5 降级：由 fail-closed 改为「告警 + 本轮跳过 + 下轮续跑」）。
     #    P2-6（council）：合并校验 active + waiting 队列——waiting 中的陌生任务同样
-    #    代表排队中的双转存，仅校验 active 会漏检；任一调用异常仍走 fail-closed。
+    #    代表排队中的双转存，仅校验 active 会漏检；任一调用异常同样告警 + 跳过本轮。
     #    判定口径（2026-09 修订，oracle 评审）：不依赖 aria2 comment——实测 aria2
     #    1.36.0 静默丢弃 addUri 的 comment option（getOption/tellStatus 均读不到），
     #    comment 恒空会导致自家任务也被判陌生、转存永久停摆。改为 **DB gid 白名单**：
@@ -1375,9 +1377,9 @@ async def _admit_batch() -> None:
         tell_waiting = getattr(aria2.client, "tell_waiting", None)
         if tell_waiting is not None:
             actives = actives + (await tell_waiting() or [])
-    except Exception as exc:  # noqa: BLE001  Aria2Unavailable → 无法确认来源，fail-closed
+    except Exception as exc:  # noqa: BLE001  Aria2Unavailable → 无法确认来源，告警 + 跳过本轮
         await _record_alert(
-            None, f"aria2 状态不可用，暂停转存（GID 校验失败）: {exc}", category="gid",
+            None, f"aria2 状态不可用，本轮跳过转存（GID 校验失败，下轮续跑）: {exc}", category="gid",
         )
         return
     async with async_session() as s:
@@ -1396,7 +1398,7 @@ async def _admit_batch() -> None:
             await _record_alert(
                 None,
                 "检测到非本系统 aria2 任务（gid 不在 download_queue 已签发集合中），"
-                "暂停转存（§12.2 冷切换兜底），请人工确认 n8n 未误启动",
+                "本轮跳过转存（下轮自动续跑），请人工确认 n8n 未误启动",
                 category="gid",
             )
             return
