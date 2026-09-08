@@ -172,34 +172,32 @@ def test_full_auth_and_api_flow():
         seed = client.portal.call(_seed_queue_data)
         media_id, failed_dq_id = seed["media_id"], seed["failed_dq_id"]
 
-        # guest 视图：影视任务树（§8.1）——父级 media 聚合 + children 子任务
-        # （下载队列执行视图 node=status），凭据字段任何层级都不返回
+        # guest 视图：扁平任务列表（Task 9 契约）—— 活跃行合一，终态 failed 已剔除
         r = client.get("/api/queue", headers=_auth(guest_tok))
         assert r.status_code == 200
-        tree = r.json()
-        parent = tree[0]
-        assert parent["media_id"] == media_id
-        assert parent["title"] == "脱敏测试影视"
-        # 一 pending 一 failed → 聚合 partial_failed，完成 0 集
-        assert parent["aggregate_status"] == "partial_failed"
-        assert parent["total_count"] == 2 and parent["done_count"] == 0
-        child = next(c for c in parent["children"] if c["episode"] == "S01E01")
-        assert isinstance(child["id"], int) and child["node"] == "pending"
-        assert child["node_attempt"] == 0 and child["file_name"] == "f01.mkv"
-        # §8.1 新契约字段：tq_status 缺省（执行视图）、share_code_tail 缩略
-        assert child["tq_status"] is None and child["share_code_tail"] == "XyZq"
-        for p in tree:
+        rows = r.json()
+        assert isinstance(rows, list)
+        row = next((r for r in rows if r["episode"] == "S01E01"), None)
+        assert row is not None
+        assert row["media_id"] == media_id
+        assert row["title"] == "脱敏测试影视"
+        assert row["status"] == "pending"
+        assert row["node"] == "pending"
+        assert row["file_name"] == "f01.mkv"
+        # 扁平契约：无树字段、无凭据
+        for r in rows:
+            assert "children" not in r and "aggregate_status" not in r and "scan_tasks" not in r
             for f in _SENSITIVE_QUEUE_FIELDS:
-                assert f not in p and all(f not in c for c in p["children"])
+                assert f not in r
 
-        # admin 视图：与 guest 同构（L8 树 DTO 白名单），share_code 亦不掩码返回
+        # admin 视图：与 guest 同构（扁平白名单），share_code 亦不掩码返回
         r = client.get("/api/queue", headers=_auth(admin_tok))
         assert r.status_code == 200
-        a_tree = r.json()
-        assert a_tree[0]["media_id"] == media_id
-        for p in a_tree:
+        a_rows = r.json()
+        assert isinstance(a_rows, list)
+        for r in a_rows:
             for f in _SENSITIVE_QUEUE_FIELDS:
-                assert f not in p and all(f not in c for c in p["children"])
+                assert f not in r
 
         # media 详情：episode_state 凭据分级（episode_state 按 updated_at/id 倒序，
         # 同更新时间时后插入的在先，故按 episode 索引断言）
@@ -333,7 +331,7 @@ def test_full_auth_and_api_flow():
         )
         # retry 重置为 pending + retry_count 归零（download_queue 为防重权威源）
         r = client.get("/api/queue", headers=_auth(admin_tok))
-        by_ep = {c["episode"]: c for p in r.json() for c in p.get("children", [])}
+        by_ep = {row["episode"]: row for row in r.json()}
         assert by_ep["S01E02"]["node"] == "pending"
 
         # ---------- 通知铃铛 ----------

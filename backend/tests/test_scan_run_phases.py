@@ -569,8 +569,8 @@ def test_logs_detail_media_deleted_title_none(_router_db):
 
 
 def test_queue_scan_tasks_latest_only_and_orphan_empty(_router_db):
-    """GET /api/queue：真实 media 父级 scan_tasks=最近 1 条巡检摘要（批量取最新）；
-    孤儿父级（media 不存在）scan_tasks=[]。"""
+    """GET /api/queue：扁平任务列表无 scan_tasks/children 等树字段；
+    孤儿 media_id 直接以扁平原样返回。"""
     from app.routers.queue import list_queue
 
     now = _now()
@@ -581,13 +581,13 @@ def test_queue_scan_tasks_latest_only_and_orphan_empty(_router_db):
             s.add(media)
             await s.flush()
             mid = media.id
-            # 分集子任务驱动父级出现（download_queue 为两队列树数据源，§8.1）
+            # 活跃 download_queue 行直接出现在扁平列表中
             s.add(DownloadQueue(media_id=mid, episode="S01E01", status="pending",
                                 file_name="S01E01.mkv", file_size=1024,
                                 share_code="sc", stoken="s", receive_code="r",
                                 fids="[]", fid_tokens="[]", folder_id="f",
                                 updated_at=now))
-            # 两条巡检：旧 + 新
+            # 巡检记录不影响队列列表展示
             s.add(TaskRun(task_type="scan_media", media_id=mid, status="success",
                           message="旧巡检", started_at=now - timedelta(days=1),
                           duration_seconds=3.0))
@@ -609,16 +609,16 @@ def test_queue_scan_tasks_latest_only_and_orphan_empty(_router_db):
         async with _router_db() as s:
             rows = await list_queue(user=MagicMock(), session=s, limit=100, offset=0)
             by_id = {r["media_id"]: r for r in rows}
+            # 真实 media 行以扁平原样返回，无树字段
             parent = by_id[mid]
-            assert "scan_tasks" in parent
-            assert len(parent["scan_tasks"]) == 1  # 仅最近 1 条
-            task = parent["scan_tasks"][0]
-            assert task["message"] == "正在巡检"      # started_at 最新（running 中间态可见）
-            assert task["status"] == "running"
-            assert task["duration_seconds"] is None
-            assert {"id", "status", "message", "started_at", "duration_seconds"} == set(task.keys())
-            # 孤儿父级（合成 media_id=None）→ scan_tasks=[]
-            orphan = next(r for r in rows if r["media_id"] is None)
-            assert orphan["scan_tasks"] == []
+            assert parent["title"] == "测试剧"
+            assert parent["episode"] == "S01E01"
+            assert "scan_tasks" not in parent
+            assert "children" not in parent
+            assert "aggregate_status" not in parent
+            # 孤儿 media_id 直接以扁平原样返回
+            orphan = next(r for r in rows if r["media_id"] == 999999)
+            assert orphan["title"] is None
+            assert orphan["episode"] == "S99E99"
 
     run(_case())
