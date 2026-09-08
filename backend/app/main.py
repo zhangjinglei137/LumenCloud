@@ -6,6 +6,7 @@ LumenCloud 最小骨架入口
 """
 import asyncio
 import logging
+import sys
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +20,31 @@ from sqlalchemy import text
 from app.config import settings
 from app.database import async_session, engine, init_db
 from app.scheduler import scheduler
+
+# ---- 生产可观测性（docker logs 必须能见 access log + traceback）----
+# 此前 main.py 未配置 logging：docker logs 只有启动初期 uvicorn 的几行 INFO，
+# 运行中的请求日志与异常 traceback 全不可见，生产问题无法诊断。此处显式把
+# app 各 logger（propagate 到 root）与 uvicorn 日志统一接到 stderr（docker
+# 默认同时捕获 stdout+stderr，stderr 是错误信息最稳落点）。
+#
+# 为何 basicConfig 在 uvicorn CLI 下依然生效：
+# - uvicorn 启动顺序 = 先 import app.main（本文件顶层代码执行）→ 服务器启动时
+#   configure_logging() 用默认 LOGGING_CONFIG 做 dictConfig；
+# - uvicorn 0.34 默认 LOGGING_CONFIG 含 disable_existing_loggers=False 且**不含
+#   root 键**——dictConfig 不会覆盖 root logger 的 handlers 与 level，因此这里
+#   basicConfig 挂上的 stderr StreamHandler 在 uvicorn 重配日志后依旧留存；
+# - 不重复挂 handler：uvicorn.error 经父级 uvicorn 的 default handler（stderr）、
+#   uvicorn.access 经自带 access handler（stdout）各就各位；下文仅把三个
+#   uvicorn logger 的 propagate 打开作兜底——若部署以 --log-config 移除了上述
+#   handler，日志仍会上溯到 root 的 stderr handler，不丢失；dictConfig 仅覆盖
+#   显式列出的 logger，无双写（access 的 propagate 会被默认配置改回 False）。
+logging.basicConfig(
+    level=logging.INFO,
+    stream=sys.stderr,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+for _name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+    logging.getLogger(_name).propagate = True
 
 logger = logging.getLogger(__name__)
 

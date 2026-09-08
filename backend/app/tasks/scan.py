@@ -187,6 +187,9 @@ def _result_detail_skeleton(failed_phase: str | None = None,
         "share_info_ok": 0,
         "share_info_fail": 0,
         "walk_fail": 0,
+        # 静默 unmatched 预过滤（§4.1 效率优化）：本轮因静默期（已确认无资源）跳过
+        # 搜索的缺失集数；无静默则为 0（结构稳定键，JSON 键全集固定）
+        "unmatched_silent_skipped": 0,
         "missing_items": [],
     }
 
@@ -1294,15 +1297,51 @@ async def _scan_one(media_id: int) -> int | None:
     except Exception as exc:  # noqa: BLE001
         logger.warning("[scan] media=%s done 防重解除失败（不阻断巡检）: %s", media_id, exc)
 
+    # 2c. 静默 unmatched 预过滤（两队列 §4.1 效率优化，对齐 n8n「解析遗漏集」搜索前
+    #     排除已派发/静默中的集）：上一轮搜索确认无资源的缺失集已被 _mark_unmatched
+    #     标 status='unmatched' + silent_until（默认 2 天），静默期内不再重复搜索+walk
+    #     （每轮 80 分享探测 + 189 文件遍历的浪费），到期后由 probe 执行器恢复 pending
+    #     重新探测。仅 tv 模式（有明确缺失集键）适用；movie/tv 未收录全量模式
+    #     （movie_missing，episode=文件名/实体未知）不适用，保持原行为。
+    #     预过滤是软优化：查询失败仅告警，缺失集照常搜索，绝不阻断巡检。
+    silent_filtered: set[str] = set()
+    if not movie_missing and missing_keys:
+        try:
+            async with async_session() as s:
+                silent_eps = (
+                    await s.execute(
+                        select(TaskQueue.episode).where(
+                            TaskQueue.media_id == media_id,
+                            TaskQueue.status == "unmatched",
+                            TaskQueue.silent_until > _now(),
+                        )
+                    )
+                ).scalars().all()
+            silent_filtered = {ep for ep in silent_eps if ep in missing_keys}
+            if silent_filtered:
+                missing_keys.difference_update(silent_filtered)
+                logger.info(
+                    "[scan] media=%s 静默期跳过 %s 个缺失集搜索: %s",
+                    media_id, len(silent_filtered), sorted(silent_filtered),
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[scan] media=%s 静默 unmatched 预过滤查询失败（不阻断，照常搜索）: %s",
+                media_id, exc,
+            )
+
     # scan_detail 装配：拿到 aired-only 后的 Emby 基线即可填充 missing_items
     # （每个缺失集 episode → result 初始 not_found；入队成功后改 enqueued）。
+    # 2c 静默过滤后只装配本轮实际待搜索的缺失集（静默集以 unmatched_silent_skipped
+    # 计数，missing_total/missing_items 不掺入静默集）。
     # 全量模式（movie_missing / tv 未收录软处理）：episode 用文件名；搜索结果在
     # 主循环里实时补入（缺失集实体不预知，missing_total 以基线长度表达 + 动态追加）。
-    missing_total = len(missing)
+    scan_missing = [m for m in missing if m not in silent_filtered]
+    missing_total = len(scan_missing)
     missing_items: list[dict] = []
     missing_items_by_key: dict[str, dict] = {}
     if not movie_missing:
-        for m in missing:
+        for m in scan_missing:
             if m is None:
                 continue
             item = {"episode": m, "result": "not_found"}
@@ -1313,6 +1352,18 @@ async def _scan_one(media_id: int) -> int | None:
     scan_detail["missing_items"] = missing_items
 
     if not missing_keys and not movie_missing:
+        if silent_filtered:
+            # 全部缺失集均处于静默期（已确认无资源）→ 直接收尾，不做搜索+walk；
+            # 静默到期后由 probe 执行器恢复 pending 重新探测（_mark_unmatched 语义）。
+            _phase_skip_remaining(phases, "search")  # 后续阶段未执行 → skipped
+            scan_detail["search_status"] = "skipped"
+            scan_detail["unmatched_silent_skipped"] = len(silent_filtered)
+            return await _finish(
+                "skipped",
+                f"缺失集均在静默期（{len(silent_filtered)} 集已确认无资源），"
+                "跳过搜索，到期后自动重试",
+                touch_last_scan_at=True,
+            )
         # 无遗漏 → 短路结束（消灭 P3 空跑）
         _phase_skip_remaining(phases, "search")  # 后续阶段未执行 → skipped
         return await _finish(
@@ -1502,6 +1553,7 @@ async def _scan_one(media_id: int) -> int | None:
         "share_info_ok": share_info_ok,
         "share_info_fail": share_info_fail,
         "walk_fail": walk_fail,
+        "unmatched_silent_skipped": len(silent_filtered),
     })
     _phase_start(phases, "finish")
     _phase_done(phases, "finish")

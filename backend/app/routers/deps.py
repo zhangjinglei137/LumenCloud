@@ -6,6 +6,8 @@
 - get_current_admin : 依赖 get_current_user 后校验 role=='admin'，否则 403
                       （§9.1 写操作鉴权：retry/approve/invites/settings/media 增删改 强制 admin）
 """
+import logging
+import sys
 from typing import AsyncGenerator, Optional
 
 from fastapi import Depends, HTTPException, Request
@@ -17,11 +19,30 @@ from app.config import _JWT_SECRET, settings
 from app.database import async_session
 from app.models import User
 
+logger = logging.getLogger(__name__)
+
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
-    """提供数据库会话依赖（会话生命周期由 async_sessionmaker 管理）。"""
-    async with async_session() as session:
-        yield session
+    """提供数据库会话依赖（会话生命周期由 async_sessionmaker 管理）。
+
+    **只防护「获取 session」阶段**：构造/连接失败 → 503「数据库不可用」（而非裸
+    500），与 /api/health 的 degraded 语义一致。yield 之后的请求处理阶段异常
+    （含 FastAPI 经依赖 __aexit__ 注入的 RequestValidationError / 端点自身抛出的
+    HTTPException）一律原样透传——若把 try 扩大包裹到整段，body 校验失败（422）
+    会被误转成 503，掩蔽真实语义。
+    """
+    try:
+        _session = async_session()  # async_sessionmaker 惰性构造，不建立连接
+        await _session.__aenter__()  # 真正建连/绑事务的时机，失败在这捕获
+    except Exception as exc:  # noqa: BLE001  DB 会话层故障 → 503
+        logger.error("数据库会话获取失败（返回 503）: %s", exc)
+        raise HTTPException(status_code=503, detail="数据库不可用") from exc
+    try:
+        yield _session
+    finally:
+        # 等价于 async with 的退出语义：正常路径 close，异常路径携带 exc_info
+        # 回滚并继续传播（不吞异常、不改变语义）
+        await _session.__aexit__(*sys.exc_info())
 
 
 # HTTPBearer：auto_error=False → 缺少/格式错误的 Authorization 头返回 None，

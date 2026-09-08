@@ -196,11 +196,15 @@ async def _pending_estimate_gb(session: AsyncSession) -> float | None:
     if TransferQueue is None:
         # 骨架期模型未建
         return None
-    total_bytes = (
-        await session.execute(
-            select(func.coalesce(func.sum(TransferQueue.file_size), 0)).where(
-                TransferQueue.status == "pending"
+    try:
+        total_bytes = (
+            await session.execute(
+                select(func.coalesce(func.sum(TransferQueue.file_size), 0)).where(
+                    TransferQueue.status == "pending"
+                )
             )
-        )
-    ).scalar_one()
+        ).scalar_one()
+    except Exception as exc:  # noqa: BLE001  pending 预估为增强字段，失败不 500
+        logger.warning("读取 pending 预估失败（返回 None）: %s", exc)
+        return None
     return round(total_bytes / _GB, 2)
