@@ -400,8 +400,8 @@ def test_quota_unavailable_keeps_pending_without_inc(db, env, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_pause_blocks_admission_then_resume_allows(db, env, monkeypatch):
-    """暂停（system_config download_queue_paused=true）→ 本轮不取新任务（task_run
-    skipped、无 add_uri、任务保持 pending、quota_wait 不唤醒）；恢复后正常取件。"""
+    """暂停（system_config download_queue_paused=true）→ 本轮不取新任务（不写 task_run、
+    无 add_uri、任务保持 pending、quota_wait 不唤醒）；恢复后正常取件。"""
     patch_db(monkeypatch, db)
     from app.models import SystemConfig
     mid, dq_id = run(seed_pending(db))
@@ -418,16 +418,7 @@ def test_pause_blocks_admission_then_resume_allows(db, env, monkeypatch):
     assert dq.status == "pending"  # 未被取件
     assert env["cloudsaver"].save_calls == []  # 未转存
     assert env["aria2"].add_uri_calls == []
-    # task_run(skipped) 记录暂停语义
-    async def _skipped_msgs():
-        from app.models import TaskRun
-        from sqlalchemy import select
-        async with db() as s:
-            rows = (await s.execute(select(TaskRun).where(
-                TaskRun.status == "skipped", TaskRun.task_type == "transfer",
-            ))).scalars().all()
-            return [r.message for r in rows]
-    assert any("队列已暂停" in m for m in run(_skipped_msgs()))
+    # 暂停空跑不写 task_run（源头去掉，保留服务日志）
 
     # 恢复：正常取件
     run(_set_pause(False))
@@ -694,7 +685,7 @@ def test_gid_check_failure_blocks_round(db, env, monkeypatch):
 
 
 def test_no_pending_is_skipped(db, env, monkeypatch):
-    """空队列 → task_run(skipped)，无副作用。"""
+    """空队列 → 不写 task_run（空跑静默），无副作用。"""
     patch_db(monkeypatch, db)
     run(transfer_mod.process_transfer_queue())
     assert env["cloudsaver"].save_calls == []

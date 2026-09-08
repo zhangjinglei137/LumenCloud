@@ -1205,12 +1205,9 @@ async def _admit_batch() -> None:
         logger.warning("[transfer] 读取下载队列暂停开关失败（按未暂停继续）: %s", exc)
         paused = False
     if paused:
-        async with async_session() as s:
-            await record_task_run(
-                s, "transfer", "skipped", "队列已暂停，本轮不取新任务（在途任务继续完成）",
-                duration_seconds=_time.monotonic() - t0,
-            )
-            await s.commit()
+        # 纯空跑不写 task_run（每分钟高频噪音，前端已有暂停横幅 + 开关状态展示；
+        # 保留服务日志供运维核对 job 存活）
+        logger.info("[transfer] 队列已暂停，本轮不取新任务（在途任务继续完成）")
         return
 
     # 0.5) 释放唤醒 quota_wait → pending（P1 落地，§4.2）。仅未暂停时唤醒（暂停期间
@@ -1254,11 +1251,8 @@ async def _admit_batch() -> None:
             )
         ) or 0
         if not has_pending:
-            await record_task_run(
-                s, "transfer", "skipped", "无 pending 任务待转存",
-                duration_seconds=_time.monotonic() - t0,
-            )
-            await s.commit()
+            # 纯空跑不写 task_run（每分钟高频噪音；保留服务日志供运维核对 job 存活）
+            logger.info("[transfer] 无 pending 任务待转存，本轮空跑")
             return
 
     # 2) GID 来源校验兜底（§12.2）：存在陌生 aria2 活动/等待任务 → 整批跳过并

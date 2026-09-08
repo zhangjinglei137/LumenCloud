@@ -5,7 +5,7 @@
 站内去重：notifications.body 以 "wr#<id> " / "tq#<id> " 前缀标记（P2-4：带空格，
 避免 wr#1% 误命中 wr#10），已推送过的不重复推送
 （body like "wr#{id} %" / "tq#{id} %"，SQLite/PG 均可）。
-空跑无待推送 → task_run(skipped)，不推送（消灭 P1 噪音）。
+空跑无待推送 → 不写 task_run（空跑静默），不推送（消灭 P1 噪音）。
 """
 import logging
 import time
@@ -83,12 +83,15 @@ async def notification_scan_job() -> None:
                 extra={"transfer_queue_id": tq.id, "media_id": tq.media_id},
             ))
 
-        # 3) 记录本次扫描：有推送 → success；空跑 → skipped（P1 不推送）
-        status = "success" if sent else "skipped"
-        message = f"推送 {sent} 条通知" if sent else "无待推送（空跑）"
-        await record_task_run(  # Q8①：真实耗时
-            s, "notify", status, message,
-            duration_seconds=time.monotonic() - t0,
-        )
-        await s.commit()
-        logger.info("[notify] 通知扫描完成: %s", message)
+        # 3) 记录本次扫描：有推送 → success（Q8①：真实耗时）；空跑 → 不写 task_run
+        #    （每 5min 高频噪音，源头去掉而非前端过滤；保留服务日志供运维核对 job 存活）
+        await s.commit()  # notifier 可能已写站内通知（InAppNotifier）；空跑无写入，commit 无害
+        if sent:
+            await record_task_run(
+                s, "notify", "success", f"推送 {sent} 条通知",
+                duration_seconds=time.monotonic() - t0,
+            )
+            await s.commit()
+            logger.info("[notify] 通知扫描完成: 推送 %s 条通知", sent)
+        else:
+            logger.info("[notify] 通知扫描完成: 无待推送（空跑）")
