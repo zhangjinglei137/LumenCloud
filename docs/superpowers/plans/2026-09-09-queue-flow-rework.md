@@ -147,11 +147,11 @@ git commit -m "refactor(transfer): GID 来源校验降级为告警+跳过本轮�
 - Consumes: `_fetch_from_task_queue`（Task 4）、`_admit_batch`（既有）、下载完成/入库 done 事件。
 - Produces: `async def trigger_transfer_consume() -> None` —— 调度一次下载队列消费尝试（内部调 `_fetch_from_task_queue` + `_admit_batch` 有界循环）；供 scan enqueue 成功、library done、quota 释放时 fire-and-forget 调用（复用 `_background` 强引用集合模式）。
 
-- [ ] **Step 1: 写失败测试**：在 `test_capacity.py` 增加用例「入库完成释放容量后触发续跑」：置一个 quota_wait 行、mock 容量充足，调用消费入口，断言 quota_wait → pending → 被取件。
-- [ ] **Step 2: 运行确认失败**：`cd backend && python -m pytest tests/test_capacity.py -q -k resume`
-- [ ] **Step 3: 修改实现**：新增消费触发 helper（并发安全：`asyncio.Lock` 防重入；单 worker）。在 Task 2 的 enqueue 成功路径与 `library_check._finalize_done` 成功后调用它；`transfer.py` 现有 `process_transfer_queue_job`（每分钟兜底）保持不变。
-- [ ] **Step 4: 全量运行** `tests/test_capacity.py`+`test_capacity_alert.py`+`test_library_check.py` 通过。
-- [ ] **Step 5: Commit**
+- [x] **Step 1: 写失败测试**：在 `test_capacity.py` 增加用例「入库完成释放容量后触发续跑」：置一个 quota_wait 行、mock 容量充足，调用消费入口，断言 quota_wait → pending → 被取件。
+- [x] **Step 2: 运行确认失败**：`cd backend && python -m pytest tests/test_capacity.py -q -k resume`
+- [x] **Step 3: 修改实现**：新增消费触发 helper（并发安全：`asyncio.Lock` 防重入；单 worker）。在 Task 2 的 enqueue 成功路径与 `library_check._finalize_done` 成功后调用它；`transfer.py` 现有 `process_transfer_queue_job`（每分钟兜底）保持不变。
+- [x] **Step 4: 全量运行** `tests/test_capacity.py`+`test_capacity_alert.py`+`test_library_check.py` 通过。
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/app/tasks/scan.py backend/app/tasks/library_check.py backend/app/tasks/transfer.py backend/tests/test_capacity.py

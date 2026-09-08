@@ -1,12 +1,13 @@
 # Subagent Progress — queue-flow-rework
 
-- Plan task: Task 5 GID 来源校验降级（告警 + 跳过本轮）
-- OpenSpec task: 3.1 GID 来源校验从 fail-closed 整批停摆降级为「告警 + 跳过本轮」
+- Plan task: Task 6 事件触发下载队列消费 + 容量释放续跑
+- OpenSpec task: 3.2 巡检入队 + 下载完成两处事件触发「下载队列消费尝试」；3.3 下载完成释放容量后自动续跑等待队列
 - Phase: implementing
-- Model: fixer (ses_f7de780faffeL2vD3wFDbRex2M)
+- Model: fixer (ses_f7de19242ffeuWuEkMEOJXypkh)
 - review_mode: standard（风险触发式）
-- baseline: f34edc9c9fbc3d5a9aac37736febddd151940df3
+- baseline: 74f1feabb463258404f31d4051c611619dcff07e
 - 实现提交: pending
 - 审查-修复轮次: 0/1
 - 状态: implementing
-- 前置任务: Task 1 ✅ / Task 2 ✅ / Task 3 ✅ / Task 4 ✅（FIFO 取件完成，test 70 passed）
+- 前置任务: Task 1-5 ✅
+- 衔接: trigger_transfer_consume() = _fetch_from_task_queue + _admit_batch 有界循环；scan enqueue 成功尾部 + library done 路径触发；每分钟 job 兜底保留；asyncio.Lock 防重入
