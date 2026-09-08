@@ -133,6 +133,9 @@ async def _read_cache(tmdb_id: str | int, media_type: str) -> dict[str, Any] | N
             # 影视状态原值（TMDB movie/tv 详情 status 字段；无 → None）
             "tv_status": row.tv_status,
             "status": row.tv_status,
+            # TV 总集数（/3/tv/{id} 的 number_of_episodes；movie/缺失 → None）。
+            # 全量模式集号范围校验（scan A3）数据基础。
+            "number_of_episodes": row.number_of_episodes,
         }
     except Exception as exc:  # noqa: BLE001 缓存不可用降级回源
         logger.warning("tmdb_cache 读取失败（降级回源）: %s", exc)
@@ -146,6 +149,7 @@ async def _upsert_cache(
     poster_path: str | None,
     year: str | None,
     tv_status: str | None = None,
+    number_of_episodes: int | None = None,
 ) -> None:
     """tmdb_cache 幂等 upsert（命中更新 / 未命中新增，updated_at=now）。
 
@@ -155,6 +159,8 @@ async def _upsert_cache(
       status 字段，列名沿用 tv_status 不动，无需迁移）：仅非 None 时覆盖
       （search_multi 等无 status 来源的调用传 None，不覆盖 get_by_tmdb_id
       已落库的状态，防误清）；
+    - number_of_episodes（tv 总集数，movie/无 → None）：仅非 None 时覆盖，
+      语义与 tv_status 一致（search_multi 等无来源的调用不覆盖已落库值）；
     - 缓存层纯优化：失败仅告警（表未建 / DB 不可用等），不阻断调用方。
     """
     try:
@@ -183,6 +189,8 @@ async def _upsert_cache(
             row.year = year_int
             if tv_status is not None:
                 row.tv_status = tv_status
+            if number_of_episodes is not None:
+                row.number_of_episodes = number_of_episodes
             row.updated_at = now
             await session.commit()
     except Exception as exc:  # noqa: BLE001 缓存落盘失败降级（不阻断返回）
@@ -197,13 +205,17 @@ async def get_by_tmdb_id(tmdb_id: str | int, media_type: str) -> dict[str, Any]:
        → 直接返回缓存（不回源）；
     2. 未命中 / 超 7 天 → 回源 GET /3/{movie|tv}/{id}（media_type 决定路径，
        复用 _client_kwargs 出口代理与 config_store api_key 读取）→ 归一化
-       title / poster_path / year → upsert 缓存（updated_at=now）→ 返回。
+       title / poster_path / year / number_of_episodes → upsert 缓存
+       （updated_at=now）→ 返回。
 
-    返回 dict：{tmdb_id, title, media_type, poster_path, year, status, tv_status}。
+    返回 dict：{tmdb_id, title, media_type, poster_path, year, status, tv_status,
+    number_of_episodes}。
     status / tv_status 同值：TMDB movie/tv 详情响应的 status 字段原值
     （movie: Released/In Production/Post Production/Rumored/Planned/Canceled；
     tv: Returning Series/Ended/Canceled/Pilot）；无该字段 → None。
     tv_status 键保留，兼容 emby.py _attach_tmdb_series_status 的读取。
+    number_of_episodes：仅 tv 详情响应有（movie 响应无该字段 → None）；全量模式
+    集号范围校验（scan A3）的数据基础。
 
     异常:
         TMDBUnavailable: 未配置 key / 请求失败 / 响应异常
@@ -250,7 +262,12 @@ async def get_by_tmdb_id(tmdb_id: str | int, media_type: str) -> dict[str, Any]:
     # movie: Released/In Production/Post Production/Rumored/Planned/Canceled；
     # tv: Returning Series/Ended/Canceled/Pilot；无该字段 → None。
     status = payload.get("status")
-    await _upsert_cache(tmdb_id, media_type, title, poster_path, year, tv_status=status)
+    # TV 总集数（仅 tv 详情响应有；movie 响应无该字段 → None）
+    number_of_episodes = payload.get("number_of_episodes")
+    await _upsert_cache(
+        tmdb_id, media_type, title, poster_path, year,
+        tv_status=status, number_of_episodes=number_of_episodes,
+    )
 
     return {
         "tmdb_id": str(tmdb_id),
@@ -260,6 +277,7 @@ async def get_by_tmdb_id(tmdb_id: str | int, media_type: str) -> dict[str, Any]:
         "year": year,
         "status": status,
         "tv_status": status,  # 兼容 emby.py _attach_tmdb_series_status 读取
+        "number_of_episodes": number_of_episodes,
     }
 
 
@@ -335,3 +353,56 @@ async def search_multi(q: str) -> list[dict[str, Any]]:
             )
     logger.info("TMDB 搜索「%s」命中 %d 条", keyword, len(results))
     return results
+
+
+# ---------------------------------------------------------------------------
+# 剧集季内每集首播日期（详情页集数状态 tag 增强字段）
+# ---------------------------------------------------------------------------
+# 进程内 TTL 缓存：详情页同一剧集多集同季只回源一次；缓存层纯优化，任何
+# 读取/回源失败一律降级返回 {}（log warning），绝不把异常抛给详情接口。
+_SEASON_AIR_TTL = 6 * 3600  # 6 小时
+_SEASON_AIR_CACHE: dict[str, tuple[float, dict[int, str | None]]] = {}
+
+
+async def get_tv_season_air_dates(tmdb_id: str | int, season_number: int) -> dict[int, str | None]:
+    """获取 TV 指定季每集的 TMDB 首播日期（详情页集数 tag 的 air_date 数据源）。
+
+    返回 `{episode_number(int): air_date}`，air_date 为 "YYYY-MM-DD" 字符串或 None
+    （TMDB 该集未提供首播日期）。回源 `GET /3/tv/{tmdb_id}/season/{season_number}`，
+    沿用 _base_url/_client_kwargs/api_key 读取/httpx 模式（参考 get_by_tmdb_id）。
+
+    进程内 TTL 缓存（_SEASON_AIR_TTL=6h，key=f"{tmdb_id}:{season_number}"）：
+    命中且未过期直接返回；回源失败/非 200/JSON 异常仅 log warning 并返回 {}
+    ——这是详情页增强字段，任何失败都不能抛异常拖垮详情接口。
+    """
+    key = f"{tmdb_id}:{season_number}"
+    hit = _SEASON_AIR_CACHE.get(key)
+    if hit is not None and _now().timestamp() - hit[0] < _SEASON_AIR_TTL:
+        return hit[1]
+
+    api_key = config_store.get("tmdb_api_key", settings.TMDB_API_KEY)
+    if not api_key:
+        logger.warning("TMDB_API_KEY 未配置，season air_date 降级 {}（season=%s）", season_number)
+        return {}
+
+    url = f"{_base_url()}/3/tv/{tmdb_id}/season/{season_number}"
+    params = {"api_key": api_key, "language": "zh-CN"}
+    try:
+        async with httpx.AsyncClient(**_client_kwargs()) as client:
+            resp = await client.get(url, params=params)
+        if resp.status_code != 200:
+            logger.warning("TMDB season air_date 非 200 响应: %s", resp.status_code)
+            return {}
+        payload = resp.json()
+    except Exception as exc:  # noqa: BLE001  详情页增强字段：任何失败降级 {}，不阻断
+        logger.warning("TMDB season air_date 回源失败（降级 {}）: %s", exc)
+        return {}
+
+    out: dict[int, str | None] = {}
+    for ep in payload.get("episodes") or []:
+        ep_num = ep.get("episode_number")
+        if isinstance(ep_num, int):
+            out[ep_num] = ep.get("air_date")
+    # 仅成功回源才写缓存（失败不缓存空结果，避免临时故障期间长时间拿不到数据）
+    _SEASON_AIR_CACHE[key] = (_now().timestamp(), out)
+    return out

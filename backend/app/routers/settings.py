@@ -39,8 +39,6 @@ _WHITELIST_EXACT = {
     # 影视下载两队列重设计 §4.2：scrape/library 节点独立超时回退阈值（小时）
     "scrape_revert_timeout_hours",
     "library_revert_timeout_hours",
-    # 影视下载两队列重设计 §5.3：下载队列并行上限（默认 3，0=不限）
-    "download_queue_max_concurrent",
     # 影视下载两队列重设计：aria2 / NaSTools hook 回调鉴权密钥（settings 页可配）
     "internal_aria2_webhook_secret",
     "internal_nastools_webhook_token",

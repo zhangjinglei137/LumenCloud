@@ -27,7 +27,7 @@ from app.models import (
     User,
 )
 from app.routers.deps import get_current_admin, get_current_user, get_session
-from app.services import tmdb
+from app.services import emby, tmdb
 from app.services.tmdb import TMDBUnavailable
 
 router = APIRouter()
@@ -125,10 +125,19 @@ def _parse_episode(ep: str) -> tuple[int | None, int | None]:
     return None, None
 
 
-def _episode_dto(row: EpisodeState, is_admin: bool) -> dict:
+def _episode_dto(row: EpisodeState, is_admin: bool,
+                 in_emby_codes: set[str] | None = None,
+                 air_map: dict[tuple[int, int], str | None] | None = None) -> dict:
     """单集状态 DTO（§9.1 脱敏：share_code/aria2_gid/quark_path guest 不返回，
     admin 的 share_code 仅后 4 位）。含前端契约别名字段：
-    status=state、size_gb=GB 值、season/episode_number=解析自 "SxxExx"。"""
+    status=state、size_gb=GB 值、season/episode_number=解析自 "SxxExx"。
+
+    详情页集数状态 tag 增强（in_emby / air_date）：
+    - in_emby: 该集是否已在 Emby 库（由 in_emby_codes 命中判断；None/空 → False）；
+    - air_date: 该集 TMDB 首播日期 "YYYY-MM-DD"（air_map 按 (season, episode_number)
+      查表；非标准集号或空 map → None）。非 tv / 无 tmdb_id / 外部服务故障时调用方
+      传 None → 恒 False / None，绝不因增强字段阻断详情接口。
+    """
     season, episode_number = _parse_episode(row.episode)
     dto = {
         "id": row.id,
@@ -140,6 +149,9 @@ def _episode_dto(row: EpisodeState, is_admin: bool) -> dict:
         "size_gb": round(row.file_size / _GB, 2) if row.file_size else None,  # 前端契约别名（GB）
         "season": season,          # 前端契约别名
         "episode_number": episode_number,  # 前端契约别名
+        "in_emby": bool(in_emby_codes and row.episode in in_emby_codes),
+        "air_date": air_map.get((season, episode_number))
+        if (season is not None and episode_number is not None and air_map) else None,
         "retry_count": row.retry_count,
         "error": row.error,
         "updated_at": row.updated_at,
@@ -173,12 +185,18 @@ def _tq_dto(row: TransferQueue, is_admin: bool) -> dict:
     return dto
 
 
-def _dq_episode_dto(row: DownloadQueue, is_admin: bool) -> dict:
+def _dq_episode_dto(row: DownloadQueue, is_admin: bool,
+                    in_emby_codes: set[str] | None = None,
+                    air_map: dict[tuple[int, int], str | None] | None = None) -> dict:
     """单集状态 DTO（新表 download_queue 行，两队列重构后详情 episode_state 主数据源）。
 
     字段对齐旧 _episode_dto 前端契约：state=status（执行层状态直接沿用），
     size_gb/season/episode_number 由 file_size/episode 推导；§9.1 脱敏同旧表：
     share_code/aria2_gid/quark_path guest 不返回，admin 的 share_code 仅后 4 位。
+
+    in_emby / air_date 语义同 _episode_dto（详情页集数状态 tag 增强字段）：
+    Emby 库内集 in_emby=True；air_date 取 TMDB 首播日期；非 tv/无 tmdb_id/
+    外部服务故障 → 恒 False / None，不阻断详情接口。
     """
     season, episode_number = _parse_episode(row.episode)
     dto = {
@@ -191,6 +209,9 @@ def _dq_episode_dto(row: DownloadQueue, is_admin: bool) -> dict:
         "size_gb": round(row.file_size / _GB, 2) if row.file_size else None,  # 前端契约别名（GB）
         "season": season,          # 前端契约别名
         "episode_number": episode_number,  # 前端契约别名
+        "in_emby": bool(in_emby_codes and row.episode in in_emby_codes),
+        "air_date": air_map.get((season, episode_number))
+        if (season is not None and episode_number is not None and air_map) else None,
         "retry_count": row.retry_count,
         "error": row.error,
         "updated_at": row.updated_at,
@@ -383,7 +404,8 @@ async def create_media(
     admin: User = Depends(get_current_admin),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """admin 手动添加影视（status='tracking', in_emby=False）。"""
+    """admin 手动添加影视（status='tracking'；in_emby 按 Emby 实际收录实时判定，
+    不再硬编码 False——Emby 故障时 fail-open 保持 False，由巡检回写兜底）。"""
     if payload.media_type not in (None, "movie", "tv"):
         raise HTTPException(status_code=422, detail="media_type 仅支持 movie/tv")
 
@@ -421,12 +443,25 @@ async def create_media(
             if poster_path is None:
                 poster_path = meta.get("poster_path")
 
+    # in_emby 实时判定（影视库「未入库」误显示修复）：创建时按 Emby 实际收录写入，
+    # 不再硬编码 False；Emby 故障（未配置/不可达）fail-open 保持 False（由巡检回写
+    # 兜底修正，见 scan._emby_missing_codes）。
+    in_emby = False
+    if payload.tmdb_id is not None:
+        try:
+            in_emby = (await emby.find_emby_id(payload.tmdb_id, payload.title)) is not None
+        except Exception as exc:  # noqa: BLE001  Emby 故障不阻断添加
+            logger.warning(
+                "[media] Emby 收录检查不可用（in_emby=False 放行）tmdb=%s: %s",
+                payload.tmdb_id, exc,
+            )
+
     media = Media(
         title=payload.title.strip(),
         tmdb_id=payload.tmdb_id,
         media_type=payload.media_type,
         status="tracking",
-        in_emby=False,
+        in_emby=in_emby,
         poster_path=poster_path,  # Q2：海报相对路径落库（Emby 订阅场景由 TMDB 回填）
         series_status=series_status,
     )
@@ -480,6 +515,36 @@ async def get_media(
         e for e in es_rows if (e.media_id, e.episode) not in dq_keys
     ]
     episode_rows.sort(key=lambda r: (r.updated_at or datetime.min, r.id), reverse=True)
+
+    # 详情页集数状态 tag 增强（in_emby / air_date）：仅 tv + tmdb_id 才查询外部服务。
+    # Emby 收录集 code 集（in_emby=True 依据）与 TMDB 每集首播日期（air_date 依据，
+    # 进程内 TTL 缓存）。任一外部服务故障 → 对应字段降级（in_emby 全 False /
+    # air_date None），绝不阻断详情接口。
+    in_emby_codes: set[str] = set()
+    air_map: dict[tuple[int, int], str | None] = {}
+    if (media.media_type or "").strip().lower() != "movie" and media.tmdb_id is not None:
+        try:
+            emby_id = await emby.find_emby_id(media.tmdb_id, media.title)
+            if emby_id:
+                eps = await emby.list_episodes(emby_id)
+                in_emby_codes = {str(ep.get("code")) for ep in eps if ep.get("code")}
+        except Exception as exc:  # noqa: BLE001  Emby 故障降级（in_emby 全 False）
+            logger.warning("[media] detail in_emby 查询降级 media=%s: %s", media_id, exc)
+        # TMDB 每集 air_date：只对有标准集号（"SxxExx" 可解析 season）的行涉及季调用
+        seasons = {
+            season for season in (_parse_episode(r.episode)[0] for r in episode_rows)
+            if season is not None
+        }
+        for season in seasons:
+            try:
+                dates = await tmdb.get_tv_season_air_dates(media.tmdb_id, season)
+                for ep_num, air in (dates or {}).items():
+                    air_map[(season, ep_num)] = air
+            except Exception as exc:  # noqa: BLE001  理论不触发（函数内已降级），双保险
+                logger.warning(
+                    "[media] TMDB season air_date 降级 media=%s season=%s: %s",
+                    media_id, season, exc,
+                )
 
     tq_rows = (
         (
@@ -538,7 +603,8 @@ async def get_media(
         **media_dto,
         "media": media_dto,
         "episode_state": [
-            _dq_episode_dto(r, is_admin) if isinstance(r, DownloadQueue) else _episode_dto(r, is_admin)
+            _dq_episode_dto(r, is_admin, in_emby_codes, air_map)
+            if isinstance(r, DownloadQueue) else _episode_dto(r, is_admin, in_emby_codes, air_map)
             for r in episode_rows
         ],
         "transfer_queue": [

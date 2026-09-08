@@ -123,6 +123,22 @@ export const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
     default: '可选，留空 = 直连',
   },
 
+  // ---------- 内部回调鉴权（自动生成，editable_keys 白名单内） ----------
+  internal_aria2_webhook_secret: {
+    label: 'aria2 回调鉴权密钥',
+    desc: 'aria2 下载完成回调（webhook）的鉴权密钥，由系统自动生成，一般无需修改；如确认泄露，可重新填写并同步更新 aria2 侧配置。',
+    placeholder: '不修改可保持原样',
+    default: '自动生成，无需修改',
+    sensitive: true,
+  },
+  internal_nastools_webhook_token: {
+    label: 'NasTools 回调鉴权令牌',
+    desc: 'NasTools 入库完成回调的鉴权令牌，由系统自动生成，一般无需修改；如确认泄露，可重新填写并同步更新 NasTools 侧配置。',
+    placeholder: '不修改可保持原样',
+    default: '自动生成，无需修改',
+    sensitive: true,
+  },
+
   // ---------- PushPlus 通知 ----------
   pushplus_token: {
     label: 'PushPlus 推送令牌',
@@ -209,11 +225,54 @@ export const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
       { value: false, label: '关闭' },
     ],
   },
+
+  // ---------- 下载队列 ----------
+  download_queue_paused: {
+    label: '下载队列全局暂停',
+    desc: '下载队列（执行层）的总闸：开启 = 暂停调度新的下载任务（已在下载中的任务会继续完成）；关闭 = 恢复正常调度。与下载队列页的暂停状态同源。',
+    default: '默认关闭（正常调度）',
+    // 布尔字符串（"true"/"false"），以下拉呈现
+    selectOptions: [
+      { value: true, label: '开启' },
+      { value: false, label: '关闭' },
+    ],
+  },
+  download_queue_max_concurrent: {
+    label: '下载队列最大并发数（已废弃）',
+    desc: '遗留配置：旧版下载队列的并发上限。当前版本已改为容量准入调度机制，该值不再生效，无需修改；仅为兼容历史数据保留，后续版本可能移除。',
+    default: '已废弃，不再生效',
+  },
+  scrape_revert_timeout_hours: {
+    label: '刮削节点超时回退（小时）',
+    desc: '下载队列的子任务在「刮削」节点停留超过该时长仍无进展时，自动回退重试，避免单条任务永久卡死。',
+    placeholder: '如 4',
+    default: '默认 4 小时',
+  },
+  library_revert_timeout_hours: {
+    label: '入库确认超时回退（小时）',
+    desc: '子任务在「入库确认」节点等待超过该时长仍未确认入库时，自动回退重试。',
+    placeholder: '如 6',
+    default: '默认 6 小时',
+  },
 }
 
 /** 取字段元数据；未知键回退为原始键名（保证后端新增键时页面不崩） */
 export function getSettingMeta(key: string): SettingFieldMeta {
-  return SETTING_FIELD_META[key] ?? { label: key, desc: '' }
+  const meta = SETTING_FIELD_META[key]
+  if (meta) return meta
+  // scheduler.<job_id> 为后端动态布尔开关键（PATCH 白名单按前缀放行），
+  // 无法静态枚举，这里统一回退为中文下拉开关，避免显示原始英文键。
+  if (key.startsWith('scheduler.')) {
+    return {
+      label: `定时任务开关（${key.slice('scheduler.'.length)}）`,
+      desc: '该定时任务的独立开关：关闭后对应任务不再自动执行，只保留手动触发。',
+      selectOptions: [
+        { value: true, label: '开启' },
+        { value: false, label: '关闭' },
+      ],
+    }
+  }
+  return { label: key, desc: '' }
 }
 
 /** 服务凭据分组（按 key 前缀），组标题全中文 */
@@ -226,6 +285,15 @@ export const CRED_GROUP_ORDER = [
   'tmdb',
   'pushplus',
   'quark',
+  // 业务参数类键（混在表单内，保持中文组标题）
+  'max',
+  'scan',
+  'episode',
+  'scrape',
+  'library',
+  'capacity',
+  'scheduler',
+  'internal',
 ]
 
 export const CRED_GROUP_LABELS: Record<string, string> = {
@@ -237,4 +305,12 @@ export const CRED_GROUP_LABELS: Record<string, string> = {
   tmdb: '元数据 · TMDB',
   pushplus: '通知 · PushPlus',
   quark: '夸克网盘',
+  max: '文件大小上限',
+  scan: '巡检与防重',
+  episode: '下载任务超时',
+  scrape: '下载队列 · 刮削回退',
+  library: '下载队列 · 入库回退',
+  capacity: '容量管理',
+  scheduler: '定时调度',
+  internal: '内部回调鉴权（自动生成）',
 }

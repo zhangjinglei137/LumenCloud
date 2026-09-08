@@ -64,6 +64,10 @@ export interface EpisodeState {
   share_code_tail?: string | null
   created_at?: string
   updated_at?: string
+  /** 该集是否已在 Emby 媒体库（后端契约新增；未上线时为 undefined，前端按 false 处理） */
+  in_emby?: boolean
+  /** TMDB 首播日期 "YYYY-MM-DD"（后端契约新增；null = 未知/未提供） */
+  air_date?: string | null
   [key: string]: unknown
 }
 

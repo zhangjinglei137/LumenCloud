@@ -11,7 +11,7 @@ aria2/cloudsaver/alist/capacity/notifier/scrape_runner/async_session），
 - 阶段 B：容量 False → 保持 pending + quota_reject_count++ 且 retry_count 不变；
   容量异常（CapacityUnavailable）→ 保持 pending 且 quota_reject_count 不变 + flow_error
 - 阶段 B：save 连续失败 3 次 → failed + retry_count=3
-- 容量预算并发（§5）：max_concurrent 限制准入数（0=不限）；reserved 聚合计入容量 check
+- 容量预算并发（§5）：准入无并发数上限（唯一约束=网盘容量）；reserved 聚合计入容量 check
 - GID 校验：tell_active 返回陌生 comment 任务 → 整批跳过 + 不转存 + flow_error；
   本系统 comment 任务 → 不阻断正常转存提交；tell_active 故障 → fail-closed
 - aria2 回调推进（§6.2）：trigger_download_complete 反查 gid → downloading→scrape；
@@ -491,7 +491,7 @@ def test_save_success_commits_download(db, env, monkeypatch):
     """正常转存链路：save → get_link → add_uri → dq downloading + gid/quark_path 落库。"""
     patch_db(monkeypatch, db)
     mid, dq_id = run(seed_pending(db))
-    env["aria2"].actives = [{"gid": "own", "status": "active", "comment": "lumencloud:1:S01E01"}]
+    env["aria2"].actives = []  # 无活动任务（GID 校验 gid 白名单口径：空列表直接放行）
 
     run(transfer_mod.process_transfer_queue())
 
@@ -574,7 +574,7 @@ def test_transfer_keeps_original_name_without_download_name(db, env, monkeypatch
 
 
 def test_admit_processes_multiple_pending(db, env, monkeypatch):
-    """容量预算并发（§5.3）：一次调用准入多个 pending（默认 max_concurrent=3），
+    """容量预算并发（§5）：一次调用准入全部 pending（准入唯一约束=容量，无并发数上限），
     成功路径不再 spawn process_transfer_queue 续跑（循环内继续取件）。"""
     patch_db(monkeypatch, db)
     ids = []
@@ -595,46 +595,16 @@ def test_admit_processes_multiple_pending(db, env, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 阶段 B：容量预算并发上限（§5.3 max_concurrent）
+# 阶段 B：容量预算并发（§5，准入无并发数上限，唯一约束 = 容量）
 # ---------------------------------------------------------------------------
-
-def test_max_concurrent_limits_admission(db, env, monkeypatch):
-    """max_concurrent=2 → 一次调用只准入 2 个 downloading，其余保持 pending。"""
-    patch_db(monkeypatch, db)
-    monkeypatch.setattr(transfer_mod, "_read_max_concurrent", lambda: 2)
-    for ep in ("S01E01", "S01E02", "S01E03", "S01E04"):
-        run(seed_pending(db, episode=ep))
-
-    run(transfer_mod.process_transfer_queue())
-
-    rows = run(get_all_dq(db))
-    assert sum(1 for r in rows if r.status == "downloading") == 2
-    assert sum(1 for r in rows if r.status == "pending") == 2
-    assert len(env["cloudsaver"].save_calls) == 2
-
-
-def test_max_concurrent_zero_unlimited(db, env, monkeypatch):
-    """max_concurrent=0（不限）→ 全部 pending 一次准入。"""
-    patch_db(monkeypatch, db)
-    monkeypatch.setattr(transfer_mod, "_read_max_concurrent", lambda: 0)
-    for ep in ("S01E01", "S01E02", "S01E03", "S01E04"):
-        run(seed_pending(db, episode=ep))
-
-    run(transfer_mod.process_transfer_queue())
-
-    rows = run(get_all_dq(db))
-    assert {r.status for r in rows} == {"downloading"}
-    assert len(env["cloudsaver"].save_calls) == 4
-
 
 def test_inflight_statuses_exclude_downloading():
     """P1-4（议会裁决）：reserved 口径不含 downloading（已落盘由 used 覆盖，防双重计算）。
 
-    max_concurrent 并行口径（_RUNNING_STATUSES）与 media 处理中判定
-    （_ACTIVE_STATUSES）**保持含 downloading**（另一语义，勿随 reserved 收紧）。"""
+    _ACTIVE_STATUSES（media 处理中判定）**保持含 downloading**（另一语义，勿随
+    reserved 收紧）。"""
     assert transfer_mod._INFLIGHT_STATUSES == ("transferring", "scrape", "library")
     assert "downloading" not in transfer_mod._INFLIGHT_STATUSES
-    assert "downloading" in transfer_mod._RUNNING_STATUSES        # 并行上限口径
     assert "downloading" in transfer_mod._ACTIVE_STATUSES          # media 处理中判定
 
 
@@ -673,7 +643,8 @@ def test_reserved_aggregation_included_in_capacity_check(db, env, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_gid_source_check_blocks_foreign_task(db, env, monkeypatch):
-    """存在陌生 aria2 活动任务 → 整批跳过 + 不转存 + quota/retry 计数不变。"""
+    """存在陌生 aria2 活动任务（gid 不在本系统 download_queue 已签发集合）→ 整批跳过
+    + 不转存 + quota/retry 计数不变。"""
     patch_db(monkeypatch, db)
     mid, dq_id = run(seed_pending(db))
     env["aria2"].actives = [{"gid": "n8n-gid", "status": "active", "comment": "n8n:legacy"}]
@@ -688,9 +659,11 @@ def test_gid_source_check_blocks_foreign_task(db, env, monkeypatch):
     assert any(e.event_type == "flow_error" for e in env["notifier"].events)
 
 
-def test_gid_source_check_accepts_own_comment(db, env, monkeypatch):
-    """本系统 comment（lumencloud: 前缀）的活动任务不阻断转存。"""
+def test_gid_source_check_accepts_known_gid(db, env, monkeypatch):
+    """aria2 活动任务 gid 在本系统 download_queue 已签发集合内（downloading 行）→
+    不阻断转存（2026-09 修订：gid 白名单口径，不依赖 aria2 comment）。"""
     patch_db(monkeypatch, db)
+    run(seed_downloading(db, gid="own-1", file_name="已知剧集.mkv"))
     mid, dq_id = run(seed_pending(db))
     env["aria2"].actives = [{"gid": "own-1", "status": "active", "comment": "lumencloud:9:S02E03"}]
 

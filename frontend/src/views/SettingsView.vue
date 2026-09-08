@@ -35,15 +35,32 @@ const SERVICE_LABELS: Record<string, string> = {
 // 凭据类 key 永不展示（后端契约不返回，这里做纵深防御）
 const SENSITIVE_PATTERN = /token|secret|password|credential|api_key|apikey/i
 
+/**
+ * 内部实现细节 / 运行时状态键：不在设置页展示。
+ * `_` 前缀键（如 _transfer_admission_lock 转存准入锁）为系统内部锁行；
+ * nastools_last_sync_at 为运行时同步时间戳，均由系统自维护，用户无需查看。
+ */
+const HIDDEN_KEYS = new Set(['nastools_last_sync_at'])
+
 const editableKeys = computed<string[]>(() => store.settings?.editable_keys ?? [])
 
 const systemConfig = computed<Record<string, unknown>>(
   () => store.settings?.system_config ?? store.settings?.config ?? {},
 )
 
+/**
+ * 展示配置项 = system_config 全量 − 敏感键 − 内部隐藏键 − 凭据表单键。
+ * 例外：editable_keys 中被 selectOptions 标注的布尔键（scheduler_enabled、
+ * scan_baseline_required 等）不在此排除——它们挪到「系统开关」Tab 以下拉
+ * 呈现，而不是混在服务凭据表单里渲染成文本框。
+ */
 const configEntries = computed<[string, unknown][]>(() =>
   Object.entries(systemConfig.value).filter(
-    ([k]) => !SENSITIVE_PATTERN.test(k) && !editableKeys.value.includes(k),
+    ([k]) =>
+      !k.startsWith('_') &&
+      !HIDDEN_KEYS.has(k) &&
+      !SENSITIVE_PATTERN.test(k) &&
+      !(editableKeys.value.includes(k) && !getSettingMeta(k).selectOptions),
   ),
 )
 
@@ -57,7 +74,8 @@ const businessEntries = computed<[string, unknown][]>(() =>
 
 /**
  * 系统开关：settingsMeta 以 selectOptions 标注的配置项
- * （notify_* 通知开关、scheduler_enabled、scan_baseline_required 等）
+ * （scheduler_enabled、scan_baseline_required、download_queue_paused、
+ * scheduler.* 动态开关等）
  */
 const switchEntries = computed<[string, unknown][]>(() =>
   configEntries.value.filter(([k]) => getSettingMeta(k).selectOptions),
@@ -128,6 +146,9 @@ const savingCredKeys = ref<Set<string>>(new Set())
 const credGroups = computed<{ prefix: string; label: string; keys: string[] }[]>(() => {
   const map = new Map<string, string[]>()
   for (const key of editableKeys.value) {
+    // 布尔开关键（selectOptions 标注）挪到「系统开关」Tab 以下拉呈现，
+    // 不在凭据表单重复渲染为文本框
+    if (getSettingMeta(key).selectOptions) continue
     const prefix = key.split('_')[0] ?? ''
     const list = map.get(prefix)
     if (list) {
@@ -533,22 +554,24 @@ function serviceLabel(key: string): string {
               <div class="cred-field-main">
                 <div class="cred-label-row">
                   <span class="mod-dot" aria-hidden="true" />
-                  <span class="cred-label">{{ getSettingMeta(key).label }}</span>
+                  <!-- label 与问号说明图标绑定为不可拆分的水平整体，防止 flex-wrap 把图标挤到下一行 -->
+                  <span class="cred-label-wrap">
+                    <span class="cred-label">{{ getSettingMeta(key).label }}</span>
+                    <el-tooltip
+                      v-if="getSettingMeta(key).desc"
+                      :content="getSettingMeta(key).desc"
+                      placement="top"
+                      :show-after="200"
+                    >
+                      <el-icon class="desc-icon" aria-hidden="true"><QuestionFilled /></el-icon>
+                    </el-tooltip>
+                  </span>
                   <el-tag v-if="getSettingMeta(key).default" size="small" effect="plain" type="info">
                     {{ getSettingMeta(key).default }}
                   </el-tag>
                   <el-tag v-if="dirtyCredKeys.includes(key)" size="small" type="warning" effect="plain">
                     已修改
                   </el-tag>
-                </div>
-                <div v-if="getSettingMeta(key).desc" class="cred-desc">
-                  <el-tooltip
-                    :content="getSettingMeta(key).desc"
-                    placement="top"
-                    :show-after="200"
-                  >
-                    <el-icon class="desc-icon" aria-hidden="true"><QuestionFilled /></el-icon>
-                  </el-tooltip>
                 </div>
               </div>
               <el-input
@@ -596,15 +619,18 @@ function serviceLabel(key: string): string {
             <div v-else class="config-list">
               <div v-for="[key, value] in businessEntries" :key="key" class="config-item">
                 <div class="config-info">
-                  <span class="config-label">{{ getSettingMeta(key).label }}</span>
-                  <el-tooltip
-                    v-if="getSettingMeta(key).desc"
-                    :content="getSettingMeta(key).desc"
-                    placement="top"
-                    :show-after="200"
-                  >
-                    <el-icon class="desc-icon" aria-hidden="true"><QuestionFilled /></el-icon>
-                  </el-tooltip>
+                  <!-- label 与问号说明图标绑定为不可拆分的水平整体，防止 flex-wrap 把图标挤到下一行 -->
+                  <span class="config-label-wrap">
+                    <span class="config-label">{{ getSettingMeta(key).label }}</span>
+                    <el-tooltip
+                      v-if="getSettingMeta(key).desc"
+                      :content="getSettingMeta(key).desc"
+                      placement="top"
+                      :show-after="200"
+                    >
+                      <el-icon class="desc-icon" aria-hidden="true"><QuestionFilled /></el-icon>
+                    </el-tooltip>
+                  </span>
                 </div>
                 <template v-if="getSettingMeta(key).multiSelect">
                   <el-select
@@ -659,15 +685,18 @@ function serviceLabel(key: string): string {
             <div v-else class="config-list">
               <div v-for="[key, value] in switchEntries" :key="key" class="config-item">
                 <div class="config-info">
-                  <span class="config-label">{{ getSettingMeta(key).label }}</span>
-                  <el-tooltip
-                    v-if="getSettingMeta(key).desc"
-                    :content="getSettingMeta(key).desc"
-                    placement="top"
-                    :show-after="200"
-                  >
-                    <el-icon class="desc-icon" aria-hidden="true"><QuestionFilled /></el-icon>
-                  </el-tooltip>
+                  <!-- label 与问号说明图标绑定为不可拆分的水平整体，防止 flex-wrap 把图标挤到下一行 -->
+                  <span class="config-label-wrap">
+                    <span class="config-label">{{ getSettingMeta(key).label }}</span>
+                    <el-tooltip
+                      v-if="getSettingMeta(key).desc"
+                      :content="getSettingMeta(key).desc"
+                      placement="top"
+                      :show-after="200"
+                    >
+                      <el-icon class="desc-icon" aria-hidden="true"><QuestionFilled /></el-icon>
+                    </el-tooltip>
+                  </span>
                 </div>
                 <!-- Q4：元数据标注 selectOptions 的布尔字段以下拉呈现（如 scheduler_enabled、scan_baseline_required），其余仍为开关 -->
                 <el-select
@@ -962,6 +991,15 @@ function serviceLabel(key: string): string {
   background: var(--lc-warning, #e6a23c);
 }
 
+/* label + 问号说明图标的水平组合：inline-flex 绑定为整体，
+   避免父级 flex-wrap 时问号被挤到下一行 */
+.cred-label-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
 .cred-label {
   font-size: 13px;
   font-weight: 600;
@@ -970,10 +1008,6 @@ function serviceLabel(key: string): string {
 
 .cred-field.modified .cred-label {
   color: var(--lc-warning, #e6a23c);
-}
-
-.cred-desc {
-  margin-top: 2px;
 }
 
 .cred-input {
@@ -1027,6 +1061,14 @@ function serviceLabel(key: string): string {
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
+}
+
+/* label + 问号说明图标的水平组合（同 .cred-label-wrap） */
+.config-label-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
 }
 
 .config-label {

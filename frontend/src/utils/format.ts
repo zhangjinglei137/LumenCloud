@@ -181,6 +181,81 @@ export function downloadQueueStatusColor(status: string | null | undefined): str
   return DOWNLOAD_QUEUE_STATUS_MAP[status]?.[2] ?? null
 }
 
+// ---------- 集数状态 4 色分类（影视详情页「集数状态」列） ----------
+
+/** 集数状态分类 tag 结果 */
+export interface EpisodeStateTag {
+  /** tag 文案：已在库 / 未开播 / 已开播 / 异常 */
+  label: string
+  /** Element Plus tag type：绿 / 灰 / 黄 / 红 */
+  type: 'success' | 'info' | 'warning' | 'danger'
+  /** 分类原因说明（tooltip 详情首行） */
+  reason: string
+}
+
+/** "YYYY-MM-DD" 是否为未来日期（本地 0 点粒度比较；避免 Date.parse 纯日期串被按 UTC 解析的偏移坑） */
+function isFutureDate(yyyymmdd: string, today: Date): boolean {
+  const d = new Date(`${yyyymmdd}T00:00:00`)
+  if (Number.isNaN(d.getTime())) return false
+  const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate())
+  return d.getTime() > todayStart.getTime()
+}
+
+/**
+ * 集数状态 4 色分类（纯函数，判定优先级自上而下，短路返回）：
+ *   绿「已在库」 in_emby === true
+ *   灰「未开播」 air_date 存在且 > 今天（日期粒度；air_date ≤ 今天视为已开播）
+ *   红「异常」   status ∈ {failed, error}（任务失败）；
+ *                或 season / episode_number 缺失（非标准集号，如 "92完.mp4" 找不到剧集信息）
+ *   黄「已开播」 其余（有标准集号、已到开播日、未入 Emby、非失败）
+ * 后端字段未上线时拿到 undefined/null：一律按空值继续向下判定，不 crash。
+ *
+ * @param row episode_state 行（松散结构；in_emby / air_date 为可选新契约字段）
+ * @param today 当前时间（默认 new Date()；注入便于测试）
+ */
+export function episodeStateTag(row: Record<string, unknown>, today: Date = new Date()): EpisodeStateTag {
+  if (row.in_emby === true) {
+    return { label: '已在库', type: 'success', reason: '该集已在 Emby 媒体库' }
+  }
+  const airDate = typeof row.air_date === 'string' && row.air_date !== '' ? row.air_date : null
+  if (airDate && isFutureDate(airDate, today)) {
+    return { label: '未开播', type: 'info', reason: `TMDB 首播日期 ${airDate}，尚未播出` }
+  }
+  const status = typeof row.status === 'string' ? row.status : ''
+  if (status === 'failed' || status === 'error') {
+    return {
+      label: '异常',
+      type: 'danger',
+      reason: `任务失败（执行状态：${downloadQueueStatusLabel(status)}）`,
+    }
+  }
+  const season = row.season ?? row.season_number
+  const episodeNumber = row.episode_number
+  if (season === null || season === undefined || episodeNumber === null || episodeNumber === undefined) {
+    return { label: '异常', type: 'danger', reason: '未匹配到标准集号（文件名无法对应剧集信息）' }
+  }
+  return { label: '已开播', type: 'warning', reason: '已播出，等待下载入库' }
+}
+
+/**
+ * 集数 tag 的 hover 详情行（分类原因 / Emby 状态 / TMDB 首播 / 原始执行状态 / 大小），
+ * 保证用户从「原始执行状态列」切换到分类 tag 后仍能看清细节。
+ */
+export function episodeStateTooltip(row: Record<string, unknown>): string[] {
+  const tag = episodeStateTag(row)
+  const lines: string[] = [tag.reason]
+  lines.push(`Emby：${row.in_emby === true ? '已在库' : '未入库'}`)
+  const air = typeof row.air_date === 'string' && row.air_date !== '' ? row.air_date : '—'
+  lines.push(`TMDB 首播：${air}`)
+  const status = typeof row.status === 'string' && row.status !== '' ? row.status : null
+  lines.push(`执行状态：${downloadQueueStatusLabel(status)}`)
+  const size = row.size_gb
+  if (typeof size === 'number' && !Number.isNaN(size)) {
+    lines.push(`大小：${formatGb(size)}`)
+  }
+  return lines
+}
+
 /** 下载队列「活跃」状态集合（「仅看活跃」开关过滤用） */
 export const DOWNLOAD_ACTIVE_STATUSES: readonly string[] = [
   'transferring',

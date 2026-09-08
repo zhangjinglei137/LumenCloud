@@ -29,6 +29,14 @@ function roleLabel(role: string): string {
 /** 管理员总数（列表统计，用于判断「唯一管理员」禁删） */
 const adminCount = computed(() => store.items.filter((u) => u.role === 'admin').length)
 
+/** 前端本地分页（用户量通常不大；接口无分页参数，客户端切片，单页时分页自动隐藏） */
+const currentPage = ref(1)
+const pageSize = ref(20)
+const pagedItems = computed<UserItem[]>(() => {
+  const start = (currentPage.value - 1) * pageSize.value
+  return store.items.slice(start, start + pageSize.value)
+})
+
 /** 删除按钮禁用原因；返回 null 表示允许删除 */
 function removeDisabledReason(row: UserItem): string | null {
   if (row.id === auth.user?.id) return '不能删除自己'
@@ -90,7 +98,7 @@ async function onRemove(row: UserItem): Promise<void> {
         </div>
       </div>
 
-      <el-table v-loading="store.loading && store.items.length === 0" :data="store.items" size="small">
+      <el-table v-loading="store.loading && store.items.length === 0" :data="pagedItems" size="small">
         <el-table-column label="用户名" min-width="160">
           <template #default="{ row }">
             <span>{{ row.username }}</span>
@@ -154,6 +162,19 @@ async function onRemove(row: UserItem): Promise<void> {
           <el-empty description="暂无用户" :image-size="80" />
         </template>
       </el-table>
+
+      <el-pagination
+        v-if="store.items.length > 0"
+        v-model:current-page="currentPage"
+        v-model:page-size="pageSize"
+        class="lc-pagination"
+        style="margin-top: 16px"
+        background
+        layout="total, sizes, prev, pager, next"
+        :total="store.items.length"
+        :page-sizes="[20, 50, 100]"
+        hide-on-single-page
+      />
     </div>
   </div>
 </template>

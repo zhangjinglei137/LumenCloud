@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useMediaStore } from '../stores/media'
@@ -24,6 +24,23 @@ const auth = useAuthStore()
 const viewMode = ref<'card' | 'table'>('card')
 const scanningIds = ref<Set<number>>(new Set())
 const imgErrors = ref<Set<number>>(new Set())
+
+/** 前端本地分页（listMediaApi 无分页参数，全量返回后客户端切片；卡片/表格视图共用） */
+const currentPage = ref(1)
+const pageSize = ref(20)
+const pagedItems = computed<MediaItem[]>(() => {
+  const start = (currentPage.value - 1) * pageSize.value
+  return store.items.slice(start, start + pageSize.value)
+})
+
+/** 数据刷新/删除后当前页越界时回收到最后一页，避免空白页 */
+watch(
+  () => store.items.length,
+  (len) => {
+    const maxPage = Math.max(1, Math.ceil(len / pageSize.value))
+    if (currentPage.value > maxPage) currentPage.value = maxPage
+  },
+)
 
 let timer: ReturnType<typeof setInterval> | undefined
 
@@ -118,7 +135,7 @@ async function onDelete(m: MediaItem, e: Event) {
       <!-- 卡片视图 -->
       <div v-if="viewMode === 'card' && store.items.length > 0" class="lc-media-grid">
         <div
-          v-for="m in store.items"
+          v-for="m in pagedItems"
           :key="m.id"
           class="lc-media-card"
           @click="router.push(`/media/${m.id}`)"
@@ -181,7 +198,7 @@ async function onDelete(m: MediaItem, e: Event) {
 
       <!-- 表格视图 -->
       <div v-if="viewMode === 'table' && store.items.length > 0" class="lc-panel" style="padding: 8px 16px">
-        <el-table :data="store.items" style="width: 100%" @row-click="(row: MediaItem) => router.push(`/media/${row.id}`)">
+        <el-table :data="pagedItems" style="width: 100%" @row-click="(row: MediaItem) => router.push(`/media/${row.id}`)">
           <el-table-column label="标题" min-width="200">
             <template #default="{ row }">
               <div class="title-cell">
@@ -250,6 +267,19 @@ async function onDelete(m: MediaItem, e: Event) {
           </el-table-column>
         </el-table>
       </div>
+
+      <!-- 前端本地分页（数据量增长后避免整墙渲染；单页时自动隐藏） -->
+      <el-pagination
+        v-if="store.items.length > 0"
+        v-model:current-page="currentPage"
+        v-model:page-size="pageSize"
+        class="lc-pagination"
+        background
+        layout="total, sizes, prev, pager, next, jumper"
+        :total="store.items.length"
+        :page-sizes="[20, 50, 100]"
+        hide-on-single-page
+      />
     </div>
   </div>
 </template>

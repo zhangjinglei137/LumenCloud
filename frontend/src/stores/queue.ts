@@ -169,11 +169,14 @@ export const useQueueStore = defineStore('queue', {
     async fetchPage(append = false): Promise<void> {
       this.loading = true
       try {
+        // 覆盖刷新（手动刷新 / 15s 慢刷）保持已加载条数：一次取回同等数量的最新数据，
+        // 避免已加载的后续页被截断、用户浏览位置丢失（§8.1 体验修正）
+        const limit = append ? this.pageSize : Math.max(this.items.length, this.pageSize)
         const offset = append ? this.items.length : 0
-        const data = await listQueueApi(this.pageSize, offset)
+        const data = await listQueueApi(limit, offset)
         const normalized = normalizeQueueTree(data)
         this.items = append ? [...this.items, ...normalized] : normalized
-        this.hasMore = data.length >= this.pageSize
+        this.hasMore = data.length >= limit
       } finally {
         this.loading = false
       }
@@ -196,10 +199,12 @@ export const useQueueStore = defineStore('queue', {
     async fetchDownloadPage(append = false): Promise<void> {
       this.downloadLoading = true
       try {
+        // 覆盖刷新保持已加载条数（同 fetchPage），避免轮询截断列表
+        const limit = append ? this.pageSize : Math.max(this.downloadItems.length, this.pageSize)
         const offset = append ? this.downloadItems.length : 0
-        const data = await listDownloadQueueApi(this.pageSize, offset)
+        const data = await listDownloadQueueApi(limit, offset)
         this.downloadItems = append ? [...this.downloadItems, ...data] : data
-        this.downloadHasMore = data.length >= this.pageSize
+        this.downloadHasMore = data.length >= limit
       } catch {
         // 失败（网络/500 等）：保留旧数据，拦截器已提示
         if (!append && !this.downloadItems.length) this.downloadItems = []

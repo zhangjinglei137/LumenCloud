@@ -1,13 +1,16 @@
 """
-aria2 JSON-RPC 客户端（docs/新系统设计.md §10 / §12.2 简化版来源校验）。
+aria2 JSON-RPC 客户端（docs/新系统设计.md §10 / §12.2 来源校验）。
 
 契约（n8n 旧流程沿用）：
     JSON-RPC POST：addUri / tellStatus / getGlobalStat / tellActive
     鉴权：params 第一个元素传 aria2 token（settings.ARIA2_TOKEN）：
           body.params = [f"token:{token}", *params]
     提交下载前检查 numActive / numWaiting（§4.4 步骤 6 前忙闲检查）；
-    add_uri 的 comment 传 "lumencloud:<media_id>:<episode>" 标记 GID 来源，
-    tell_active 依据 comment 做转存前 GID 来源校验（§12.2 防 n8n 误启动双转存）。
+    add_uri 的 comment 传 "lumencloud:<media_id>:<episode>" 标记 GID 来源。
+    2026-09 修订：实测 aria2 1.36.0 静默丢弃 comment option（getOption/tellStatus
+    均读不到），故 GID 来源校验（§12.2 防 n8n 误启动双转存）已改为 **DB gid
+    白名单**（transfer._admit_batch 段 2：aria2 活动/等待任务 gid 必须在
+    download_queue 已签发集合内）；comment 仅作未来 aria2 版本兼容的冗余标记。
 """
 import logging
 from typing import Any, Optional
@@ -110,7 +113,9 @@ class Aria2Client:
             download_dir: 下载目录（settings / 任务级覆盖）
             out:          落盘文件名
             comment:      来源标记，本系统传 "lumencloud:<media_id>:<episode>"
-                          （§12.2 GID 来源校验用；aria2 comment 支持并透传）
+                          （2026-09 修订：aria2 1.36.0 会静默丢弃该 option，
+                          GID 来源校验已改用 DB gid 白名单，此参数仅作未来
+                          aria2 版本兼容的冗余标记）
         """
         options: dict[str, str] = {}
         if download_dir is not None:
@@ -144,9 +149,10 @@ class Aria2Client:
     async def tell_active(self) -> list[dict[str, Any]]:
         """aria2.tellActive：活动任务列表（转存前 GID 来源校验用，见 §12.2）。
 
-        每项含 {gid, status, comment, totalLength, completedLength}；
-        校验逻辑（Lane2/transfer）：确认现有活动任务均带本系统生成的
-        来源标记（comment 前缀 lumencloud:）才继续转存，发现陌生任务本轮跳过并告警。
+        每项含 {gid, status, comment, totalLength, completedLength}；comment 字段在
+        aria2 1.36.0 下恒为空（addUri 丢弃该 option）。校验逻辑（transfer.
+        _admit_batch 段 2）：aria2 活动/等待任务 gid 必须在本系统 download_queue
+        已签发 gid 集合内才继续转存，发现陌生 gid 本轮跳过并告警。
         """
         result = await self._rpc(
             "aria2.tellActive",
@@ -160,7 +166,7 @@ class Aria2Client:
         P2-6（council）：waiting 队列中的陌生任务同样代表 n8n 误启动（排队中的
         双转存），仅校验 tell_active 会漏检。返回字段同 tell_active
         （gid/status/comment/totalLength/completedLength），transfer 层将
-        active + waiting 合并后做统一来源校验。
+        active + waiting 合并后做统一来源校验（gid 白名单口径，见 tell_active）。
 
         参数:
             offset: 起始位置偏移（默认 0）

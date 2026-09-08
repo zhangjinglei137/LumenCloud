@@ -396,6 +396,11 @@ class TmdbCache(Base):
     # TMDB 优先判定连载时复用，避免对同一剧集反复回源（7 天 TTL）。
     # 迁移见 alembic/versions/0009_tmdb_cache_tv_status.py。
     tv_status = mapped_column(String(32), nullable=True)
+    # TV 总集数（TMDB /3/tv/{id} 的 number_of_episodes 字段）。
+    # 由 get_by_tmdb_id 回源时落库（仅非 None 覆盖）；movie 或无该字段 → NULL。
+    # 供 scan 全量模式集号范围校验（少帅式搜索误匹配修复 A3）：同名短剧/无关资源
+    # 文件名集号超过总数即拒绝入队。迁移见 alembic/versions/0014_tmdb_cache_episode_count.py。
+    number_of_episodes = mapped_column(Integer, nullable=True)
     updated_at = mapped_column(
         DateTime,
         server_default=text("CURRENT_TIMESTAMP"),

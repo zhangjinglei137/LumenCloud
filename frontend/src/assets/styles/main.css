@@ -261,6 +261,12 @@ h3 {
   flex-wrap: wrap;
 }
 
+/* ---------- 列表分页：各列表页统一右对齐 ---------- */
+.lc-pagination {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .lc-toolbar .left,
 .lc-toolbar .right {
   display: flex;

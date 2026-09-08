@@ -6,6 +6,8 @@ import { useMediaStore } from '../stores/media'
 import { useAuthStore } from '../stores/auth'
 import { TMDB_POSTER_BASE } from '../types'
 import {
+  episodeStateTag,
+  episodeStateTooltip,
   formatBytes,
   formatGb,
   formatTime,
@@ -52,6 +54,11 @@ onMounted(async () => {
 
 const detail = computed(() => store.detail)
 const episodes = computed(() => detail.value?.episode_state ?? [])
+
+/** 集数行 + 预计算的 4 色分类 tag（模板直接使用，免去逐行重复判定；字段契约见 episodeStateTag） */
+const episodeRows = computed(() =>
+  episodes.value.map((ep) => ({ ...ep, __tag: episodeStateTag({ ...ep }) })),
+)
 
 function episodeLabel(ep: Record<string, unknown>): string {
   const season = ep.season ?? ep.season_number
@@ -168,14 +175,29 @@ async function onDelete() {
           <!-- 遗漏集 -->
           <div v-if="detail.media_type !== 'movie'" class="lc-panel">
             <h3 class="lc-panel-title">集数状态（{{ episodes.length }}）</h3>
+            <!-- 四色图例：tag 分类说明，悬停标签可查看原始执行状态等详情 -->
+            <p class="ep-legend lc-muted">
+              <span class="ep-legend-item"><i class="ep-dot success" />已在库</span>
+              <span class="ep-legend-item"><i class="ep-dot info" />未开播</span>
+              <span class="ep-legend-item"><i class="ep-dot warning" />已开播</span>
+              <span class="ep-legend-item"><i class="ep-dot danger" />异常</span>
+              <span class="ep-legend-hint">悬停状态标签查看详情</span>
+            </p>
             <el-empty v-if="episodes.length === 0" description="暂无集数记录，触发一次巡检后会建立基线" :image-size="80" />
-            <el-table v-else :data="episodes" size="small" max-height="480">
+            <el-table v-else :data="episodeRows" size="small" max-height="480">
               <el-table-column label="集" width="110">
                 <template #default="{ row }">{{ episodeLabel(row as Record<string, unknown>) }}</template>
               </el-table-column>
-              <el-table-column label="状态" width="110">
+              <el-table-column label="状态" width="96" align="center">
                 <template #default="{ row }">
-                  <el-tag size="small" effect="plain">{{ (row as Record<string, unknown>).status ?? '—' }}</el-tag>
+                  <el-tooltip placement="top" :show-after="200">
+                    <template #content>
+                      <div v-for="(line, i) in episodeStateTooltip(row)" :key="i">{{ line }}</div>
+                    </template>
+                    <el-tag size="small" effect="plain" :type="row.__tag.type">
+                      {{ row.__tag.label }}
+                    </el-tag>
+                  </el-tooltip>
                 </template>
               </el-table-column>
               <el-table-column label="大小" width="100" align="right">
@@ -305,5 +327,48 @@ async function onDelete() {
   align-items: center;
   gap: 10px;
   font-size: 12px;
+}
+
+/* 集数状态四色图例（与 ep-dot 对应 el-tag type：success/info/warning/danger） */
+.ep-legend {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin: -6px 0 10px;
+  font-size: 12px;
+}
+
+.ep-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.ep-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.ep-dot.success {
+  background: var(--el-color-success);
+}
+
+.ep-dot.info {
+  background: var(--el-color-info);
+}
+
+.ep-dot.warning {
+  background: var(--el-color-warning);
+}
+
+.ep-dot.danger {
+  background: var(--el-color-danger);
+}
+
+.ep-legend-hint {
+  opacity: 0.65;
 }
 </style>

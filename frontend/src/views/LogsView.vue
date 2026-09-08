@@ -17,16 +17,16 @@ const filter = reactive<LogFilter>({
 // 与后端任务类型取值对齐（backend/app/tasks/*）；media_scan/recovery 为历史别名
 const taskTypes = ['scan_media', 'scan_all_media', 'media_scan', 'transfer', 'transfer_retry', 'download', 'cleanup', 'nastools_sync', 'notification_scan', 'capacity_alert', 'recover', 'recovery']
 
+// 状态筛选选项：与 task_run 实际状态值对齐（record_task_run 精确匹配，见
+// backend/app/routers/logs.py status 过滤；「失败」记录实际 status=error，非 failed）
+const statusFilterOptions = ['success', 'error', 'running', 'skipped']
+
 onMounted(() => {
   store.fetchPage(filter)
 })
 
 async function search() {
   await store.fetchPage(filter)
-}
-
-async function loadMore() {
-  await store.fetchPage(filter, true)
 }
 
 // Q8①：格式化真实耗时——<1s 显示毫秒，<60s 显示 x.xs，以上显示 xm xxs
@@ -76,9 +76,12 @@ function durationText(row: LogItem): string {
             style="width: 140px"
             @change="search"
           >
-            <el-option label="成功" value="success" />
-            <el-option label="失败" value="failed" />
-            <el-option label="运行中" value="running" />
+            <el-option
+              v-for="s in statusFilterOptions"
+              :key="s"
+              :label="taskStatusLabel(s)"
+              :value="s"
+            />
           </el-select>
           <el-input-number
             v-model="filter.media_id"
@@ -176,9 +179,21 @@ function durationText(row: LogItem): string {
           </el-table-column>
         </el-table>
 
-        <div v-if="store.hasMore" style="text-align: center; margin-top: 16px">
-          <el-button :loading="store.loading" @click="loadMore">加载更多</el-button>
-        </div>
+        <!-- 标准分页（后端 limit/offset；total 由 store 探测估算，详见 logs store） -->
+        <el-pagination
+          v-if="store.total > 0"
+          class="lc-pagination"
+          style="margin-top: 16px"
+          background
+          layout="total, sizes, prev, pager, next"
+          :total="store.total"
+          :current-page="store.page"
+          :page-size="store.pageSize"
+          :page-sizes="[20, 30, 50, 100]"
+          :disabled="store.loading"
+          @current-change="(p: number) => store.fetchPage(filter, p)"
+          @size-change="(s: number) => store.fetchPage(filter, 1, s)"
+        />
       </template>
     </div>
   </div>

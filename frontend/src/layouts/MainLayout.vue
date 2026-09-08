@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch, type ComponentPublicInstance } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
 import { useAuthStore } from '../stores/auth'
@@ -14,6 +14,35 @@ const auth = useAuthStore()
 const notifications = useNotificationsStore()
 const queueStore = useQueueStore()
 const theme = useThemeStore()
+
+/** 主内容区（独立滚动容器）引用：el-main 组件 → 其根 <main> 元素 */
+const mainRef = ref<ComponentPublicInstance | null>(null)
+
+function mainEl(): HTMLElement | null {
+  return (mainRef.value?.$el as HTMLElement | undefined) ?? null
+}
+
+/**
+ * 各路由主区滚动位置记忆（path → scrollTop）。
+ * 主区改为独立滚动容器后，滚动位置不再由浏览器/页面历史管理；
+ * 切走时保存、返回时在路由过渡结束后恢复，避免「返回列表页要重新往下翻」。
+ */
+const scrollMap = new Map<string, number>()
+const pendingScroll = ref(0)
+
+watch(
+  () => route.fullPath,
+  (to, from) => {
+    if (from) scrollMap.set(from, mainEl()?.scrollTop ?? 0)
+    pendingScroll.value = scrollMap.get(to) ?? 0
+  },
+)
+
+/** 路由过渡（mode="out-in"）结束后才是新页面就位时机，此时恢复滚动位置才准确 */
+function restoreScroll() {
+  const el = mainEl()
+  if (el) el.scrollTop = pendingScroll.value
+}
 
 const activeMenu = computed(() => {
   if (route.path.startsWith('/media')) return '/'
@@ -59,7 +88,7 @@ async function onReadAll() {
 </script>
 
 <template>
-  <el-container style="min-height: 100vh">
+  <el-container class="lc-layout">
     <el-aside width="224px" class="lc-aside">
       <div class="lc-logo" @click="router.push('/')">
         <span class="lc-logo-mark">映</span>
@@ -107,7 +136,7 @@ async function onReadAll() {
       </el-menu>
     </el-aside>
 
-    <el-container>
+    <el-container class="lc-layout-body">
       <el-header class="lc-header" height="60px">
         <h2 class="lc-page-title">{{ pageTitle }}</h2>
         <div class="lc-header-right">
@@ -207,9 +236,9 @@ async function onReadAll() {
         </div>
       </el-header>
 
-      <el-main class="lc-main">
+      <el-main ref="mainRef" class="lc-main">
         <router-view v-slot="{ Component }">
-          <transition name="fade-slide" mode="out-in">
+          <transition name="fade-slide" mode="out-in" @after-enter="restoreScroll">
             <component :is="Component" />
           </transition>
         </router-view>
@@ -219,7 +248,21 @@ async function onReadAll() {
 </template>
 
 <style scoped>
+/* 视口内固定布局：左侧菜单与顶栏固定在视口内、不随内容滚动，仅主内容区独立滚动 */
+.lc-layout {
+  height: 100vh;
+  overflow: hidden;
+}
+
+.lc-layout-body {
+  height: 100vh;
+  overflow: hidden;
+}
+
 .lc-aside {
+  height: 100vh;
+  overflow-y: auto;
+  overflow-x: hidden;
   background: var(--lc-aside-bg);
   border-right: 1px solid var(--lc-border);
   display: flex;
@@ -324,6 +367,10 @@ async function onReadAll() {
 
 .lc-main {
   padding: 20px 24px 40px;
+  /* 主内容区独立滚动：el-main 默认 overflow:auto，显式声明确保布局固定后滚动稳定 */
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .lc-notify-panel {

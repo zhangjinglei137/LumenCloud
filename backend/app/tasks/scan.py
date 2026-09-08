@@ -79,6 +79,11 @@ _PHASE_KEYS = ("check", "search", "match", "enqueue", "finish")
 _MAX_RANK_CANDIDATES = 100   # rank 后放行上限（本次 230 去重候选内；防极端返回过大）
 _MAX_SHARE_TRY = 80          # 单轮巡检最多验证候选数（80×~0.5s 串行 ≈ 40s 上限，
                              # 防止遍历 230 个过慢；成功分享也全 walk，不按成功数停）
+# A4 全量模式单轮入队上限（少帅式搜索误匹配修复）：tv 未收录全量（Emby 未收录 +
+# scan_baseline_required=False）时，搜索到的文件逐个入队——「少帅」一次入队 284 个
+# 错误资源案例实证同名短剧/无关资源会撑爆入队。对齐 n8n 全量 MAX_BATCH 的放宽版
+# （n8n 更严），防止一次入队爆炸；后续可做成 system_config 动态调。
+_FULL_MODE_ENQUEUE_LIMIT = 20
 
 
 class ScanSearchUnavailable(Exception):
@@ -197,7 +202,8 @@ def _result_detail_skeleton(failed_phase: str | None = None,
 def _result_message(*, enqueued: int, unmatched: int, size_filtered: int,
                     non_video: int, existing_skipped: int,
                     missing_episodes: list[str] | None = None,
-                    share_info_all_failed_candidates: int = 0) -> str:
+                    share_info_all_failed_candidates: int = 0,
+                    unrelated_filtered: int = 0, full_mode_limit: int = 0) -> str:
     """巡检结果「人话」消息（信息列改造）：保留计数 + 引导性结论。
 
     规则：
@@ -205,6 +211,8 @@ def _result_message(*, enqueued: int, unmatched: int, size_filtered: int,
       候选分享，验证均失败（分享可能已失效/过期）」，区分于「搜索成功但无匹配」——
       诊断实证：cloudSaver 搜索返回大量失效分享码 share-info HTTP 500，此前误报
       「搜索无匹配候选」。该场景入队必为 0。
+    - unrelated_filtered>0（A2 全量模式文件级校验拒绝数）→ 报「N 个无关/超集号文件过滤」。
+    - full_mode_limit>0（tv 未收录全量限批生效）且 enqueued 达上限 → 追加限批提示。
     - enqueued>0         → 「已入队 N 个资源」开头，后接存在的
                           M 个文件未匹配 / K 个超大小限制跳过 / J 个非视频 / 已有跳过
     - enqueued=0 & unmatched>0 → 未找到缺失集资源（搜索文件均不匹配：多为已收录旧集或其它版本，
@@ -224,10 +232,14 @@ def _result_message(*, enqueued: int, unmatched: int, size_filtered: int,
             parts.append(f"{unmatched} 个文件未匹配")
         if size_filtered:
             parts.append(f"{size_filtered} 个超大小限制跳过")
+        if unrelated_filtered:
+            parts.append(f"{unrelated_filtered} 个无关/超集号文件过滤")
         if non_video:
             parts.append(f"{non_video} 个非视频")
         if existing_skipped:
             parts.append(f"{existing_skipped} 个已有任务跳过")
+        if full_mode_limit and enqueued >= full_mode_limit:
+            parts.append(f"已达全量模式单轮入队上限 {full_mode_limit}")
         return "；".join(parts) + "。"
     if unmatched > 0:
         msg = (
@@ -237,15 +249,19 @@ def _result_message(*, enqueued: int, unmatched: int, size_filtered: int,
         extra = []
         if size_filtered:
             extra.append(f"{size_filtered} 个超大小限制跳过")
+        if unrelated_filtered:
+            extra.append(f"{unrelated_filtered} 个无关/超集号文件过滤")
         if non_video:
             extra.append(f"{non_video} 个非视频")
         if extra:
             msg += "（另有 " + "、".join(extra) + "）"
         return msg
-    if size_filtered or non_video or existing_skipped:
+    if size_filtered or non_video or existing_skipped or unrelated_filtered:
         parts = []
         if size_filtered:
             parts.append(f"{size_filtered} 个超大小限制跳过")
+        if unrelated_filtered:
+            parts.append(f"{unrelated_filtered} 个无关/超集号文件过滤")
         if non_video:
             parts.append(f"{non_video} 个非视频")
         if existing_skipped:
@@ -339,6 +355,16 @@ async def _emby_missing_codes(media) -> list[str | None] | None:
         max_files 与大小过滤约束，「盲入整部剧」顾虑已大幅缓解）。
     """
     emby_id = await emby.find_emby_id(media.tmdb_id, media.title)  # P11 二次模糊兜底内置
+    # 回写 media.in_emby（影视库「未入库」误显示修复：创建时静态 False，巡检按 Emby
+    # 实际收录更新；回写失败静默保留原值，绝不阻断巡检主流程）
+    try:
+        async with async_session() as s2:
+            m2 = await s2.get(Media, media.id)
+            if m2 is not None and bool(m2.in_emby) != (emby_id is not None):
+                m2.in_emby = emby_id is not None
+                await s2.commit()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[scan] media=%s in_emby 回写失败（忽略）: %s", media.id, exc)
     if media.media_type == "movie":
         return [] if emby_id else [None]
     if not emby_id:
@@ -719,11 +745,127 @@ async def _media_year(media) -> int | None:
         return None
 
 
+# ---------------------------------------------------------------------------
+# 全量模式文件级校验（少帅式搜索误匹配修复 A1/A2/A3/A4）
+# ---------------------------------------------------------------------------
+
+async def _media_total_episodes(media) -> int | None:
+    """TMDB 剧集总集数（A3 集号范围校验用）；失败降级 None，绝不阻断扫描。
+
+    仅 tv 需要（movie 无 number_of_episodes）；tmdb_id 为空 / media_type!="tv"
+    直接 None。TMDB 回源失败 → warning + None（降级后 _full_mode_accept 不做
+    集号上限，仅靠标准命名/含剧名+数字判定）。
+    """
+    if media.tmdb_id is None or (media.media_type or "") != "tv":
+        return None
+    try:
+        meta = await tmdb.get_by_tmdb_id(media.tmdb_id, "tv")
+        return meta.get("number_of_episodes")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[scan] media=%s TMDB 总集数获取失败（全量模式不做集号上限）: %s",
+                       media.id, exc)
+        return None
+
+
+def _parse_episode_number(text: str) -> int | None:
+    """解析文件名集号：SxxExx → 集号；第N集 → N；独立数字 token → N；无则 None。
+
+    规则（A2/A3 判定基础，只返回一个明确集号，不猜测）：
+    ① SxxExx（如 S01E30）→ 30；
+    ② 第N集/话（如 第30集）→ 30；
+    ③ 文件名中的「独立数字 token」→ 该数字。token 界定：数字块前后必须是
+       空白 / 括号 / 方括号 / 点 / 连字符 / 行首行尾等分隔（即数字自身成词）——
+       `30.mp4`→30、`[字幕组]116.mp4`→116、`少帅 30.mkv`→30、`少帅 9.mp4`→9；
+       紧贴中文的集数标记（`少帅将我宠上天(99集)` 的 99 后接「集」非分隔）
+       → 不解析（该形态另由 ② 处理；无「第」则不识别为集号）。其余 → None。
+    """
+    if not text:
+        return None
+    # ① SxxExx / SxxExxx
+    m = _RE_SXXEXX.search(text)
+    if m:
+        return int(m.group(2))
+    # ② 第N集/话（无季号，跨季按集号）
+    m = _RE_CN_EP.search(text)
+    if m:
+        return int(m.group(1))
+    # ③ 独立数字 token：文件名主体（去掉扩展名）内一个成词的数字块
+    basename = text.rsplit(".", 1)[0] if "." in text else text
+    m = re.search(r"(?:^|\s|\[|\(|\])(\d{1,3})(?=$|[\s.\]\)-])", basename)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def _share_title_relevant(media_title: str, cand_title: str) -> bool:
+    """A1 分享标题相关性：剧名为空 → True（兜底不阻断）；否则归一化（去空格、lower）
+    后精确相等 / cand 以 title 开头（前缀）/ title 是 cand 的子串，任一命中 → True。
+
+    全部不中（如「凡人修仙传合集」对 title「少帅」）→ False，候选在排序前直接剔除。
+    注意 title 是子串即放行（「少帅将我宠上天…」对「少帅」仍通过）——A1 只过滤
+    明显无关的分享；同名短剧等由 A2/A3 文件级校验拦截。
+    """
+    if not media_title:
+        return True
+    title_norm = media_title.replace(" ", "").lower()
+    cand_norm = (cand_title or "").replace(" ", "").lower()
+    if not cand_norm:
+        return True  # 候选标题为空：兜底放行，避免误杀无标题候选
+    return (
+        cand_norm == title_norm
+        or cand_norm.startswith(title_norm)
+        or title_norm in cand_norm
+    )
+
+
+def _is_standard_ep_naming(text: str) -> bool:
+    """标准集号命名：SxxExx / 第N集/话 任一命中即 True（A2 判定基础）。"""
+    return bool(_RE_SXXEXX.search(text) or _RE_CN_EP.search(text))
+
+
+def _full_mode_accept(media, file_name: str, total_episodes: int | None) -> bool:
+    """A2/A3 全量模式文件级入队判定：True=入队 / False=拒绝（tv 未收录全量逐文件调用）。
+
+    oracle 最终裁定——**强制可解析集号**，杜绝同名短剧/纯数字/无集号资源入队：
+    1. 集号可解析且超 TMDB 总数 → False（拦「少帅将我宠上天(99集)」99>48）；
+    2. 标准 SxxExx/第N集 命名且集号在范围内（或 TMDB 降级无上限）→ True；
+    3. 含剧名 + 可解析数字且集号在范围内 → True（如「少帅 9.mp4」）；
+    4. 其余（纯孤立数字 9.mp4、无集号无剧名、含剧名但集号超范围）→ False。
+
+    total_episodes=None（TMDB 降级）时仅靠 2/3 的名称特征，不做集号上限
+    （oracle 风险提示已权衡，MVP 接受：宁可从宽，避免误杀正常剧集文件）。
+    """
+    name_norm = (file_name or "").replace(" ", "").lower()
+    title_norm = (media.title or "").replace(" ", "").lower()
+    ep = _parse_episode_number(file_name)
+    # 1) 集号超 TMDB 总数 → 拒绝（同名短剧集数 > 目标剧总集数即非目标剧）
+    if ep is not None and total_episodes is not None and ep > total_episodes:
+        return False
+    # 2) 标准命名（SxxExx/第N集）且集号在范围内 → 入队
+    #    （标准命名必然可解析出集号，ep 在此分支必非 None）
+    if _is_standard_ep_naming(file_name):
+        if total_episodes is None or (ep is not None and ep <= total_episodes):
+            return True
+    # 3) 含剧名 + 可解析数字（且集号在范围内）→ 入队（「少帅 9.mp4」）
+    if (
+        ep is not None
+        and title_norm
+        and title_norm in name_norm
+        and (total_episodes is None or ep <= total_episodes)
+    ):
+        return True
+    # 4) 其余一律拒绝
+    return False
+
+
 async def _search_and_rank(media, missing_keys: set[str]) -> list[dict]:
-    """cloudSaver 搜索 → 展开分享码 → 加分匹配（TMDB 年份加权）→ 限数 20。
+    """cloudSaver 搜索 → 展开分享码 → A1 分享标题过滤 → 加分匹配（TMDB 年份加权）→ 限数。
 
     - 单关键词失败：记录 warning 并继续（一个词失败、其余成功 → 不中断整轮，
       保持既有降级语义）。
+    - A1 分享标题过滤（少帅式搜索误匹配修复）：剧名完全无关的分享候选在排序前直接
+      剔除（精确/前缀/子串判定，剧名为空兜底放行）——减少无关分享被验证/遍历的
+      浪费；同名短剧等标题相关的误匹配由 A2/A3 文件级校验（_full_mode_accept）拦截。
     - 全部关键词均失败（ok==0 且关键词数 ≥1）→ 抛 ScanSearchUnavailable：
       调用方（_scan_one）将 search 阶段标 error，区分「搜索故障」与「搜索成功但无候选」
       （后者返回 []，message 走缺集人话文案，不再误报「无候选命中」）。
@@ -742,6 +884,18 @@ async def _search_and_rank(media, missing_keys: set[str]) -> list[dict]:
         # 「无缺集/无候选」），上抛由 _scan_one 记录 error + 阶段定位
         raise ScanSearchUnavailable("全部搜索关键词调用 cloudSaver 均失败")
     expanded = _expand_share_codes(raw)
+    # A1 分享标题过滤：与剧名完全无关的候选直接剔除（排序前），减少无关分享被
+    # share-info 验证/递归遍历的浪费；被过滤标题 debug 级记录（量可能大，不刷屏）。
+    kept: list[dict] = []
+    for it in expanded:
+        if _share_title_relevant(media.title, it.get("title") or ""):
+            kept.append(it)
+        else:
+            logger.info(
+                "[scan] media=%s 分享标题与剧名无关，过滤候选: %s",
+                media.id, (it.get("title") or "")[:60],
+            )
+    expanded = kept
     year = await _media_year(media)
     # 候选分享筛选：rank 排序后不再硬截断前 20（诊断：前 20/60 可能全是失效码，
     # 有效分享被挤出）——放行排序后最多 _MAX_RANK_CANDIDATES 个，验证/尝试上限由
@@ -1313,6 +1467,13 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
         )
 
     missing_keys = {m for m in missing if m is not None}
+    # movie_missing 真 = 全量模式（Emby 基线缺失 soft 全量）：
+    #   - 真电影（media_type=="movie"）整部缺失 → [None]；
+    #   - tv 未收录（Emby 未收录 + scan_baseline_required=False 软处理）→ [None]，
+    #     即「tv 未收录全量」= movie_missing 且 media_type!="movie"——少帅式搜索误匹配
+    #     修复（A2/A3/A4）只对该分支生效：每文件校验（_full_mode_accept）+ 单轮限批，
+    #     防同名短剧/无关资源一次入队爆炸；真电影全量语义不同（单文件常带片名），保留
+    #     原行为不套用校验（见下方 match 阶段注释）。
     movie_missing = any(m is None for m in missing)
 
     # 2b. done 防重解除（P1-1，Oracle 审查）：Emby 二次确认入库 → 删除 es/tq/dl 解除防重；
@@ -1434,7 +1595,16 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
     limit_gb = _size_limit_gb(media, ep_limit, movie_limit)
     skip_enqueue = media.status == "downloading"  # 有进行中任务本轮不入队，但仍检查遗漏
 
+    # A2/A3/A4：tv 未收录全量模式（Emby 未收录 + scan_baseline_required=False，
+    # movie_missing 且 media_type!="movie"）→ 文件级校验 + 单轮限批，防同名短剧/无关
+    # 资源一次入队爆炸（「少帅」搜索入队 284 个错误资源案例修复）。真电影全量模式
+    # 语义不同（整部缺失的单文件常带片名），保留原行为不套用校验。
+    tv_full_mode = movie_missing and (media.media_type or "").strip().lower() != "movie"
+    total_episodes = await _media_total_episodes(media) if tv_full_mode else None
+
     enqueued = existing_skipped = size_filtered = unmatched = non_video = 0
+    unrelated_filtered = 0  # A2：全量模式文件级校验拒绝计数（无关/超集号文件）
+    enqueue_limited = False  # A4：全量模式限批触发标记（停止遍历后续分享/文件）
     unmatched_files: list[str] = []  # 未匹配文件名样例（至多收集 3 个，供 message 定位）
     share_info_ok = share_info_fail = walk_fail = tried = 0
     # 影视下载两队列重设计：记录本轮确认「有资源/已入队」的缺失集（_mark_unmatched 用——
@@ -1443,6 +1613,9 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
     _phase_start(phases, "match")
     _phase_start(phases, "enqueue")  # 匹配+入队同循环内推进；先统一标 process
     for cand in candidates:
+        # A4 全量限批：已达单轮入队上限即停止遍历后续候选（防一次入队爆炸）
+        if tv_full_mode and enqueued >= _FULL_MODE_ENQUEUE_LIMIT:
+            break
         # 验证尝试上限：对齐 n8n「遍历分享码直到找到」——失效码逐个跳过、继续后续候选，
         # 但单轮最多验证 _MAX_SHARE_TRY 个（80×~0.5s≈40s 上限，防 230 候选过慢）
         if tried >= _MAX_SHARE_TRY:
@@ -1487,6 +1660,22 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
                 #   tv 未收录全量（media_type!=movie，Emby 未收录整部追的软全量）→
                 #     文件名键（P9 权衡保留：集号未知，逐文件入队，不归一化防丢集）。
                 # 展示 episode 仍用实际文件名供定位。
+                if tv_full_mode:
+                    # A2/A3 全量模式文件级校验（仅 tv 未收录全量生效；真电影全量
+                    # 保留原行为）：无关/超集号文件拒绝入队（「少帅将我宠上天(99集)」
+                    # 99>48、「9.mp4」纯孤立数字等）——杜绝同名短剧/无关资源入队爆炸。
+                    if not _full_mode_accept(media, file_name, total_episodes):
+                        unrelated_filtered += 1
+                        shown = file_name if len(file_name) <= 80 else file_name[:80] + "…"
+                        logger.info(
+                            "[scan] media=%s 全量模式拒绝无关/超集号文件: %s",
+                            media_id, shown,
+                        )
+                        continue
+                    # A4 全量限批：单轮入队达上限即停止遍历（防一次入队爆炸）
+                    if enqueued >= _FULL_MODE_ENQUEUE_LIMIT:
+                        enqueue_limited = True
+                        break
                 if (media.media_type or "").strip().lower() == "movie":
                     matched_key = "movie:" + (media.title or "").strip()
                     if matched_key == "movie:":
@@ -1540,6 +1729,10 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
                 existing_skipped += 1  # conflict（行级并发冲突）视为跳过；不标 matched，
                 #                      防误把并发中任务标 unmatched（下轮会重新入队）
 
+        # A4 全量限批：已达单轮入队上限 → 停止遍历后续分享候选（防一次入队爆炸）
+        if enqueue_limited:
+            break
+
     _phase_done(phases, "match")
     _phase_done(phases, "enqueue")
 
@@ -1565,6 +1758,8 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
         enqueued=enqueued, unmatched=unmatched,
         size_filtered=size_filtered, non_video=non_video,
         existing_skipped=existing_skipped,
+        unrelated_filtered=unrelated_filtered,
+        full_mode_limit=_FULL_MODE_ENQUEUE_LIMIT if tv_full_mode else 0,
         missing_episodes=[item["episode"] for item in scan_detail["missing_items"]]
         if scan_detail["missing_items"] else None,
         share_info_all_failed_candidates=share_info_all_failed,
@@ -1579,6 +1774,7 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
         "unmatched": unmatched,
         "unmatched_marked": unmatched_marked,  # 两队列：本轮新标静默的缺失集数（§4.1）
         "non_video": non_video,
+        "unrelated_filtered": unrelated_filtered,  # A2：全量模式无关/超集号文件过滤数
         "share_info_ok": share_info_ok,
         "share_info_fail": share_info_fail,
         "walk_fail": walk_fail,

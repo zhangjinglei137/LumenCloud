@@ -23,9 +23,10 @@ P2-10·P0-1 / _get_link_wait_visible / addUri / 失败回退 CAS / 节点级状�
   落盘，由容量 check 内层 used 覆盖，避免双重计算假性容量不足）。无独立账本，
   随状态迁移自动增减（释放点 = 离开集合的任一转移：→downloading/done/failed/
   回退 pending）。
-- 准入并发：process_transfer_queue 每轮可准入多个任务（max_concurrent 默认 3），
-  不再是单任务全局锁串行。每个任务准入前在同一事务内完成
+- 准入并发：process_transfer_queue 每轮可准入多个任务，准入唯一约束 = 网盘容量
+  （不再设并发数上限）。每个任务准入前在同一事务内完成
   「读 reserved 聚合 + 容量 check + CAS 抢占（pending→transferring）」；
+  容量不足 → quota_wait 按网盘空间排队（不消耗 retry），空间释放后唤醒重试。
   原子性 = 进程内 _admission_lock（单 worker 可靠）+ SQLite 单写者
   （事务内先写锁行触发写锁，准入段跨进程串行）+ 行级 CAS 条件更新
   （记预留 = 抢占本身，绝不重复准入同一任务）。
@@ -86,7 +87,9 @@ logger = logging.getLogger(__name__)
 
 _IMPLEMENTED = True
 
-# aria2 任务 comment 来源标记前缀（§12.2 GID 来源校验：陌生任务即本轮跳过并告警）
+# aria2 任务 comment 来源标记前缀（add_uri 透传用；2026-09 修订：aria2 1.36.0
+# 静默丢弃 comment option，GID 来源校验已改用 DB gid 白名单（_admit_batch 段 2），
+# comment 仅作未来 aria2 版本兼容的冗余标记，不再参与校验）
 _COMMENT_PREFIX = "lumencloud:"
 # P2（影视下载两队列重设计 §7）：aria2 落盘名格式化正则（对齐 n8n formatFileName，
 # SxxExx 命中 → 「剧名 - SxxExx - 第 N 集.ext」；SxxExxx 三位集数保留）。
@@ -174,14 +177,8 @@ _alert_cooldown: dict[str, tuple[float, str]] = {}
 # 递归）覆盖，再计入会双重计算导致假性容量不足（安全但过度保守）。reserved =
 # 「未落盘在途预留」（transferring/scrape/library），离开即自动释放。
 _INFLIGHT_STATUSES = ("transferring", "scrape", "library")
-# max_concurrent 并行口径（§5.3 并行上限）：**保持含 downloading**——实际下载中
-# 的任务仍占并发额度，否则 downloading 不计数会让上限失效（无限准入转存）。
-_RUNNING_STATUSES = ("transferring", "downloading", "scrape", "library")
 # 进行中态判定（媒体不再有任一进行中任务 → 回 tracking）：排队/配额等待也算处理中。
 _ACTIVE_STATUSES = ("pending", "transferring", "downloading", "scrape", "library", "quota_wait")
-# 并发准入硬上限（system_config download_queue_max_concurrent，0=不限；§5.3）
-_MAX_CONCURRENT_KEY = "download_queue_max_concurrent"
-_DEFAULT_MAX_CONCURRENT = 3
 # 准入原子段事务级锁行（system_config 表键；SQLite 单写者下写即持写锁，
 # PG 多 worker 下需预置该行方可 SELECT FOR UPDATE 串行化准入段）
 _ADMISSION_LOCK_KEY = "_transfer_admission_lock"
@@ -727,22 +724,6 @@ async def _record_alert(media_id, message, category=None, bucket=None) -> None:
     ))
 
 
-def _read_max_concurrent() -> int:
-    """读取并发准入上限（system_config download_queue_max_concurrent，默认 3，0=不限；§5.3）。
-
-    读取/解析失败回退默认 3（fail-safe：限流优先，不因配置错误无限并发）。
-    """
-    raw = config_store.get(_MAX_CONCURRENT_KEY, None)
-    if raw is None:
-        return _DEFAULT_MAX_CONCURRENT
-    try:
-        value = int(str(raw).strip())
-    except (TypeError, ValueError):
-        logger.warning("[transfer] %s 非整数 %r，用默认 %d", _MAX_CONCURRENT_KEY, raw, _DEFAULT_MAX_CONCURRENT)
-        return _DEFAULT_MAX_CONCURRENT
-    return value if value > 0 else 0 if value == 0 else _DEFAULT_MAX_CONCURRENT
-
-
 async def _read_reserved() -> int:
     """reserved 聚合：未落盘在途集合（transferring/scrape/library）file_size 求和（§5.1）。
 
@@ -1093,7 +1074,7 @@ async def _try_admit_one(t0) -> str:
                             .where(SystemConfig.key == _ADMISSION_LOCK_KEY)
                             .values(updated_at=now)
                         )
-                except Exception as exc:  # noqa: BLE001  锁行不可用 → 退回 CAS+max_concurrent 兜底
+                except Exception as exc:  # noqa: BLE001  锁行不可用 → 退回 CAS 兜底
                     logger.debug("[transfer] 准入锁行不可用（依赖 CAS 兜底）: %s", exc)
                 # 读 reserved（含本事务之前的已提交 in-flight；自身抢占后自动计入）
                 reserved = await _read_reserved_in_tx(s)
@@ -1204,8 +1185,8 @@ async def _admit_batch() -> None:
       0.5 释放唤醒 quota_wait → pending（单次消费入口统一唤醒全部，§4.2；唤醒前
          统计 wait_since 超 24h 行数，>0 发一次 flow_error 通知，_record_alert
          category="capacity" 沿用 P2-2 节流）；真正能准入多少由后续容量 check 把关。
-      1. max_concurrent（system_config download_queue_max_concurrent，默认 3，0=不限）
-         约束在途准入数；每轮准入数量 = min(max_concurrent, 容量可容纳数)。
+      1. 准入唯一约束 = 网盘容量（不再设并发数上限）：每轮准入数量 = 容量可容纳数；
+         容量不足 → quota_wait 按网盘空间排队（空间释放后由下轮入口唤醒重试）。
       2. GID 来源校验（§12.2 简化版）整批一次：存在陌生 aria2 活动/等待任务 → 整批
          停止（fail-closed，防 n8n 误启动双转存）。
       3. 准入循环内每任务走 _try_admit_one；容量不足/容量不可用/任务失败回退后停止
@@ -1280,10 +1261,16 @@ async def _admit_batch() -> None:
             await s.commit()
             return
 
-    # 2) GID 来源校验兜底（§12.2 简化版）：存在陌生 aria2 活动/等待任务 → 整批跳过并
+    # 2) GID 来源校验兜底（§12.2）：存在陌生 aria2 活动/等待任务 → 整批跳过并
     #    告警（不处理、不 ++quota_reject_count；防 n8n 被误启动时的双转存）。
     #    P2-6（council）：合并校验 active + waiting 队列——waiting 中的陌生任务同样
     #    代表排队中的双转存，仅校验 active 会漏检；任一调用异常仍走 fail-closed。
+    #    判定口径（2026-09 修订，oracle 评审）：不依赖 aria2 comment——实测 aria2
+    #    1.36.0 静默丢弃 addUri 的 comment option（getOption/tellStatus 均读不到），
+    #    comment 恒空会导致自家任务也被判陌生、转存永久停摆。改为 **DB gid 白名单**：
+    #    aria2 活动/等待任务的 gid 必须在本系统 download_queue 已签发 gid 集合内
+    #    （status='downloading' 且 aria2_gid 非空）；不在集合 → 判陌生拦截。
+    #    权威源 = DB（_commit_downloading 落库），版本无关，不依赖 aria2 行为。
     try:
         actives = await aria2.client.tell_active() or []
         tell_waiting = getattr(aria2.client, "tell_waiting", None)
@@ -1294,32 +1281,30 @@ async def _admit_batch() -> None:
             None, f"aria2 状态不可用，暂停转存（GID 校验失败）: {exc}", category="gid",
         )
         return
+    async with async_session() as s:
+        known_gids = {
+            g for (g,) in (
+                await s.execute(
+                    select(DownloadQueue.aria2_gid).where(
+                        DownloadQueue.status == "downloading",
+                        DownloadQueue.aria2_gid.isnot(None),
+                    )
+                )
+            ).all()
+        }
     for t in actives:
-        if not str(t.get("comment") or "").startswith(_COMMENT_PREFIX):
+        if t.get("gid") not in known_gids:
             await _record_alert(
                 None,
-                "检测到陌生 aria2 任务（无本系统 GID 来源标记），暂停转存（§12.2 冷切换兜底），"
-                "请人工确认 n8n 未误启动",
+                "检测到非本系统 aria2 任务（gid 不在 download_queue 已签发集合中），"
+                "暂停转存（§12.2 冷切换兜底），请人工确认 n8n 未误启动",
                 category="gid",
             )
             return
 
-    # 3) 已准入在途数（并行上限计数用 _RUNNING_STATUSES——含 downloading，§5.3）
-    max_concurrent = _read_max_concurrent()
-    async with async_session() as s:
-        in_flight = (
-            await s.scalar(
-                select(func.count()).select_from(DownloadQueue).where(
-                    DownloadQueue.status.in_(_RUNNING_STATUSES)
-                )
-            )
-        ) or 0
-
-    # 3) 准入循环：in_flight 达上限或无可准入任务/资源受限时停止
-    admitted = 0
+    # 3) 准入循环：无可准入任务/资源受限时停止（准入唯一约束 = 网盘容量——容量不足
+    #    置 quota_wait 按空间排队，由下一轮 job/事件续跑唤醒；无并发数上限）
     while True:
-        if max_concurrent and (in_flight + admitted) >= max_concurrent:
-            break
         result = await _try_admit_one(t0)
         if result == "no_pending":
             break
@@ -1328,8 +1313,6 @@ async def _admit_batch() -> None:
         # 语义对齐；避免对同一回退任务自旋重试到无限循环）。
         if result in ("conflict", "quota_wait", "capacity_unavailable", "retry", "terminal_failed"):
             break
-        if result == "admitted":
-            admitted += 1
 
 
 # ---------------------------------------------------------------------------
@@ -1483,7 +1466,7 @@ async def trigger_download_complete(gid: str) -> bool:
 # - G6  ：下载完成不再删夸克文件（_complete_download / trigger_download_complete 的
 #         alist.remove 已移除）——入库确认（library 节点完成）后才删，由后续 lane 执行。
 # - P5  ：旧三表（episode_state/transfer_queue/download_task）→ DownloadQueue 单表；
-#         容量预算并发（§5，DB 聚合 reserved + max_concurrent）；trigger_download_complete
+#         容量预算并发（§5，DB 聚合 reserved，准入唯一约束=容量）；trigger_download_complete
 #         （§6.2 aria2 回调推进，幂等条件更新）。
 # - 议会验证（P0/P1）：
 #   - P0  暂停开关落地：_admit_batch 入口直读 system_config download_queue_paused
@@ -1492,7 +1475,7 @@ async def trigger_download_complete(gid: str) -> bool:
 #         quota_reject_count++（CAS 门控）；消费入口统一唤醒回 pending；
 #         >24h 持续等待 flow_error 告警（category="capacity" 节流）。
 #   - P1-4 reserved 口径收紧：_INFLIGHT_STATUSES 不含 downloading（已落盘由 used
-#         覆盖，防双重计算）；max_concurrent 并行口径用 _RUNNING_STATUSES（含
-#         downloading），_ACTIVE_STATUSES（media 处理中判定）保持含 downloading。
+#         覆盖，防双重计算）；_ACTIVE_STATUSES（media 处理中判定）保持含 downloading。
+#         准入无并发数上限（容量为唯一约束，空间不足 quota_wait 排队）。
 #   - P1  gamma：_commit_downloading 成功发出 download_started 通知（§6.3）。
 # ---------------------------------------------------------------------------

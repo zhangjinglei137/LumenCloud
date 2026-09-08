@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import TmdbSearch from '../components/TmdbSearch.vue'
@@ -29,8 +29,14 @@ onMounted(() => {
   fetchCurrent()
 })
 
+/** 前端本地分页（Emby 库接口无分页参数；筛选结果客户端切片展示） */
+const currentPage = ref(1)
+const pageSize = ref(20)
+
 /** 按当前筛选发请求（类型 + 连载状态；纳入状态为本地过滤，不参请求） */
 function fetchCurrent() {
+  // 重新拉取数据时回到第一页，避免旧页码落在新结果集之外
+  currentPage.value = 1
   store.fetchLibrary({
     itemType: typeFilter.value === 'anime' ? undefined : typeFilter.value || undefined,
     anime: typeFilter.value === 'anime',
@@ -52,6 +58,26 @@ const filteredItems = computed<EmbyLibraryItem[]>(() => {
 /** D11：当前筛选结果中尚未纳入的条目（批量加入的目标） */
 const pendingItems = computed<EmbyLibraryItem[]>(() =>
   filteredItems.value.filter((it) => !it.in_media),
+)
+
+/** 当前页的切片结果（卡片墙渲染数据源） */
+const pagedItems = computed<EmbyLibraryItem[]>(() => {
+  const start = (currentPage.value - 1) * pageSize.value
+  return filteredItems.value.slice(start, start + pageSize.value)
+})
+
+/** 本地筛选（关键字 / 纳入状态）变化时回到第一页 */
+watch([keyword, inclusionFilter], () => {
+  currentPage.value = 1
+})
+
+/** 订阅操作使条目移出「未纳入」筛选时，当前页越界自动回收 */
+watch(
+  () => filteredItems.value.length,
+  (len) => {
+    const maxPage = Math.max(1, Math.ceil(len / pageSize.value))
+    if (currentPage.value > maxPage) currentPage.value = maxPage
+  },
 )
 
 /** 海报加载失败记录（emby_id → 展示标题占位，避免破图） */
@@ -287,7 +313,7 @@ async function subscribeAll() {
       <!-- 卡片墙：复用影视库的 lc-media-grid / lc-poster 视觉 -->
       <div v-else class="lc-media-grid">
         <div
-          v-for="m in filteredItems"
+          v-for="m in pagedItems"
           :key="m.emby_id"
           class="lc-media-card"
           @click="openInEmby(m)"
@@ -381,6 +407,19 @@ async function subscribeAll() {
 
       <!-- 有结果但关键字/筛选过滤后为空 -->
       <el-empty v-if="!store.loading && store.items.length > 0 && filteredItems.length === 0" description="没有匹配的条目" />
+
+      <!-- 前端本地分页（Emby 接口无分页参数；单页时自动隐藏） -->
+      <el-pagination
+        v-if="filteredItems.length > 0"
+        v-model:current-page="currentPage"
+        v-model:page-size="pageSize"
+        class="lc-pagination"
+        background
+        layout="total, sizes, prev, pager, next, jumper"
+        :total="filteredItems.length"
+        :page-sizes="[20, 50, 100]"
+        hide-on-single-page
+      />
     </div>
 
     <!-- G17：无 tmdb_id 条目的 TMDB 搜索对话框 -->

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import TmdbSearch from '../components/TmdbSearch.vue'
 import { useApprovalsStore } from '../stores/approvals'
@@ -30,6 +30,19 @@ const historyItems = () => store.items.filter((i) => i.status !== 'pending')
 function visibleItems(): ApprovalItem[] {
   return tab.value === 'pending' ? pendingItems() : historyItems()
 }
+
+/** 前端本地分页（接口无分页参数；审批卡片较高，默认每页 10 条） */
+const currentPage = ref(1)
+const pageSize = ref(10)
+const pagedItems = computed<ApprovalItem[]>(() => {
+  const start = (currentPage.value - 1) * pageSize.value
+  return visibleItems().slice(start, start + pageSize.value)
+})
+
+/** tab 切换（待审批 / 处理记录）回到第一页 */
+watch(tab, () => {
+  currentPage.value = 1
+})
 
 function statusTag(status: string): { label: string; type: string } {
   if (status === 'pending') return { label: '待审批', type: 'warning' }
@@ -151,7 +164,7 @@ async function submitRequest() {
         :image-size="100"
       />
       <div v-else v-loading="store.loading && store.items.length === 0" class="approval-list">
-        <div v-for="item in visibleItems()" :key="item.id" class="approval-item">
+        <div v-for="item in pagedItems" :key="item.id" class="approval-item">
           <div class="poster">
             <img v-if="poster(item.poster_path)" :src="poster(item.poster_path)!" :alt="item.title" loading="lazy" />
             <span v-else>{{ item.title }}</span>
@@ -194,6 +207,20 @@ async function submitRequest() {
           </div>
         </div>
       </div>
+
+      <!-- 前端本地分页（单页时自动隐藏） -->
+      <el-pagination
+        v-if="visibleItems().length > 0"
+        v-model:current-page="currentPage"
+        v-model:page-size="pageSize"
+        class="lc-pagination"
+        style="margin-top: 16px"
+        background
+        layout="total, sizes, prev, pager, next"
+        :total="visibleItems().length"
+        :page-sizes="[10, 20, 50]"
+        hide-on-single-page
+      />
     </div>
 
     <!-- 提交想看对话框 -->
