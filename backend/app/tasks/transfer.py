@@ -64,7 +64,7 @@ from sqlalchemy import func, select, update
 
 from app.config import settings
 from app.database import async_session
-from app.models import DownloadQueue, Media, SystemConfig
+from app.models import DownloadQueue, Media, SystemConfig, TaskQueue
 from app.services import alist, aria2, capacity, cloudsaver, config_store
 from app.services.notifier import (
     EVENT_DOWNLOAD_COMPLETE,
@@ -1174,6 +1174,88 @@ async def _read_reserved_in_tx(s) -> int:
     return int(total or 0)
 
 
+async def _fetch_from_task_queue(num: int = 10) -> int:
+    """从 TaskQueue(ready) 按 (created_at, id) FIFO 取件生成 DownloadQueue(pending)。
+
+    queue-flow-rework Task 4：下载队列从巡检队列取件（巡检只写 task_queue，
+    DownloadQueue 由准入端按序取件生成，D2「取件源双轨」①）。
+
+    取件契约（Task 2 review Imp#1 收敛裁决）：
+    - **只取 status='ready'**：pending/probing/error 无完整转存凭据绝不提升
+      （防无凭据行 promote）；done 为源行终态不重复取件。
+    - **跳过同 (media_id, episode) 已有 DownloadQueue 行的任务**（任意状态，含
+      Task 2 前存量 promote 遗留 / 人工 skip 补写防重终态 / 并发取件产物；防重
+      权威源 = download_queue UNIQUE(media_id, episode)）。被跳过行的源 TaskQueue
+      同步置 done——该键已由执行层行接管，置终态防每轮重复扫描占用取件名额
+      （FIFO 饿死防护）。
+    - 同事务：INSERT DownloadQueue(status='pending') + UPDATE TaskQueue→done
+      （源行终态防重复取件）；行级 CAS = 条件更新 WHERE status='ready' 捕获并发
+      冲突（rowcount=0 → 并发方已取件，跳过），与 _enqueue 的 UNIQUE 捕获协同。
+    - download_name 暂不填（Task 7 转存成功后置格式化，避免与分享原始名分叉）。
+    - 返回本次生成的行数。
+    """
+    fetched = 0
+    now = _now()
+    async with async_session() as s:
+        async with s.begin():
+            rows = (
+                await s.execute(
+                    select(TaskQueue)
+                    .where(TaskQueue.status == "ready")
+                    .order_by(TaskQueue.created_at.asc(), TaskQueue.id.asc())
+                    .limit(num)
+                )
+            ).scalars().all()
+            if not rows:
+                return 0
+            # 预查同键已有 DQ 行（任意状态）：命中 → 不生成新行。按 media_id/episode
+            # 双列 IN 取超集后按 (media_id, episode) 精确匹配（行值表达式对 SQLite
+            # 不是必需的，避免方言差异）。
+            mid_list = [r.media_id for r in rows]
+            ep_list = [r.episode for r in rows]
+            existing_keys = {
+                (mid, ep)
+                for (mid, ep) in (
+                    await s.execute(
+                        select(DownloadQueue.media_id, DownloadQueue.episode).where(
+                            DownloadQueue.media_id.in_(mid_list),
+                            DownloadQueue.episode.in_(ep_list),
+                        )
+                    )
+                ).all()
+            }
+            for r in rows:
+                if (r.media_id, r.episode) in existing_keys:
+                    # 同键已有 DQ 行（防重权威源）→ 不生成新 DQ 行，仅源行置 done
+                    # 收尾（防每轮重复取件扫描；对既有 DQ 无任何影响）。
+                    await s.execute(
+                        update(TaskQueue)
+                        .where(TaskQueue.id == r.id, TaskQueue.status == "ready")
+                        .values(status="done", updated_at=now)
+                    )
+                    continue
+                # CAS 抢占源行：仅 status='ready' 可置 done；rowcount=0 → 并发方已
+                # 取件（本轮跳过，其 DQ 行由并发事务负责）。
+                res = await s.execute(
+                    update(TaskQueue)
+                    .where(TaskQueue.id == r.id, TaskQueue.status == "ready")
+                    .values(status="done", updated_at=now)
+                )
+                if res.rowcount != 1:
+                    continue
+                # 拷贝 Task 2 快照字段 → DQ 同名字段（pwd_id 即设计文档的 pwd）
+                s.add(DownloadQueue(
+                    media_id=r.media_id, episode=r.episode, task_queue_id=r.id,
+                    file_name=r.file_name or "", file_size=r.file_size or 0,
+                    share_code=r.share_code or "",
+                    pwd_id=r.pwd_id, stoken=r.stoken, receive_code=r.receive_code,
+                    fids=r.fids, fid_tokens=r.fid_tokens, folder_id=r.folder_id,
+                    status="pending", enqueued_at=now, updated_at=now,
+                ))
+                fetched += 1
+    return fetched
+
+
 async def _admit_batch() -> None:
     """阶段 B：容量预算并发准入（§5.3）。
 
@@ -1185,6 +1267,9 @@ async def _admit_batch() -> None:
       0.5 释放唤醒 quota_wait → pending（单次消费入口统一唤醒全部，§4.2；唤醒前
          统计 wait_since 超 24h 行数，>0 发一次 flow_error 通知，_record_alert
          category="capacity" 沿用 P2-2 节流）；真正能准入多少由后续容量 check 把关。
+      0.75 取件（queue-flow-rework Task 4）：TaskQueue(ready) 按 (created_at, id)
+         FIFO 生成 DownloadQueue(pending)，源行同事务置 done——有 ready 任务先取件
+         再准入（null pending 时若先空跑返回，ready 任务将永不取件，下载停摆）。
       1. 准入唯一约束 = 网盘容量（不再设并发数上限）：每轮准入数量 = 容量可容纳数；
          容量不足 → quota_wait 按网盘空间排队（空间释放后由下轮入口唤醒重试）。
       2. GID 来源校验（§12.2 简化版）整批一次：存在陌生 aria2 活动/等待任务 → 整批
@@ -1243,7 +1328,16 @@ async def _admit_batch() -> None:
             category="capacity", bucket="capacity",
         )
 
-    # 1) 无 pending 直接空跑（唤醒后的 quota_wait 已计入 pending；不触发 GID 校验/预检）
+    # 1) 取件 → pending（queue-flow-rework Task 4，阶段 1 前置）：TaskQueue(ready)
+    #    按 (created_at, id) FIFO 生成 DownloadQueue(pending)，源行同事务置 done
+    #    （防重复取件）。先取件再查 pending：ready 任务先转 pending 再走准入——
+    #    否则无 pending 时直接空跑，ready 任务永不取件（巡检已入队但下载停摆）。
+    #    取件只认 status='ready'（pending/probing/error 无凭据不提升，裁决见 Task 2
+    #    review Imp#1 收敛），跳过同键已有 DownloadQueue 行（防重权威源）。
+    await _fetch_from_task_queue()
+
+    # 1b) 无 pending 直接空跑（取件后的 pending 已计入；唤醒后的 quota_wait 已计入；
+    #     不触发 GID 校验/预检）
     async with async_session() as s:
         has_pending = (
             await s.scalar(

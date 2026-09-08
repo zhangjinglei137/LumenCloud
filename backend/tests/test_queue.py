@@ -26,6 +26,7 @@ from app.database import Base
 import app.models  # noqa: F401  注册全部 ORM 模型
 import app.routers.queue as queue_mod
 import app.tasks.scan as scan_mod
+import app.tasks.transfer as transfer_mod
 from app.models import DownloadQueue, Media, SystemConfig, TaskQueue
 
 
@@ -82,6 +83,13 @@ def env(monkeypatch):
     return fakes
 
 
+@pytest.fixture()
+def transfer_env(monkeypatch, db):
+    """把 transfer 模块的 async_session 指向测试库（_fetch_from_task_queue 直接调用）。"""
+    monkeypatch.setattr(transfer_mod, "async_session", db)
+    return db
+
+
 # ---------------------------------------------------------------------------
 # 种子数据 / 读取
 # ---------------------------------------------------------------------------
@@ -114,14 +122,14 @@ async def seed_dq(db, mid, *, episode="S01E01", status="pending", enqueued_at=No
 
 
 async def seed_tq(db, mid, *, episode="S01E01", status="ready", share_code="TqXxYyZz1234",
-                  probe_attempt=1, silent_until=None, error=None):
+                  probe_attempt=1, silent_until=None, error=None, created_at=None):
     async with db() as s:
         tq = TaskQueue(
             media_id=mid, episode=episode, file_name="ep.mkv", file_size=1024,
             share_code=share_code, pwd_id="pwd", stoken="st", receive_code="rc",
             fids="[]", fid_tokens="[]", folder_id="fd", status=status,
             probe_attempt=probe_attempt, silent_until=silent_until, error=error,
-            created_at=_now(), updated_at=_now(),
+            created_at=created_at or _now(), updated_at=_now(),
         )
         s.add(tq)
         await s.flush()
@@ -598,3 +606,106 @@ def test_progress_aggregates_tell_status_and_degrades(db, env):
     assert by_gid["gid-1"]["progress"] == 25.0 and by_gid["gid-1"]["speed"] == 500
     # 失败行降级：gid/字段保留，speed/progress 为 null
     assert by_gid["gid-2"]["progress"] is None and by_gid["gid-2"]["speed"] is None
+
+
+# ---------------------------------------------------------------------------
+# queue-flow-rework Task 4：TaskQueue FIFO 取件生成 download_queue(pending)
+# ---------------------------------------------------------------------------
+
+def test_fetch_from_task_queue_fifo_generates_pending_and_done(db, env, transfer_env):
+    """Task 4：TaskQueue(ready) 按 (created_at, id) FIFO 取件 → DownloadQueue(pending)。
+
+    断言：按 created_at（同刻按 id 决胜）顺序生成 pending 行、转存凭据快照整体拷贝、
+    源 TaskQueue 行置 done；同键已有 DownloadQueue 行（任意状态）的 ready 任务被跳过
+    （不重复生成，防止重复下载/覆盖）。
+    """
+    mid = run(seed_media(db))
+    base = _now()
+    t1 = run(seed_tq(db, mid, episode="S01E01", created_at=base - timedelta(minutes=2),
+                     share_code="FifoAaa111111"))
+    t2 = run(seed_tq(db, mid, episode="S01E02", created_at=base - timedelta(minutes=1)))
+    t3 = run(seed_tq(db, mid, episode="S01E03", created_at=base - timedelta(minutes=1)))  # 同刻 → id 决胜
+    # 同键已有 DQ 行（pending，任意状态皆跳过）→ 该 ready 任务不生成新行
+    t4 = run(seed_tq(db, mid, episode="S01E04", created_at=base))
+    dq_existing = run(seed_dq(db, mid, episode="S01E04", status="pending"))
+
+    async def _fetch():
+        return await transfer_mod._fetch_from_task_queue()
+    n = run(_fetch())
+    assert n == 3  # S01E04 同键已存在 → 跳过
+
+    async def _rows():
+        async with db() as s:
+            dqs = (await s.execute(
+                select(DownloadQueue).where(DownloadQueue.media_id == mid)
+                .order_by(DownloadQueue.id)
+            )).scalars().all()
+            tqs = (await s.execute(
+                select(TaskQueue).where(TaskQueue.media_id == mid)
+                .order_by(TaskQueue.created_at, TaskQueue.id)
+            )).scalars().all()
+            return dqs, tqs
+    dqs, tqs = run(_rows())
+
+    # 源行终态：取件的 ready 任务全部置 done（同键已有 DQ 的跳过行一并 done 收尾，
+    # 防每轮取件重复扫描占用 FIFO 名额）
+    assert [t.id for t in tqs] == [t1, t2, t3, t4] and {t.status for t in tqs} == {"done"}
+
+    # FIFO 顺序生成 pending：3 条新行按 (created_at, id) 顺序（task_queue_id 溯源）
+    new_dqs = [d for d in dqs if d.task_queue_id is not None]
+    assert [d.episode for d in new_dqs] == ["S01E01", "S01E02", "S01E03"]
+    by_ep = {d.episode: d for d in dqs}
+    assert by_ep["S01E01"].status == "pending"
+    assert by_ep["S01E02"].task_queue_id == t2
+    assert by_ep["S01E03"].task_queue_id == t3
+    # 转存凭据快照整体拷贝（Task 2 快照字段 → DQ 同名字段）；download_name Task 7 前不填
+    snap = by_ep["S01E01"]
+    assert snap.task_queue_id == t1 and snap.share_code == "FifoAaa111111"
+    assert snap.pwd_id == "pwd" and snap.stoken == "st" and snap.receive_code == "rc"
+    assert snap.fids == "[]" and snap.fid_tokens == "[]" and snap.folder_id == "fd"
+    assert snap.file_name == "ep.mkv" and snap.file_size == 1024
+    assert snap.download_name is None
+    # 同键已有 DQ 行未被复制：S01E04 仍只有种子行（id 不变）
+    assert by_ep["S01E04"].id == dq_existing
+
+    # 幂等：二次取件无新行、无新状态变更
+    assert run(_fetch()) == 0
+
+
+def test_fetch_from_task_queue_only_ready_and_num_limit(db, env, transfer_env):
+    """Task 4：只取 status='ready'（pending/error/done 不取）；num 限制批大小。"""
+    mid = run(seed_media(db))
+    run(seed_tq(db, mid, episode="S01E01", status="pending"))
+    run(seed_tq(db, mid, episode="S01E02", status="error"))
+    run(seed_tq(db, mid, episode="S01E03", status="done"))
+    for r in range(4, 14):
+        run(seed_tq(db, mid, episode=f"S01E{r:02d}", status="ready"))  # 10 条 ready
+
+    async def _fetch(num=None):
+        return await transfer_mod._fetch_from_task_queue() if num is None \
+            else await transfer_mod._fetch_from_task_queue(num=num)
+
+    # num=5 → 只取 5 条最早的 ready；pending/error/done 一律不取
+    assert run(_fetch(5)) == 5
+    async def _chk():
+        async with db() as s:
+            dqs = (await s.execute(
+                select(DownloadQueue).where(DownloadQueue.media_id == mid)
+            )).scalars().all()
+            tqs = (await s.execute(
+                select(TaskQueue).where(TaskQueue.media_id == mid)
+            )).scalars().all()
+            return dqs, tqs
+    dqs, tqs = run(_chk())
+    assert len(dqs) == 5
+    taken = {d.episode for d in dqs}
+    assert taken == {"S01E04", "S01E05", "S01E06", "S01E07", "S01E08"}  # FIFO 最前 5 条
+    # 已取件源行 done；未取件 ready 行保持 ready；pending/error/done 源行状态不变
+    by_ep = {t.episode: t for t in tqs}
+    assert by_ep["S01E04"].status == "done" and by_ep["S01E08"].status == "done"
+    assert by_ep["S01E09"].status == "ready" and by_ep["S01E13"].status == "ready"
+    assert by_ep["S01E01"].status == "pending" and by_ep["S01E02"].status == "error"
+    assert by_ep["S01E03"].status == "done"
+    # 默认 num=10：剩余 5 条 ready 全部取走
+    assert run(_fetch()) == 5
+    assert len(run(_chk())[0]) == 10
