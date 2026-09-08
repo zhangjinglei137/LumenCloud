@@ -128,8 +128,12 @@ class Aria2Client:
         return str(result)
 
     async def tell_status(self, gid: str) -> dict[str, Any]:
-        """aria2.tellStatus：轮询下载状态（active/waiting/paused/error/complete/removed）。"""
-        result = await self._rpc("aria2.tellStatus", [[gid], list(_DEFAULT_KEYS)])
+        """aria2.tellStatus：轮询下载状态（active/waiting/paused/error/complete/removed）。
+
+        参数必须平铺 [gid, keys]（曾误写 [[gid], keys] 把 gid 包成数组 → aria2 拒绝
+        → HTTP 400 → 下载完成状态永远轮询不到，任务卡在 downloading 直至超时回滚）。
+        """
+        result = await self._rpc("aria2.tellStatus", [gid, list(_DEFAULT_KEYS)])
         return result or {}
 
     async def get_global_stat(self) -> dict[str, Any]:
