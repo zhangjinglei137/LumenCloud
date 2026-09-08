@@ -24,7 +24,7 @@
 
 - [x] 5.1 nastools webhook transfer.finished 后调用 Emby 媒体库扫描接口（限定该影视媒体库）；验证 test_nastools_notify / test_emby_series_status 适配后通过
 - [x] 5.2 Emby 扫描失败降级轮询确认（node_attempt 重试与超时回退沿用）；验证 library_check 超时/Rerun 用例通过
-- [ ] 5.3 入库 done 后删除夸克、释放容量预留并触发下载队列续跑；验证 test_fix_p0_recovery_cleanup_transfer 中「删夸克 + 释放」断言通过
+- [x] 5.3 入库 done 后删除夸克、释放容量预留并触发下载队列续跑；验证 test_fix_p0_recovery_cleanup_transfer 中「删夸克 + 释放」断言通过
 
 ## 6. 前端任务队列扁平化
 

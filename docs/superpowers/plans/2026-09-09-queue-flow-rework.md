@@ -255,11 +255,11 @@ git commit -m "feat(frontend): 任务队列列表扁平化展示，完成即剔�
 **Interfaces:**
 - Consumes: Task 1-10 全部实现。
 
-- [ ] **Step 1: 全量后端测试**：`cd backend && python -m pytest tests/ -q` 全部通过。
-- [ ] **Step 2: 前端构建**：`cd frontend && npm run build` 通过。
-- [ ] **Step 3: 静态检查**：`grep -rn "unmatched\|silent_until" backend/app | grep -v tests` 验证运行代码无残留静默逻辑（字段定义/迁移除外）。
-- [ ] **Step 4: 手动端到端演练清单**（记录到 runbook 或团队验证）：添加影视 → 统一巡检产出缺失集落任务队列 → 下载队列 FIFO 容量准入 → 转存后格式化 → 下载 → nastools 转移 → Emby 全库 Refresh → 入库 done → 释放容量续跑。
-- [ ] **Step 5: Commit**
+- [x] **Step 1: 全量后端测试**：`cd backend && python -m pytest tests/ -q` 全部通过。
+- [x] **Step 2: 前端构建**：`cd frontend && npm run build` 通过。
+- [x] **Step 3: 静态检查**：`grep -rn "unmatched\|silent_until" backend/app | grep -v tests` 验证运行代码无残留静默逻辑（字段定义/迁移除外）。
+- [x] **Step 4: 手动端到端演练清单**（记录到 runbook 或团队验证）：添加影视 → 统一巡检产出缺失集落任务队列 → 下载队列 FIFO 容量准入 → 转存后格式化 → 下载 → nastools 转移 → Emby 全库 Refresh → 入库 done → 释放容量续跑。
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
