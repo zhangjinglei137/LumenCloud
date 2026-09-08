@@ -264,9 +264,11 @@ def test_scan_tv_full_mode_filters_unrelated_files(db, monkeypatch):
     detail = json.loads(tr.scan_detail)
     assert detail["enqueued"] == 2
     assert detail["unrelated_filtered"] == 3
-    # 落库的 download_queue 只有通过校验的 2 个文件
+    # 落库的 download_queue 只有通过校验的 2 个文件；
+    # 标准 SxxExx 文件（少帅.S01E01.mkv）归一化为集号键 S01E01；
+    # 中文「第30集」无季号 → 保留文件名键（P9 防跨季冲突权衡）
     dq = run(_read_downloads(db, mid))
-    assert [row.episode for row in dq] == ["少帅 第30集.mkv", "少帅.S01E01.mkv"]
+    assert [row.episode for row in dq] == ["S01E01", "少帅 第30集.mkv"]
     assert all(row.status == "pending" for row in dq)
 
 
@@ -303,7 +305,7 @@ def test_scan_tv_full_mode_limit_batch(db, monkeypatch):
     detail = json.loads(tr.scan_detail)
     assert detail["enqueued"] == 2
     dq = run(_read_downloads(db, mid))
-    assert [row.episode for row in dq] == ["少帅.S01E01.mkv", "少帅.S01E02.mkv"]
+    assert [row.episode for row in dq] == ["S01E01", "S01E02"]
 
 
 def test_scan_tv_full_mode_total_none_still_filters_pure_numeric(db, monkeypatch):
@@ -319,7 +321,36 @@ def test_scan_tv_full_mode_total_none_still_filters_pure_numeric(db, monkeypatch
     assert "已入队 2 个资源" in tr.message
     assert "1 个无关/超集号文件过滤" in tr.message
     dq = run(_read_downloads(db, mid))
-    assert [row.episode for row in dq] == ["少帅 9.mp4", "少帅.S01E01.mkv"]
+    # 少帅.S01E01.mkv（标准 SxxExx）→ 归一化集号键 S01E01；「少帅 9.mp4」
+    # 无 SxxExx（纯数字+剧名）→ 保留文件名键
+    assert [row.episode for row in dq] == ["S01E01", "少帅 9.mp4"]
+
+
+def test_scan_tv_full_mode_same_episode_multiple_names_dedup(db, monkeypatch):
+    """2026-09 重复下载事故回归：tv 全量模式同集多命名版本只入队一次。
+
+    线上案例「现在不是出轨的问题」（Emby 未收录 → tv 全量模式）：网盘同一集存在
+    friDay.mkv / 全称.mp4 / 中文名.mp4 三个命名版本，此前 P9 用文件名做防重键
+    → 同集各入队一次重复下载。修复：标准 SxxExx 文件名归一化为集号键，三版本
+    共享一键 → 防重命中只入队 1 个。
+    """
+    files = [
+        "The.Affair.Was.Just.The.Beginning.S01E04.2026.1080p.friDay.WEB-DL.H264.AAC.mkv",
+        "The Affair Was Just The Beginning.2026.S01E04.1080p.WEB-DL.AVC.AAC-friDay@QHstudIo.mp4",
+        "现在不是出轨的问题.S01E04.mp4",
+    ]
+    scan_mod = _patch_tv_full_mode_env(monkeypatch, db, files=files, total_episodes=8,
+                                       title="现在不是出轨的问题")
+
+    mid = run(_seed_media(db, title="现在不是出轨的问题"))
+    rid = run(scan_mod._scan_one(mid))
+
+    tr = run(_read_last_run(db, mid))
+    assert tr.id == rid and tr.status == "success"
+    assert "已入队 1 个资源" in tr.message
+    assert "2 个已有任务跳过" in tr.message
+    dq = run(_read_downloads(db, mid))
+    assert [row.episode for row in dq] == ["S01E04"]
 
 
 # ---------------------------------------------------------------------------

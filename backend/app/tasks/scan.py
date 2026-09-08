@@ -1661,7 +1661,11 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
                 #   真电影（media_type==movie）→ movie:<title> 归一化键（§7 审阅 P1）：
                 #     多版本（不同分辨率/来源文件名）映射同一键，防重复下载+同名覆盖；
                 #   tv 未收录全量（media_type!=movie，Emby 未收录整部追的软全量）→
-                #     文件名键（P9 权衡保留：集号未知，逐文件入队，不归一化防丢集）。
+                #     文件名含标准 SxxExx → 归一化集号键（2026-09 重复下载事故修复：
+                #       同集多命名版本共享一键，防重复入队；此前 P9 用文件名键导致
+                #       friDay.mkv / 全称.mp4 / 中文名.mp4 同集各入队一次）；
+                #     无标准集号（第N集/纯数字/无集号）→ 回退文件名键（P9 原权衡
+                #       防丢集：集号未知，逐文件入队，不归一化）。
                 # 展示 episode 仍用实际文件名供定位。
                 if tv_full_mode:
                     # A2/A3 全量模式文件级校验（仅 tv 未收录全量生效；真电影全量
@@ -1684,7 +1688,11 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
                     if matched_key == "movie:":
                         matched_key = file_name  # 标题缺失回退文件名（兜底，防键空）
                 else:
-                    matched_key = file_name
+                    m_sxx = _RE_SXXEXX.search(file_name)
+                    if m_sxx:
+                        matched_key = _fmt_episode(int(m_sxx.group(1)), int(m_sxx.group(2)))
+                    else:
+                        matched_key = file_name
                 item = {"episode": file_name, "result": "not_found"}
                 missing_items.append(item)
                 missing_items_by_key[matched_key] = item
