@@ -777,7 +777,11 @@ async def promote_task(
     try:
         media = await session.get(Media, tq.media_id)
         if media is not None and media.title:
-            download_name = _format_download_name(tq.file_name or "", media.title, media.media_type)
+            # episode_key 兜底：纯数字分享文件名（190.mkv）也规范化为
+            # 「剧名 - S01E190 - 第 190 集.mkv」（对齐 n8n 下载落盘带集号标识）
+            download_name = _format_download_name(
+                tq.file_name or "", media.title, media.media_type, episode_key=tq.episode
+            )
     except Exception as exc:  # noqa: BLE001
         logger.warning("[queue] promote download_name 生成失败（回退 None）: %s", exc)
 

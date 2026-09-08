@@ -925,6 +925,25 @@ def test_format_download_name_tv_no_sxxexx_keeps_original():
     assert transfer_mod._format_download_name("ep.mkv", "测试剧", "tv") == "ep.mkv"
 
 
+def test_format_download_name_tv_no_sxxexx_uses_episode_key():
+    """纯数字分享文件名（190.mkv）+ episode_key → 「剧名 - S01E190 - 第 190 集.mkv」
+    （下线反馈：不改名下载的裸文件名无法在媒体库识别集号）。"""
+    assert transfer_mod._format_download_name(
+        "190.mkv", "凡人修仙传", "tv", episode_key="S01E190"
+    ) == "凡人修仙传 - S01E190 - 第 190 集.mkv"
+
+
+def test_format_download_name_episode_key_fallback_other_cases():
+    """episode_key 兜底：三位集号保留；非 SxxExx 键不误格式化。"""
+    assert transfer_mod._format_download_name(
+        "190.mkv", "测试剧", "tv", episode_key="S01E100"
+    ) == "测试剧 - S01E100 - 第 100 集.mkv"
+    # 键非 SxxExx（如全量模式文件名键）→ 保持原名，不产生残缺名
+    assert transfer_mod._format_download_name(
+        "movie-xyz.mkv", "测试剧", "tv", episode_key="movie:测试剧"
+    ) == "movie-xyz.mkv"
+
+
 def test_format_download_name_no_title_keeps_original():
     """标题缺失 → 保持原名（避免产生残缺名）。"""
     assert transfer_mod._format_download_name(

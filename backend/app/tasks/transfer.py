@@ -95,18 +95,24 @@ _COMMENT_PREFIX = "lumencloud:"
 _RE_FORMAT_SE = re.compile(r"(S\d+)E(\d+).*\.([^.]+)$", re.IGNORECASE)
 
 
-def _format_download_name(file_name: str, title: str, media_type: str | None) -> str:
+def _format_download_name(file_name: str, title: str, media_type: str | None,
+                          episode_key: str | None = None) -> str:
     """aria2 落盘名（out 参数）格式化（影视下载两队列重设计 §7，对齐 n8n formatFileName）。
 
     规则：
     - 剧集（media_type != movie，文件名含 SxxExx）→ `{title} - {SxxExx} - 第 {N} 集.{ext}`
+    - 文件名无 SxxExx（如分享内纯数字命名 `190.mkv`）→ 用 episode_key 兜底规范化
+      `{title} - {SxxExx} - 第 {N} 集.{ext}`——下载必须携带集号标识（n8n 实际下载
+      均带 SxxExx，如「仙逆 - S01E150 - 第 150 集.mkv」）
     - 电影/全量模式（media_type == movie）→ `{title}.{ext}`（用户确认统一格式化，
       去掉夸克杂乱分享名前缀/后缀）
-    - 其余（剧集但匹配不到 SxxExx / 标题缺失）→ 保持原名（n8n fallback，不误改）
+    - 其余（剧集但文件名与 episode_key 都取不到集号 / 标题缺失）→ 保持原名
+      （n8n fallback，不误改）
 
     注意：只影响 aria2 本地落盘名，quark 网盘原文件与 episode 防重键均不动
     （§7「防重键与落盘名分离」，改名永不回写防重键）。
-    调用方：scan.py（promote 时生成 download_name 落库）；本模块不再调用。
+    调用方：scan.py / queue.py（promote 时生成 download_name 落库）；本模块消费
+    dq.download_name 作为 addUri out，不再二次格式化。
     """
     if not file_name:
         return file_name
@@ -120,6 +126,15 @@ def _format_download_name(file_name: str, title: str, media_type: str | None) ->
         full_se = m.group(1) + "E" + m.group(2)
         episode_num = int(m.group(2))
         return f"{title} - {full_se} - 第 {episode_num} 集.{m.group(3)}"
+    # 文件名无 SxxExx（纯数字命名等）→ 用 episode_key 兜底规范化（§7 线下反馈：
+    # 不改名下载的裸文件名无法在媒体库识别集号）。
+    if episode_key and title:
+        m2 = re.match(r"\A(S\d+)E(\d+)\Z", episode_key.strip(), re.IGNORECASE)
+        if m2:
+            se = m2.group(1).upper() + "E" + m2.group(2)
+            ep_ext = file_name.rsplit(".", 1)[-1] if "." in file_name else ""
+            base = f"{title} - {se} - 第 {int(m2.group(2))} 集"
+            return f"{base}.{ep_ext}" if ep_ext else base
     return file_name
 
 

@@ -817,7 +817,11 @@ async def _enqueue(media_id: int, episode_key: str, file_name: str, file_size: i
         try:
             from app.tasks.transfer import _format_download_name  # 延迟导入，防循环
 
-            download_name = _format_download_name(file_name, media_title, media_type)
+            # episode_key 兜底：分享文件为纯数字命名（190.mkv）时也规范化为
+            # 「剧名 - S01E190 - 第 190 集.mkv」（对齐 n8n 下载落盘带集号标识）
+            download_name = _format_download_name(
+                file_name, media_title, media_type, episode_key=episode_key
+            )
         except Exception:  # noqa: BLE001
             download_name = None
 
