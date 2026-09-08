@@ -987,7 +987,18 @@ async function loadMore() {
           <div class="lc-toolbar" style="margin-bottom: 14px">
             <span class="lc-muted" style="font-size: 12px">按准入顺序排列的执行队列</span>
             <div style="display: flex; align-items: center; gap: 14px">
-              <el-switch v-model="onlyActive" active-text="仅看活跃" inline-prompt />
+              <!-- 静态标签常驻：inline-prompt 的 active-text 在未激活态不显示，用户无法辨识开关用途 -->
+              <span
+                class="lc-muted"
+                style="font-size: 12px; cursor: pointer; user-select: none"
+                @click="onlyActive = !onlyActive"
+              >
+                仅看活跃
+              </span>
+              <el-switch
+                v-model="onlyActive"
+                :aria-label="onlyActive ? '仅看活跃（已开启）' : '仅看活跃（已关闭，显示全部）'"
+              />
               <el-button size="small" :loading="store.downloadLoading" @click="store.fetchDownloadPage()">
                 <el-icon style="vertical-align: -2px"><Refresh /></el-icon>&nbsp;刷新
               </el-button>

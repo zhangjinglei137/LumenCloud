@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT = httpx.Timeout(30.0)
 
-# tellStatus 关注的字段（状态轮询 / GID 来源校验需要）
+# tellStatus 关注的字段（状态轮询 / GID 来源校验 / 实时进度都需要）
 _DEFAULT_KEYS = [
     "gid",
     "status",
@@ -29,6 +29,7 @@ _DEFAULT_KEYS = [
     "errorMessage",
     "totalLength",
     "completedLength",
+    "downloadSpeed",
     "followedBy",
     "comment",
 ]

@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import QuarkCapacityLog, User
+from app.models import DownloadQueue, QuarkCapacityLog, User
 from app.routers.deps import get_current_user, get_session
 from app.routers.queue import _load_transfer_queue_model
 
@@ -58,9 +58,22 @@ async def capacity(
     if used_gb is not None and total_gb:
         usage_rate = round(used_gb / total_gb, 4)
 
+    # 影视下载两队列重设计 §3.2/§5.1：预留中 = download_queue 在途任务（未落盘
+    # transferring/scrape/library，不含 downloading——已落盘由 used 覆盖）的
+    # file_size 预留和（GB）。可用 = total - used - reserved（非负）。
+    # 前端三段容量条（已用/预留中/可用）据此渲染（Playwright 验证修复：
+    # 此前 capacity 未提供 reserved_gb，前端「预留中」显示 —）。
+    reserved_gb = await _reserved_gb(session)
+    available_gb = None
+    if total_gb is not None and used_gb is not None and reserved_gb is not None:
+        available = round(total_gb - used_gb - reserved_gb, 2)
+        available_gb = max(0.0, available)
+
     return {
         "total_gb": total_gb,
         "used_gb": used_gb,
+        "reserved_gb": reserved_gb,
+        "available_gb": available_gb,
         "source": source,
         "checked_at": checked_at,
         "error": error,
@@ -68,6 +81,30 @@ async def capacity(
         "usage_rate": usage_rate,
         "recent_snapshots": await _recent_snapshots(session),
     }
+
+
+async def _reserved_gb(session: AsyncSession) -> float | None:
+    """download_queue 在途预留（未落盘 transferring/scrape/library）file_size 和 → GB。
+
+    §5.1 reserved 唯一可信源 = DB 聚合（DownloadQueue 中 status ∈
+    (transferring, scraping, library) 行的 file_size SUM）。quota_wait/pending
+    未占用容量、downloading 已落盘（由 used 覆盖），均不纳入——与 transfer
+    `_INFLIGHT_STATUSES=("transferring","scrape","library")` 口径一致。
+    """
+    try:
+        total_bytes = (
+            await session.execute(
+                select(func.coalesce(func.sum(DownloadQueue.file_size), 0)).where(
+                    DownloadQueue.status.in_(
+                        ("transferring", "scrape", "library")
+                    )
+                )
+            )
+        ).scalar_one()
+    except Exception as exc:  # noqa: BLE001  预留为增强字段，失败不 500
+        logger.warning("[capacity] 读取 reserved 聚合失败（返回 None）: %s", exc)
+        return None
+    return round(total_bytes / _GB, 2)
 
 
 # 阶段 4 生产化 / E：最近快照查询（交付 3，Q6 容量长期趋势数据）

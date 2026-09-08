@@ -88,10 +88,14 @@ async def get_job_enabled(job_id: str) -> bool:
       显式配置 scheduler.<job_id>=true/false 可单独强制开启 / 单独关闭（覆盖跟随默认）。
     """
     global_raw = await _get_config_value("scheduler_enabled", "true")
+    # 空串/空白视为未配置 → 按默认开启（既有行可能是空值写入，不应等于显式 false
+    # 导致全局调度关闭 → 轮询/recover 等全部不跑，任务卡死无人兜底）
+    if global_raw is None or not str(global_raw).strip():
+        global_raw = "true"
     if not _as_bool(global_raw):
         return False
     job_raw = await _get_config_value(f"scheduler.{job_id}", None)
-    if job_raw is None:
+    if job_raw is None or not str(job_raw).strip():
         return True
     return _as_bool(job_raw)
 

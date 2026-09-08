@@ -245,6 +245,15 @@ async def _list_tree(
             ).scalars().all()
         }
 
+    # Playwright 验证修复：同一 (media_id, episode) 同时存在 task_queue(探测完成已
+    # promote) 与 download_queue(执行任务) 时，只展示 download_queue 执行视图——
+    # task_queue 是 promote 后遗留的探测快照，重复展示会造成「同集显示两条」。
+    # 仅当该集无 download_queue 行（探测中/未匹配/手动入队等待 promote）时才展示
+    # task_queue 探测视图。
+    dq_key_set = {
+        (dq.media_id, dq.episode) for dq in dq_rows
+    }
+
     # 按 media_id 分组（保序）；孤儿用统一哨兵 key 合成一个父级
     orphan_key: object = object()
     groups: dict[object, dict] = {}
@@ -271,6 +280,10 @@ async def _list_tree(
         return g
 
     for tq in tq_rows:
+        # Playwright 修复：该集已有 download_queue 执行行 → 跳过 tq 探测快照节点
+        # （probe_counts 仍累计；只有无 dq 的探测态才作为子节点展示）
+        if (tq.media_id, tq.episode) in dq_key_set:
+            continue
         g = _group_for(tq.media_id, tq.file_name)
         if tq.updated_at and tq.updated_at > g["latest"]:
             g["latest"] = tq.updated_at
