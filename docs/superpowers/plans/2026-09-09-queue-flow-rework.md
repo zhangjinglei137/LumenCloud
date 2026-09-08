@@ -105,11 +105,11 @@ git commit -m "refactor(scan): 移除 unmatched 静默机制，失败下轮巡�
 - Consumes: `TaskQueue(status='ready')` 行（含完整转存凭据快照）。
 - Produces: `async def _fetch_from_task_queue(num: int = 10) -> int` —— 按 `(created_at, id)` FIFO 取 TaskQueue(ready) 中「尚无同键 DownloadQueue 行」的任务，拷贝转存凭据生成 `DownloadQueue(status='pending')`，同事务把 TaskQueue 行置 `status='done'`（源行终态，防重复取件）；返回生成行数。
 
-- [ ] **Step 1: 写失败测试**：在 `test_queue.py` 增加用例「FIFO 取件生成 download_queue」：插入多条 TaskQueue(ready)，调用 `_fetch_from_task_queue()`，断言按 created_at 顺序生成 DownloadQueue pending 行、TaskQueue 源行置 done、已有 DQ 同键行被跳过。
-- [ ] **Step 2: 运行确认失败**：`cd backend && python -m pytest tests/test_queue.py -q -k fetch_from_task_queue`
-- [ ] **Step 3: 修改实现**：在 `transfer.py` 新增 `_fetch_from_task_queue`（复用 Task 2 的 TaskQueue 快照字段：share_code/stoken/pkg/fids/fid_tokens/folder_id/file_name/file_size → DQ 同名字段；`download_name` 暂不填，Task 7 转存后生成）。在 `_admit_batch` 阶段 1 的 `has_pending` 检查后调用它（有 ready 任务先取件生成 pending 再准入）。
-- [ ] **Step 4: 适配测试**：`test_media_two_queue.py` 同步语义后运行全量 `test_queue.py`+`test_media_two_queue.py` 通过。
-- [ ] **Step 5: Commit**
+- [x] **Step 1: 写失败测试**：在 `test_queue.py` 增加用例「FIFO 取件生成 download_queue」：插入多条 TaskQueue(ready)，调用 `_fetch_from_task_queue()`，断言按 created_at 顺序生成 DownloadQueue pending 行、TaskQueue 源行置 done、已有 DQ 同键行被跳过。
+- [x] **Step 2: 运行确认失败**：`cd backend && python -m pytest tests/test_queue.py -q -k fetch_from_task_queue`
+- [x] **Step 3: 修改实现**：在 `transfer.py` 新增 `_fetch_from_task_queue`（复用 Task 2 的 TaskQueue 快照字段：share_code/stoken/pkg/fids/fid_tokens/folder_id/file_name/file_size → DQ 同名字段；`download_name` 暂不填，Task 7 转存后生成）。在 `_admit_batch` 阶段 1 的 `has_pending` 检查后调用它（有 ready 任务先取件生成 pending 再准入）。
+- [x] **Step 4: 适配测试**：`test_media_two_queue.py` 同步语义后运行全量 `test_queue.py`+`test_media_two_queue.py` 通过。
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/app/tasks/transfer.py backend/tests/test_queue.py backend/tests/test_media_two_queue.py

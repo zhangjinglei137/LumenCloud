@@ -7,7 +7,7 @@
 
 - [x] 2.1 调整 enqueue：巡检产出缺失集 + 转存凭据只写 TaskQueue（移除同步双写 DownloadQueue.pending）；验证 `test_scan_*` 入队语义更新后通过
 - [x] 2.2 移除 unmatched 长期静默（silent_until 2 天机制收紧为下轮巡检重试）；验证 test_scan_silent_filter 更新后通过
-- [ ] 2.3 下载队列新增「从 TaskQueue 按 FIFO（created_at,id）取尚未生成 DownloadQueue 的任务 → 生成 pending 行」的取件逻辑；验证 test_media_two_queue / test_queue 覆盖取件顺序与去重
+- [x] 2.3 下载队列新增「从 TaskQueue 按 FIFO（created_at,id）取尚未生成 DownloadQueue 的任务 → 生成 pending 行」的取件逻辑；验证 test_media_two_queue / test_queue 覆盖取件顺序与去重
 
 ## 3. 容量准入与排队续跑
 
