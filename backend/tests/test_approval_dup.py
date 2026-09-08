@@ -167,7 +167,7 @@ def test_approve_dup_tmdb_409_keeps_pending(_db_maker, monkeypatch):
     trigger_calls: list[int] = []
     monkeypatch.setattr(
         "app.tasks.scan.trigger_scan_background",
-        lambda media_id: trigger_calls.append(media_id),
+        lambda media_id, **kwargs: trigger_calls.append(media_id),
     )
 
     def _seed_wr(tmdb_id: int) -> int:

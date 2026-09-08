@@ -36,7 +36,7 @@ def test_scan_media_route_fire_and_forget(monkeypatch):
     trigger_calls: list[int] = []
     monkeypatch.setattr(
         "app.tasks.scan.trigger_scan_background",
-        lambda media_id: trigger_calls.append(media_id),
+        lambda media_id, **kwargs: trigger_calls.append(media_id),
     )
 
     res = run(scan_media_route(7, admin=AKA))

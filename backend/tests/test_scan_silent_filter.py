@@ -252,3 +252,35 @@ def test_scan_one_partial_silence_searches_only_remaining(db, monkeypatch):
     assert detail["missing_total"] == 1
     assert detail["missing_items"] == [{"episode": "S01E02", "result": "not_found"}]
     assert detail["unmatched_silent_skipped"] == 1
+
+
+# ---------------------------------------------------------------------------
+# 5) 手动触发（manual=True）绕过静默期：用户主动操作=明确要立即重试
+# ---------------------------------------------------------------------------
+
+def test_scan_one_manual_true_bypasses_silence(db, monkeypatch):
+    """缺失集在静默期内（unmatched + silent_until 未来），但 manual=True
+    （手动触发：media 扫描按钮 / queue 探测 / 加集 / 审批通过）→ **跳过静默预过滤**，
+    缺失集全部照常搜索（_search_and_rank 被调用、phases.search=done、
+    scan_detail.unmatched_silent_skipped=0）。"""
+    from app.tasks import scan as scan_mod
+
+    mid = run(_seed_media(db))
+    run(_seed_unmatched(db, mid, ["S01E01"], _now() + timedelta(days=2)))
+
+    scan_mod = _patch_scan_env(monkeypatch, db, missing_codes=["S01E01"])
+    search_mock = AsyncMock(return_value=[])
+    monkeypatch.setattr(scan_mod, "_search_and_rank", search_mock)
+
+    rid = run(scan_mod._scan_one(mid, manual=True))
+    tr = run(_read_runs(db, mid))[0]
+    assert tr.id == rid and tr.status == "skipped"
+    # manual=True → 静默期不拦截，照常搜索
+    search_mock.assert_awaited_once()
+
+    import json
+    phases = json.loads(tr.phases)
+    assert phases["search"]["status"] == "done"
+    detail = json.loads(tr.scan_detail)
+    assert detail["missing_total"] == 1
+    assert detail["unmatched_silent_skipped"] == 0  # 未静默过滤任何集

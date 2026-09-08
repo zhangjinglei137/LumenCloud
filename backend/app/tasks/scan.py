@@ -1009,13 +1009,18 @@ async def _trigger_transfer() -> None:
         logger.exception("[scan] 触发 transfer 失败")
 
 
-def trigger_scan_background(media_id: int) -> None:
+def trigger_scan_background(media_id: int, *, manual: bool = False) -> None:
     """E-1（P1）：单部巡检 fire-and-forget 触发（HTTP 层不再同步等待完整巡检，
     防止 504 与 FastAPI 取消协程中断巡检）。复用 _background 强引用集合防 GC
-    （与 _trigger_transfer 同模式）；内部持 per-media 锁（scan_media 自带）。"""
+    （与 _trigger_transfer 同模式）；内部持 per-media 锁（scan_media 自带）。
+
+    manual=True（所有手动触发点：media 扫描按钮 / queue 探测 / 加集 / 审批通过）：
+    用户主动操作=明确要立即重试，_scan_one 跳过静默 unmatched 预过滤（不受
+    silent_until 拦截），缺失集全部照常搜索；False（定时调度）保持静默期优化。
+    """
     async def _run() -> None:
         try:
-            await scan_media(media_id)
+            await scan_media(media_id, manual=manual)
         except Exception:  # noqa: BLE001
             logger.exception("[scan] 后台巡检异常 media=%s", media_id)
 
@@ -1054,8 +1059,11 @@ def _scan_lock_idle(lock: asyncio.Lock) -> bool:
     return not waiters
 
 
-async def scan_media(media_id: int) -> int | None:
+async def scan_media(media_id: int, *, manual: bool = False) -> int | None:
     """单影视巡检（API /api/media/{id}/scan 手动触发入口），返回最近一条 task_run id。
+
+    manual=True（手动触发）：_scan_one 跳过静默 unmatched 预过滤——用户主动操作
+    视为明确要立即重试，不受 silent_until 拦截；False（定时调度）保持静默期优化。
 
     P2-11（延后项）：巡检完成后清理 _scan_locks 中该 media 的锁，防 media 删除后
     锁对象永久泄漏。清理必须保证不破坏并发互斥（等待中的调用方不可被丢下）。
@@ -1074,7 +1082,7 @@ async def scan_media(media_id: int) -> int | None:
     lock = _scan_locks.setdefault(media_id, asyncio.Lock())
     async with lock:
         try:
-            return await _scan_one(media_id)
+            return await _scan_one(media_id, manual=manual)
         finally:
             # 清理：无等待者时才移除（新调用方会重新创建，等待中的调用方仍持有旧锁引用）
             if _scan_lock_idle(lock):
@@ -1223,7 +1231,7 @@ async def _finish_scan_run(
         return run_id
 
 
-async def _scan_one(media_id: int) -> int | None:
+async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
     """严格按设计文档 §4.3 巡检主流程，阶段2 只到入队为止（不转存）。
 
     巡检可见性改造：入口先建 status='running' 的 task_run（_create_scan_run），
@@ -1322,8 +1330,11 @@ async def _scan_one(media_id: int) -> int | None:
     #     重新探测。仅 tv 模式（有明确缺失集键）适用；movie/tv 未收录全量模式
     #     （movie_missing，episode=文件名/实体未知）不适用，保持原行为。
     #     预过滤是软优化：查询失败仅告警，缺失集照常搜索，绝不阻断巡检。
+    #     manual=True（手动触发：media 扫描按钮 / queue 探测 / 加集 / 审批通过）：
+    #     用户主动操作=明确要立即重试，**跳过静默预过滤**，缺失集全部照常搜索；
+    #     False（定时调度）保持静默期优化。
     silent_filtered: set[str] = set()
-    if not movie_missing and missing_keys:
+    if not manual and not movie_missing and missing_keys:
         try:
             async with async_session() as s:
                 silent_eps = (

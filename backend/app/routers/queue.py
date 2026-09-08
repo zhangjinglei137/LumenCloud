@@ -817,7 +817,7 @@ async def probe_media(
     try:
         from app.tasks.scan import trigger_scan_background  # noqa: PLC0415 延迟导入
 
-        trigger_scan_background(media_id)
+        trigger_scan_background(media_id, manual=True)  # 手动探测：绕过静默期
     except Exception as exc:  # noqa: BLE001
         logger.warning("[queue] probe media=%s 触发失败: %s", media_id, exc)
         raise HTTPException(status_code=500, detail="探测触发失败，请稍后重试") from exc
@@ -869,7 +869,7 @@ async def add_queue_task(
     try:
         from app.tasks.scan import trigger_scan_background  # noqa: PLC0415 延迟导入
 
-        trigger_scan_background(body.media_id)
+        trigger_scan_background(body.media_id, manual=True)  # 手动加集：绕过静默期
     except Exception as exc:  # noqa: BLE001
         logger.warning("[queue] 加集后触发探测失败（task_queue 已入队，巡检兜底）: %s", exc)
     return {"ok": True}

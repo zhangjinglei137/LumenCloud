@@ -637,5 +637,5 @@ async def scan_media_route(
         logger.warning("[media] trigger_scan_background 未就绪，跳过触发")
         return {"ok": True, "task_run_id": None}
 
-    trigger_scan_background(media_id)
+    trigger_scan_background(media_id, manual=True)  # 手动触发：绕过静默期立即重试
     return {"ok": True, "task_run_id": None}

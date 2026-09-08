@@ -538,7 +538,7 @@ def test_probe_media_triggers_scan_background(db, env):
         async with db() as s:
             return await queue_mod.probe_media(media_id=mid, admin=_admin(), session=s)
     assert run(_probe()) == {"ok": True}
-    env["scan_trigger"].assert_called_once_with(mid)
+    env["scan_trigger"].assert_called_once_with(mid, manual=True)
 
 
 def test_add_task_creates_pending_and_triggers_scan(db, env):
@@ -556,7 +556,7 @@ def test_add_task_creates_pending_and_triggers_scan(db, env):
             return (await s.execute(select(TaskQueue))).scalars().first()
     tq = run(_tq())
     assert tq is not None and tq.status == "pending" and tq.episode == "S01E05"
-    env["scan_trigger"].assert_called_once_with(mid)
+    env["scan_trigger"].assert_called_once_with(mid, manual=True)
 
 
 def test_add_task_existing_resets_pending(db, env):

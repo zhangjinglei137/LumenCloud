@@ -223,7 +223,7 @@ async def approve_approval(
     try:
         from app.tasks.scan import trigger_scan_background
 
-        trigger_scan_background(media_id)
+        trigger_scan_background(media_id, manual=True)  # 审批通过=用户意图：绕过静默期
     except Exception as exc:  # noqa: BLE001
         logger.warning("批准后自动巡检触发失败 media=%s: %s", media_id, exc)
 

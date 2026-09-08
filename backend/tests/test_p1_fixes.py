@@ -372,7 +372,7 @@ def test_approve_approval_emby_hit_409_keeps_pending(db, monkeypatch):
     trigger_calls: list = []
     monkeypatch.setattr(
         "app.tasks.scan.trigger_scan_background",
-        lambda media_id: trigger_calls.append(media_id),
+        lambda media_id, **kwargs: trigger_calls.append(media_id),
     )
     wr_id = _seed_wr(db, tmdb_id=42)
 
@@ -400,7 +400,7 @@ def test_approve_approval_emby_unavailable_fail_open(db, monkeypatch):
     trigger_calls: list = []
     monkeypatch.setattr(
         "app.tasks.scan.trigger_scan_background",
-        lambda media_id: trigger_calls.append(media_id),
+        lambda media_id, **kwargs: trigger_calls.append(media_id),
     )
     wr_id = _seed_wr(db, tmdb_id=43)
 
