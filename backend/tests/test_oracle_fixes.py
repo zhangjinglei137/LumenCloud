@@ -556,11 +556,12 @@ def test_done_resolution_hit_retry_limit_marks_failed(db, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# B 定时：scan_all_media 按 last_scan_at 到期过滤（阶段 4，job 每分钟 tick）
+# 统一巡检调度（queue-flow-rework Task 1）：scan_all_media 不再按 last_scan_at
+# 到期过滤——每轮遍历全部 tracking/downloading 影视，全局间隔仅由 job 触发周期控制
 # ---------------------------------------------------------------------------
 
-def test_scan_all_media_filters_by_last_scan_at(db, monkeypatch):
-    """B 定时：last_scan_at IS NULL 或已到期 → 巡检；未到期 → 跳过（scan_media 不触发）。"""
+def test_scan_all_media_scans_all_tracking(db, monkeypatch):
+    """统一调度：全部 tracking/downloading 影视一律巡检，不再按 last_scan_at 冷却跳过。"""
     from datetime import timedelta
 
     from app.tasks import scan as scan_mod
@@ -590,8 +591,8 @@ def test_scan_all_media_filters_by_last_scan_at(db, monkeypatch):
     ids = run(seed())
     run(scan_mod.scan_all_media())
 
-    # A（last_scan_at=None）与 B（2 分钟前超 1 分钟周期）巡检；C（刚刚）未到期跳过
-    assert sorted(routed) == sorted([ids[0], ids[1]])
+    # 移除 per-media 冷却后：A（从未巡检）、B（已到期）、C（旧逻辑未到期）全部巡检
+    assert sorted(routed) == sorted(ids)
 
 
 # ---------------------------------------------------------------------------
