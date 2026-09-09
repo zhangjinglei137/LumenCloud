@@ -97,6 +97,11 @@ async def lifespan(app: FastAPI):
     await engine.dispose()
 
 
+# docker-timezone：统一 UTC+Z 时间序列化（naive 补 Z / aware 归一 Z）
+from app.json import install_zulu_encoder
+
+install_zulu_encoder()
+
 app = FastAPI(title=settings.APP_NAME, lifespan=lifespan)
 
 # 安全加固（Task 1）：CORS 白名单从 settings.CORS_ALLOW_ORIGINS 读取（逗号分隔）。
