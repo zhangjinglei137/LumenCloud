@@ -3,8 +3,9 @@ aria2 JSON-RPC 客户端（docs/新系统设计.md §10 / §12.2 来源校验）
 
 契约（n8n 旧流程沿用）：
     JSON-RPC POST：addUri / tellStatus / getGlobalStat / tellActive
-    鉴权：params 第一个元素传 aria2 token（settings.ARIA2_TOKEN）：
-          body.params = [f"token:{token}", *params]
+    鉴权：params 第一个元素传 aria2 token（settings.ARIA2_TOKEN），带 token 前缀
+    归一化（2026-09 修复）：配置值已带 `token:` 前缀（如 .env 的
+    ARIA2_TOKEN=token:xxx）则原样透传，否则补前缀——body.params = [secret, *params]
     提交下载前检查 numActive / numWaiting（§4.4 步骤 6 前忙闲检查）；
     add_uri 的 comment 传 "lumencloud:<media_id>:<episode>" 标记 GID 来源。
     2026-09 修订：实测 aria2 1.36.0 静默丢弃 comment option（getOption/tellStatus
