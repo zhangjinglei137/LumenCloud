@@ -574,15 +574,15 @@ function serviceLabel(key: string): string {
                   </el-tag>
                 </div>
               </div>
-              <el-input
-                v-model="credValues[key]"
-                type="text"
-                autocomplete="off"
-                :placeholder="getSettingMeta(key).placeholder ?? ''"
-                class="cred-input"
-                @keyup.enter="saveAll"
-              />
-              <div class="cred-actions">
+              <div class="cred-input-row">
+                <el-input
+                  v-model="credValues[key]"
+                  type="text"
+                  autocomplete="off"
+                  :placeholder="getSettingMeta(key).placeholder ?? ''"
+                  class="cred-input"
+                  @keyup.enter="saveAll"
+                />
                 <el-button
                   size="small"
                   link
@@ -1010,16 +1010,17 @@ function serviceLabel(key: string): string {
   color: var(--lc-warning, #e6a23c);
 }
 
-.cred-input {
-  max-width: none;
-  flex: none;
-  margin-top: 0;
-}
-
-.cred-actions {
+.cred-input-row {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cred-input {
+  max-width: none;
+  flex: 1;
+  min-width: 0;
 }
 
 .service-grid {
