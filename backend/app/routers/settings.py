@@ -33,7 +33,6 @@ _WHITELIST_EXACT = {
     "quark_quota_gb",
     "max_episode_size_gb",
     "max_movie_size_gb",
-    "scan_interval_minutes",
     "nastools_sync_cooldown_minutes",
     "episode_state_timeout_hours",
     # 影视下载两队列重设计 §4.2：scrape/library 节点独立超时回退阈值（小时）
@@ -72,7 +71,7 @@ _EDITABLE_KEYS = frozenset(_WHITELIST_EXACT - {"emby_series_library_ids"})
 
 # 已废弃设置键：system_config 存量保留，但 GET 响应不再透传（避免前端
 # fallback 展示英文键名）。PATCH 白名单（_WHITELIST_EXACT）本就不含这些键。
-_RETIRED_EXACT = frozenset({"download_queue_max_concurrent"})
+_RETIRED_EXACT = frozenset({"download_queue_max_concurrent", "scan_interval_minutes"})
 
 
 def _is_allowed_key(key: str) -> bool:

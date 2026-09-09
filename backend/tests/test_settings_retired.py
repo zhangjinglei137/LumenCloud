@@ -82,3 +82,43 @@ def test_settings_response_excludes_retired_key():
         # 废弃键既不出现 system_config 也不出现 config（前端契约键）
         assert "download_queue_max_concurrent" not in data["system_config"]
         assert "download_queue_max_concurrent" not in data["config"]
+
+
+def test_scan_interval_minutes_retired_and_not_editable():
+    """scan_interval_minutes 从可编辑白名单移除，且存量数据 GET 不透传（remove-deprecated-settings）。"""
+    from datetime import datetime, timezone
+
+    from app.database import async_session
+    from app.models import SystemConfig
+
+    # 注入存量数据（同事件循环，模拟历史 system_config 数据）
+    async def _seed_scan_interval() -> str:
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        async with async_session() as session:
+            await session.merge(SystemConfig(key="scan_interval_minutes", value="60", updated_at=now))
+            await session.commit()
+        return "seeded"
+
+    with TestClient(app) as client:
+        # 存量键注入成功
+        assert client.portal.call(_seed_scan_interval) == "seeded"
+
+        # admin 登录
+        admin_password = client.portal.call(_recreate_admin)
+        r = client.post("/api/auth/login", json={"username": "admin", "password": admin_password})
+        assert r.status_code == 200, r.text
+        token = r.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        res = client.get("/api/settings", headers=headers)
+        assert res.status_code == 200
+        body = res.json()
+        # editable_keys 不含该键
+        assert "scan_interval_minutes" not in body["editable_keys"]
+        # GET 不透传存量值（system_config 与 config 均不含）
+        assert "scan_interval_minutes" not in body["system_config"]
+        assert "scan_interval_minutes" not in body["config"]
+
+        # PATCH 该键 → 422
+        patch = client.patch("/api/settings", headers=headers, json={"scan_interval_minutes": "60"})
+        assert patch.status_code == 422
