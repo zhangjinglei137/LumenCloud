@@ -59,3 +59,44 @@ describe('东八区时间格式化（docker-timezone）', () => {
     expect(timeUntil('2026-09-09T09:00:00Z', now)).toBeNull()
   })
 })
+
+import { buildEpisodeGroups, episodeDisplayName } from './format'
+
+describe('集数分组生成（media-detail-ui）', () => {
+  it('350 集 → 1-100/101-200/201-300/301-350', () => {
+    expect(buildEpisodeGroups(350)).toEqual([
+      { label: '1-100', start: 1, end: 100 },
+      { label: '101-200', start: 101, end: 200 },
+      { label: '201-300', start: 201, end: 300 },
+      { label: '301-350', start: 301, end: 350 },
+    ])
+  })
+  it('恰好 100 集 → 单组 1-100', () => {
+    expect(buildEpisodeGroups(100)).toEqual([{ label: '1-100', start: 1, end: 100 }])
+  })
+  it('99 集 → 末组收缩到 1-99', () => {
+    expect(buildEpisodeGroups(99)).toEqual([{ label: '1-99', start: 1, end: 99 }])
+  })
+  it('101 集 → 两组 [1-100, 101-101]', () => {
+    expect(buildEpisodeGroups(101)).toEqual([
+      { label: '1-100', start: 1, end: 100 },
+      { label: '101-101', start: 101, end: 101 },
+    ])
+  })
+  it('0 / 负数 → 空数组', () => {
+    expect(buildEpisodeGroups(0)).toEqual([])
+    expect(buildEpisodeGroups(-5)).toEqual([])
+  })
+})
+
+describe('集数名称回退（media-detail-ui）', () => {
+  it('有 name 返回 name', () => {
+    expect(episodeDisplayName({ name: '第一集' })).toBe('第一集')
+  })
+  it('无 name 但有 season/episode_number → SxxExx', () => {
+    expect(episodeDisplayName({ season: 1, episode_number: 4 })).toBe('S01E04')
+  })
+  it('无 name 且无集号 → —', () => {
+    expect(episodeDisplayName({})).toBe('—')
+  })
+})

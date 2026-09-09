@@ -491,3 +491,34 @@ export function scanResultType(result: string | null | undefined): string {
   if (!result) return 'info'
   return SCAN_RESULT_MAP[result]?.[1] ?? 'info'
 }
+
+/** 集数分组（media-detail-ui）：每 pageSize 集一组；末组收缩到 total；total<=0 → [] */
+export interface EpisodeGroup {
+  label: string
+  start: number
+  end: number
+}
+
+export function buildEpisodeGroups(total: number, pageSize = 100): EpisodeGroup[] {
+  if (!Number.isFinite(total) || total <= 0 || pageSize <= 0) return []
+  const groups: EpisodeGroup[] = []
+  const count = Math.ceil(total / pageSize)
+  for (let i = 0; i < count; i += 1) {
+    const start = i * pageSize + 1
+    const end = Math.min((i + 1) * pageSize, total)
+    groups.push({ label: `${start}-${end}`, start, end })
+  }
+  return groups
+}
+
+/** 集数名称展示（media-detail-ui）：name → SxxExx → —，永不裸空 */
+export function episodeDisplayName(row: Record<string, unknown>): string {
+  const name = row.name
+  if (typeof name === 'string' && name !== '') return name
+  const season = row.season ?? row.season_number
+  const episodeNumber = row.episode_number
+  if (season !== undefined && season !== null && episodeNumber !== undefined && episodeNumber !== null) {
+    return `S${String(season).padStart(2, '0')}E${String(episodeNumber).padStart(2, '0')}`
+  }
+  return '—'
+}
