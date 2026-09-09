@@ -406,3 +406,25 @@ class TmdbCache(Base):
         server_default=text("CURRENT_TIMESTAMP"),
         onupdate=func.current_timestamp(),
     )
+
+
+class EpisodeInfoCache(Base):
+    """TMDB 集信息持久化缓存（episode-status-cache）：按影视 (tmdb_id) 缓存每季每集
+    元数据（name / air_date），供影视详情与集数状态展示直接读取，避免实时 TMDB 查询。
+
+    唯一键 (tmdb_id, season, episode)：支持按影视粒度刷新（逐集 upsert）。
+    迁移见 alembic/versions/0015_episode_info_cache.py。
+    """
+
+    __tablename__ = "episode_info_cache"
+    __table_args__ = (
+        UniqueConstraint("tmdb_id", "season", "episode", name="uq_episode_info_cache_tmdb_season_episode"),
+    )
+
+    id = mapped_column(BIG_PK, Identity(), primary_key=True)
+    tmdb_id = mapped_column(Integer, nullable=False)
+    season = mapped_column(Integer, nullable=False)
+    episode = mapped_column(Integer, nullable=False)
+    name = mapped_column(Text, nullable=True)
+    air_date = mapped_column(Text, nullable=True)
+    updated_at = mapped_column(DateTime, server_default=text("CURRENT_TIMESTAMP"), onupdate=func.current_timestamp())
