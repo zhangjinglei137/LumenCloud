@@ -373,30 +373,30 @@ Expected: `vue-tsc --noEmit` 无类型错误 + `vite build` 成功
 **Interfaces:**
 - Consumes: Task 1-4 全部产物
 
-- [ ] **Step 1: 后端全量单测**
+- [x] **Step 1: 后端全量单测**
 
 Run: `cd backend && python -m pytest -q`
 Expected: 通过或记录与本次改动无关的既有失败（不得新引入）
 
-- [ ] **Step 2: 前端全量测试 + 构建（若 Task 3/4 已跑则跳过重复）**
+- [x] **Step 2: 前端全量测试 + 构建（若 Task 3/4 已跑则跳过重复）**
 
 Run: `cd frontend && npm run test && npm run build`
 Expected: 全绿 + 构建成功
 
-- [ ] **Step 3: compose 再验证**
+- [x] **Step 3: compose 再验证**
 
 Run: `docker compose config --quiet`
 Expected: 退出码 0
 
-- [ ] **Step 4: 记录构建证据**
+- [x] **Step 4: 记录构建证据**
 
 Run: `comet state record-check docker-timezone build --command "cd frontend && npm run build" --exit-code 0`
 
-- [ ] **Step 5: 勾选 tasks.md 全部任务**
+- [x] **Step 5: 勾选 tasks.md 全部任务**
 
 编辑 `docs/openspec/changes/docker-timezone/tasks.md`，把 4 个分组的全部复选框勾选为 `[x]`（1.1/1.2/2.1/2.2/2.3/3.1/4.1）。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add docs/openspec/changes/docker-timezone/tasks.md
