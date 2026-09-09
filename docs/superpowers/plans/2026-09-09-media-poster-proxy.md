@@ -555,7 +555,7 @@ git commit -m "feat(poster): 新增图床镜像配置与误填防御校验"
 - Produces: `posterUrl(path: string | null | undefined): string | null` — null/空 → null；否则 `/api/poster?p=${encodeURIComponent(path)}`
 - Consumes: 无（纯函数，Task 5 的视图 import 它）
 
-- [ ] **Step 1: 写失败测试 `poster.test.ts`**
+- [x] **Step 1: 写失败测试 `poster.test.ts`**
 
 ```ts
 import { describe, expect, it } from 'vitest'
@@ -580,7 +580,7 @@ describe('posterUrl', () => {
 })
 ```
 
-- [ ] **Step 2: 安装 vitest 并运行确认失败**
+- [x] **Step 2: 安装 vitest 并运行确认失败**
 
 ```bash
 cd frontend && npm install -D vitest
@@ -597,7 +597,7 @@ cd frontend && npm install -D vitest
 Run: `npm test`
 Expected: FAIL — `Cannot find module './poster'`
 
-- [ ] **Step 3: 实现 `utils/poster.ts`**
+- [x] **Step 3: 实现 `utils/poster.ts`**
 
 ```ts
 /**
@@ -610,12 +610,12 @@ export function posterUrl(path: string | null | undefined): string | null {
 }
 ```
 
-- [ ] **Step 4: 运行确认通过**
+- [x] **Step 4: 运行确认通过**
 
 Run: `npm test`
 Expected: PASS（3 用例）
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add frontend/src/utils/poster.ts frontend/src/utils/poster.test.ts frontend/package.json frontend/package-lock.json frontend/vite.config.ts
