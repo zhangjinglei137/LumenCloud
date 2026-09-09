@@ -34,7 +34,11 @@ os.environ["PUSHPLUS_TOKEN"] = ""
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+import pytest  # noqa: E402
+from datetime import date  # noqa: E402
+
 from app.main import app  # noqa: E402
+from app.routers.media import resolve_episode_status  # noqa: E402
 
 
 def _auth(token: str) -> dict:
@@ -385,3 +389,26 @@ def test_detail_dedup_when_new_and_old_rows_share_episode():
         assert "S01E04" in tq_names  # 旧 transfer_queue 遗留
         t04 = next(t for t in tqs if t["episode"] == "S01E04")
         assert t04["status"] == "done" and t04["share_code"] == "****3333"
+
+
+# ---------------------------------------------------------------------------
+# episode-status-cache Task 4：resolve_episode_status 纯函数（5 态状态机）
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("local,in_emby,air_date,today,expected", [
+    ("done", False, "2026-01-01", date(2026, 9, 9), "in_library"),
+    (None, True, None, date(2026, 9, 9), "in_library"),           # Emby 收录即已在库
+    ("failed", False, "2026-01-01", date(2026, 9, 9), "error"),   # 开播但失败
+    ("unmatched", False, "2026-01-01", date(2026, 9, 9), "error"),
+    ("queued", False, "2026-01-01", date(2026, 9, 9), "scanning"),# 巡检/下载中
+    ("downloading", False, "2026-01-01", date(2026, 9, 9), "scanning"),
+    (None, False, "2027-01-01", date(2026, 9, 9), "not_aired"),   # 未开播
+    (None, False, None, date(2026, 9, 9), "pending"),             # 待定
+])
+def test_resolve_episode_status(local, in_emby, air_date, today, expected):
+    assert resolve_episode_status(local, in_emby, air_date, today) == expected
+
+
+def test_resolve_episode_status_error_over_scanning():
+    # 同一集既有 failed 又有 queued → 异常优先于巡检中
+    assert resolve_episode_status("failed", False, "2026-01-01", date(2026, 9, 9)) == "error"

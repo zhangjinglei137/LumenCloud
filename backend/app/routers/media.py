@@ -7,7 +7,7 @@
 - DELETE /api/media/{id}    admin 删除（级联子表）
 - POST   /api/media/{id}/scan  admin 手动触发巡检（§9.1 写操作鉴权）
 """
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import logging
 import re
 
@@ -23,6 +23,7 @@ from app.models import (
     Media,
     TaskQueue,
     TaskRun,
+    TmdbCache,
     TransferQueue,
     User,
 )
@@ -123,6 +124,41 @@ def _parse_episode(ep: str) -> tuple[int | None, int | None]:
     if m:
         return int(m.group(1)), int(m.group(2))
     return None, None
+
+
+def resolve_episode_status(
+    local_status: str | None,
+    in_emby: bool,
+    air_date: str | None,
+    today: date,
+) -> str:
+    """单集归一标记状态（episode-status-cache 状态机，优先级从高到低）：
+
+    - in_library：已在库（本地 done 或 Emby 收录）
+    - error：异常（开播但失败 / 未搜到资源：failed/error/unmatched）
+    - scanning：巡检中（queued/transferring/downloading/ready/probing 等执行中态）
+    - not_aired：未开播（air_date 晚于今天）
+    - pending：待定（无任何可判定信息）
+
+    已在库 > 异常 > 巡检中 > 未开播 > 待定。异常优先于巡检中（同集 failed 记录
+    比 queued 更能反映「需要关注」）。
+    """
+    if in_emby or local_status == "done":
+        return "in_library"
+    if local_status in ("failed", "error", "unmatched"):
+        return "error"
+    if local_status in (
+        "queued", "transferring", "downloading", "transfer", "scrape",
+        "library", "pending", "probing", "ready", "idle",
+    ):
+        return "scanning"
+    if air_date:
+        try:
+            if date.fromisoformat(air_date) > today:
+                return "not_aired"
+        except ValueError:
+            pass  # 非法日期 → 不判未开播，走 pending
+    return "pending"
 
 
 def _episode_dto(row: EpisodeState, is_admin: bool,
@@ -283,6 +319,19 @@ async def list_media(
         return []
     media_ids = [m.id for m in media_rows]
 
+    # episode-status-cache：total 优先 TMDB 全集数（tmdb_cache.number_of_episodes），
+    # 无 TMDB 数据时回退三表聚合去重数。一次 IN 查询避免 N+1。
+    tmdb_totals: dict[int, int] = {}
+    tmdb_ids = [str(m.tmdb_id) for m in media_rows if m.tmdb_id]
+    if tmdb_ids:
+        cache_rows = await session.execute(
+            select(TmdbCache.tmdb_id, TmdbCache.number_of_episodes)
+            .where(TmdbCache.tmdb_id.in_(tmdb_ids))
+        )
+        for tmid, num in cache_rows:
+            if num:
+                tmdb_totals[int(tmid)] = int(num)
+
     # episode_state 统计（两队列重构后「新表为主、旧表兼容」）：对每部 media 按
     # (media_id, episode) 键在 task_queue ∪ download_queue ∪ episode_state 三表
     # 去重合并后统计。同键多行以最「重」状态为准（in_progress > failed > done）；
@@ -371,17 +420,21 @@ async def list_media(
             },
         )
 
-    def _stats(media_id: int) -> dict:
-        ep = counts.get(media_id, {"total": 0, "done": 0, "failed": 0, "in_progress": 0})
+    def _stats(m: Media) -> dict:
+        ep = counts.get(m.id, {"total": 0, "done": 0, "failed": 0, "in_progress": 0})
+        total = ep["total"]
+        tmid = m.tmdb_id
+        if tmid and tmid in tmdb_totals:
+            total = max(total, tmdb_totals[tmid])
         return {
-            "total": ep["total"],
+            "total": total,
             "done": ep["done"],
             "failed": ep["failed"],
             "in_progress": ep["in_progress"],
             # 前端契约别名（§8 影视列表「已有/总集数」）
             "available": ep["done"],
             "downloaded": ep["done"],
-            "missing": ep["total"] - ep["done"],
+            "missing": total - ep["done"],
         }
 
     return [
@@ -390,7 +443,7 @@ async def list_media(
             "episode_state": counts.get(
                 m.id, {"total": 0, "done": 0, "failed": 0, "in_progress": 0}
             ),
-            "episode_stats": _stats(m.id),  # 前端契约键
+            "episode_stats": _stats(m),  # 前端契约键
             "latest_task_run": latest.get(m.id),
             "last_task_run": latest.get(m.id),  # 前端契约键
         }
@@ -554,7 +607,12 @@ async def get_media(
         # 每集附加 in_emby（Emby 已收录判定）：按 (season, episode) 生成 "SxxExx"
         # code 命中 in_emby_codes 集合（上方 Emby 查询失败时为 set() → 全 False，正确降级）。
         try:
-            tmdb_eps = await tmdb.get_tv_all_episodes(media.tmdb_id)
+            # episode-status-cache：全集轴数据源优先 episode_info_cache（免实时
+            # TMDB 查询），缓存未命中再回源 get_tv_all_episodes（内部已降级 []）。
+            tmdb_eps = (
+                await tmdb.get_episode_info(media.tmdb_id)
+                or await tmdb.get_tv_all_episodes(media.tmdb_id)
+            )
             if tmdb_eps:
                 for ep_item in tmdb_eps:
                     s = ep_item.get("season")
@@ -567,6 +625,52 @@ async def get_media(
                 tmdb_episodes = tmdb_eps
         except Exception as exc:  # noqa: BLE001
             logger.warning("[media] TMDB 全集数查询降级 media=%s: %s", media_id, exc)
+
+    # episode-status-cache：episode_state 输出 = 「TMDB 全集轴 + 本地状态合并」。
+    # 每集以 TMDB 轴为准（含未开播/无本地记录的集），本地 download_queue 行优先、
+    # episode_state 遗留行兜底；state/status 经 resolve_episode_status 归一为
+    # 5 态（in_library/error/scanning/not_aired/pending）。无 TMDB 全集数据时
+    # 回退下方 episode_rows DTO 列表（保留有记录集展示），movie / 无 tmdb_id /
+    # 外部服务故障场景不受影响。
+    merged_episodes: list[dict] = []
+    local_by_key: dict[tuple[int, int], object] = {}
+    for r in episode_rows:
+        s, e = _parse_episode(r.episode)
+        if s is not None and e is not None:
+            local_by_key[(s, e)] = r
+
+    for ep in (tmdb_episodes or []):
+        s = ep.get("season")
+        e = ep.get("episode")
+        if s is None or e is None:
+            continue
+        code = f"S{int(s):02d}E{int(e):02d}"
+        in_emby = code in in_emby_codes
+        air = ep.get("air_date")
+        local = local_by_key.get((s, e))
+        local_status = None
+        file_size = None
+        updated_at = None
+        file_name = None
+        if local is not None:
+            local_status = getattr(local, "status", None) or getattr(local, "state", None)
+            file_size = getattr(local, "file_size", None)
+            updated_at = getattr(local, "updated_at", None)
+            file_name = getattr(local, "file_name", None)
+        merged_episodes.append({
+            "episode": code,
+            "season": s,
+            "episode_number": e,
+            "name": ep.get("name"),
+            "air_date": air,
+            "in_emby": in_emby,
+            "state": resolve_episode_status(local_status, in_emby, air, date.today()),
+            "status": resolve_episode_status(local_status, in_emby, air, date.today()),
+            "file_size": file_size,
+            "size_gb": round(file_size / _GB, 2) if file_size else None,
+            "file_name": file_name,
+            "updated_at": updated_at,
+        })
 
     tq_rows = (
         (
@@ -626,11 +730,17 @@ async def get_media(
     return {
         **media_dto,
         "media": media_dto,
-        "episode_state": [
-            _dq_episode_dto(r, is_admin, in_emby_codes, air_map)
-            if isinstance(r, DownloadQueue) else _episode_dto(r, is_admin, in_emby_codes, air_map)
-            for r in episode_rows
-        ],
+        # episode-status-cache：有 TMDB 全集数据时输出归一合并视图（全集轴），
+        # 无则回退现有 episode_rows DTO 列表（保留有记录集展示）。
+        "episode_state": (
+            merged_episodes
+            if tmdb_episodes
+            else [
+                _dq_episode_dto(r, is_admin, in_emby_codes, air_map)
+                if isinstance(r, DownloadQueue) else _episode_dto(r, is_admin, in_emby_codes, air_map)
+                for r in episode_rows
+            ]
+        ),
         "transfer_queue": [
             _task_queue_dto(r, is_admin) if isinstance(r, TaskQueue) else _tq_dto(r, is_admin)
             for r in transfer_rows
