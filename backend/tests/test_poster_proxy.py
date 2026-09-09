@@ -45,6 +45,7 @@ def test_fetch_poster_success(monkeypatch):
     resp = SimpleNamespace(status_code=200, content=b"\xff\xd8jpg", headers={"content-type": "image/jpeg"})
     monkeypatch.setattr(poster_mod, "_client_factory", _make_client_factory(resp, calls))
     monkeypatch.setattr(poster_mod, "_POSTER_CACHE", {})
+    monkeypatch.setattr(poster_mod, "_ALERT_COOLDOWN", {})
     content, ctype = asyncio.run(poster_mod.fetch_poster("/t/p/w500/x.jpg"))
     assert content == b"\xff\xd8jpg"
     assert ctype == "image/jpeg"
@@ -56,6 +57,7 @@ def test_fetch_poster_upstream_5xx_raises(monkeypatch):
     resp = SimpleNamespace(status_code=500, content=b"", headers={})
     monkeypatch.setattr(poster_mod, "_client_factory", _make_client_factory(resp, calls))
     monkeypatch.setattr(poster_mod, "_POSTER_CACHE", {})
+    monkeypatch.setattr(poster_mod, "_ALERT_COOLDOWN", {})
     with pytest.raises(Exception):
         asyncio.run(poster_mod.fetch_poster("/t/p/w500/x.jpg"))
 
@@ -70,5 +72,42 @@ def test_fetch_poster_network_error_raises(monkeypatch):
             raise httpx.ConnectError("conn refused")
     monkeypatch.setattr(poster_mod, "_client_factory", lambda *a, **kw: BoomClient())
     monkeypatch.setattr(poster_mod, "_POSTER_CACHE", {})
+    monkeypatch.setattr(poster_mod, "_ALERT_COOLDOWN", {})
     with pytest.raises(Exception):
         asyncio.run(poster_mod.fetch_poster("/t/p/w500/x.jpg"))
+
+
+# ---- 节流告警 ----
+
+def test_alert_cooldown_suppresses_repeat_warning(monkeypatch):
+    """同 path 连续失败（时间未推进）只告警一次。"""
+    calls: list[tuple] = []
+
+    class Recorder:
+        def warning(self, *a, **kw):
+            calls.append(a)
+
+    monkeypatch.setattr(poster_mod, "logger", Recorder())
+    monkeypatch.setattr(poster_mod, "_ALERT_COOLDOWN", {})
+    poster_mod._alert("/t/p/w500/x.jpg")
+    poster_mod._alert("/t/p/w500/x.jpg")
+    assert len(calls) == 1
+
+
+def test_alert_fires_again_after_cooldown_expired(monkeypatch):
+    """cooldown 超过 60s 后同 path 再次失败会再次告警。"""
+    calls: list[tuple] = []
+
+    class Recorder:
+        def warning(self, *a, **kw):
+            calls.append(a)
+
+    monkeypatch.setattr(poster_mod, "logger", Recorder())
+    monkeypatch.setattr(poster_mod, "_ALERT_COOLDOWN", {})
+    poster_mod._alert("/t/p/w500/x.jpg")
+    # 手动把 cooldown 推进到超过 60s（写入过去时间戳）
+    poster_mod._ALERT_COOLDOWN["/t/p/w500/x.jpg"] = (
+        time.monotonic() - poster_mod._POSTER_ALERT_TTL - 1
+    )
+    poster_mod._alert("/t/p/w500/x.jpg")
+    assert len(calls) == 2
