@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
+import { reactive } from 'vue'
 import MediaDetailView from './MediaDetailView.vue'
 
 vi.mock('vue-router', () => ({
@@ -8,7 +9,24 @@ vi.mock('vue-router', () => ({
   useRouter: () => ({ push: vi.fn() }),
 }))
 
-const detail = {
+// reactive 化：测试可注入 episode_state 触发组件 computed 重新求值（分组过滤断言依赖）
+// 显式声明宽类型：episode_state 允许 season/episode_number 为 null（非标准集号场景）
+interface TestEpisodeState {
+  id: number
+  episode: string
+  season: number | null
+  episode_number: number | null
+  name?: string
+}
+
+const detail = reactive<{
+  id: number
+  title: string
+  media_type: string
+  status: string
+  episode_state: TestEpisodeState[]
+  tmdb_episodes: Array<{ season: number; episode: number; name?: string }>
+}>({
   id: 1,
   title: '测试剧',
   media_type: 'tv',
@@ -21,7 +39,7 @@ const detail = {
     { season: 1, episode: 1, name: '第一集' },
     { season: 1, episode: 2 },
   ],
-}
+})
 
 vi.mock('../stores/media', () => ({
   useMediaStore: () => ({
@@ -118,5 +136,61 @@ describe('MediaDetailView 布局（media-detail-ui）', () => {
     const html = wrapper.html()
     expect(html).toContain('第一集') // 集数名称展示
     expect(html).toContain('S01E02') // 无名称行回退集号
+  })
+})
+
+describe('MediaDetailView 分组过滤（media-detail-ui）', () => {
+  // 默认数据（其余 describe 依赖）
+  const DEFAULT_EPISODE_STATE = [
+    { id: 1, episode: 'S01E001', season: 1, episode_number: 1, name: '第一集' },
+    { id: 2, episode: 'S01E002', season: 1, episode_number: 2 },
+  ]
+
+  // 数据集：episode_number 为 1 / 101 / null（非标准集号，后端 fallback DTO 返回 null）
+  // episodeTotal = max(1, 101, 0) = 101 → 分组 [{1-100},{101-101}]
+  const GROUPED_EPISODE_STATE = [
+    { id: 1, episode: 'S01E001', season: 1, episode_number: 1, name: '第一集' },
+    { id: 2, episode: 'S01E101', season: 1, episode_number: 101, name: '第101集' },
+    { id: 3, episode: 'SP01', season: null, episode_number: null, name: '特典' },
+  ]
+
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    detail.episode_state = GROUPED_EPISODE_STATE.map((e) => ({ ...e }))
+  })
+
+  afterEach(() => {
+    detail.episode_state = DEFAULT_EPISODE_STATE.map((e) => ({ ...e }))
+  })
+
+  it('未选分组 → 全部行（含无集号行）', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as unknown as {
+      activeGroup: string | null
+      filteredRows: Array<Record<string, unknown>>
+    }
+    expect(vm.activeGroup).toBeNull()
+    expect(vm.filteredRows).toHaveLength(3)
+  })
+
+  it('选中分组 → 按区间过滤，episode_number 为 null 的行始终保留（回归 W1）', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as unknown as {
+      activeGroup: string | null
+      filteredRows: Array<Record<string, unknown>>
+    }
+    const episodeNumbers = () => vm.filteredRows.map((r) => r.episode_number)
+
+    // 选「1-100」：1 与 null 保留，101 被过滤
+    vm.activeGroup = '1-100'
+    await flushPromises()
+    expect(episodeNumbers()).toEqual([1, null])
+
+    // 选「101-101」：101 与 null 保留，1 被过滤
+    vm.activeGroup = '101-101'
+    await flushPromises()
+    expect(episodeNumbers()).toEqual([101, null])
   })
 })

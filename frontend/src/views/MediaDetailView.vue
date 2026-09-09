@@ -89,7 +89,10 @@ const filteredRows = computed(() => {
   if (!g) return episodeRows.value
   return episodeRows.value.filter((row) => {
     // EpisodeState 类型未声明 episode_number（spread 后索引签名丢失），按 Record 访问
-    const n = Number((row as Record<string, unknown>).episode_number)
+    // 无集号行始终显示（null/undefined 不参与分组过滤；注意 Number(null) === 0，必须先判空再数值化）
+    const raw = (row as Record<string, unknown>).episode_number
+    if (raw === null || raw === undefined) return true
+    const n = Number(raw)
     if (!Number.isFinite(n)) return true
     return n >= g.start && n <= g.end
   })
