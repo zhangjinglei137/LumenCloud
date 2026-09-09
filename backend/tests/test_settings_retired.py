@@ -88,6 +88,8 @@ def test_scan_interval_minutes_retired_and_not_editable():
     """scan_interval_minutes 从可编辑白名单移除，且存量数据 GET 不透传（remove-deprecated-settings）。"""
     from datetime import datetime, timezone
 
+    from sqlalchemy import select
+
     from app.database import async_session
     from app.models import SystemConfig
 
@@ -97,11 +99,15 @@ def test_scan_interval_minutes_retired_and_not_editable():
         async with async_session() as session:
             await session.merge(SystemConfig(key="scan_interval_minutes", value="60", updated_at=now))
             await session.commit()
-        return "seeded"
+            # 回查 DB 返回实际持久化值（同 _seed_retired_key 模式），避免「seeded」常量导致不透传断言空洞
+            result = await session.execute(
+                select(SystemConfig.value).where(SystemConfig.key == "scan_interval_minutes")
+            )
+            return result.scalars().first()
 
     with TestClient(app) as client:
-        # 存量键注入成功
-        assert client.portal.call(_seed_scan_interval) == "seeded"
+        # 存量键注入成功且真实落库（断言实际持久化值），确保不透传断言基于真实存量数据
+        assert client.portal.call(_seed_scan_interval) == "60"
 
         # admin 登录
         admin_password = client.portal.call(_recreate_admin)
