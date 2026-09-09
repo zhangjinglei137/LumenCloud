@@ -81,6 +81,12 @@ function episodeLabel(ep: Record<string, unknown>): string {
   return '—'
 }
 
+/** 集数名称（后端 TMDB 缓存轴提供 episode_state.name；缺失时显示 —） */
+function episodeName(ep: Record<string, unknown>): string {
+  const name = ep.name
+  return typeof name === 'string' && name !== '' ? name : '—'
+}
+
 /** 格式化 TMDB 集数为 S01E04 */
 function tmdbEpisodeLabel(item: { season?: number | null; episode?: number | null }): string {
   const season = item.season ?? 0
@@ -257,6 +263,13 @@ async function onDelete() {
             <el-table v-else :data="episodeRows" size="small" max-height="480">
               <el-table-column label="集" width="110">
                 <template #default="{ row }">{{ episodeLabel(row as Record<string, unknown>) }}</template>
+              </el-table-column>
+              <el-table-column label="名称" min-width="140">
+                <template #default="{ row }">
+                  <span :title="episodeName(row as Record<string, unknown>)">
+                    {{ episodeName(row as Record<string, unknown>) }}
+                  </span>
+                </template>
               </el-table-column>
               <el-table-column label="状态" width="96" align="center">
                 <template #default="{ row }">

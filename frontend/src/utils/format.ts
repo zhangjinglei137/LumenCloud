@@ -182,6 +182,25 @@ export function downloadQueueStatusColor(status: string | null | undefined): str
 
 // ---------- 集数状态 4 色分类（影视详情页「集数状态」列） ----------
 
+/** 归一集数状态（后端 resolve_episode_status）→ [中文标签, tag type] */
+const EPISODE_STATUS_MAP: Record<string, [string, string]> = {
+  in_library: ['已在库', 'success'],
+  error: ['异常', 'danger'],
+  scanning: ['巡检中', 'warning'],
+  not_aired: ['未开播', 'info'],
+  pending: ['待定', 'info'],
+}
+
+export function episodeStatusLabel(status: string | null | undefined): string {
+  if (!status) return '—'
+  return EPISODE_STATUS_MAP[status]?.[0] ?? status
+}
+
+export function episodeStatusType(status: string | null | undefined): string {
+  if (!status) return 'info'
+  return EPISODE_STATUS_MAP[status]?.[1] ?? 'info'
+}
+
 /** 集数状态分类 tag 结果 */
 export interface EpisodeStateTag {
   /** tag 文案：已在库 / 未开播 / 已开播 / 异常 */
@@ -202,6 +221,8 @@ function isFutureDate(yyyymmdd: string, today: Date): boolean {
 
 /**
  * 集数状态 4 色分类（纯函数，判定优先级自上而下，短路返回）：
+ *   归一状态优先：后端 episode_state[].state ∈ {in_library, error, scanning, not_aired, pending}
+ *                 直接采用（旧后端/巡检未跑时该字段缺失，继续向下走启发式）
  *   绿「已在库」 in_emby === true
  *   灰「未开播」 air_date 存在且 > 今天（日期粒度；air_date ≤ 今天视为已开播）
  *   红「异常」   status ∈ {failed, error}（任务失败）；
@@ -209,10 +230,18 @@ function isFutureDate(yyyymmdd: string, today: Date): boolean {
  *   黄「已开播」 其余（有标准集号、已到开播日、未入 Emby、非失败）
  * 后端字段未上线时拿到 undefined/null：一律按空值继续向下判定，不 crash。
  *
- * @param row episode_state 行（松散结构；in_emby / air_date 为可选新契约字段）
+ * @param row episode_state 行（松散结构；state/in_emby / air_date 为可选新契约字段）
  * @param today 当前时间（默认 new Date()；注入便于测试）
  */
 export function episodeStateTag(row: Record<string, unknown>, today: Date = new Date()): EpisodeStateTag {
+  // episode-status-cache：优先使用后端归一状态（in_library/error/scanning/not_aired/pending）
+  const norm = typeof row.state === 'string' ? row.state : ''
+  if (norm === 'in_library') return { label: '已在库', type: 'success', reason: '该集已在库' }
+  if (norm === 'error') return { label: '异常', type: 'danger', reason: '开播但未下载成功（含未搜到资源）' }
+  if (norm === 'scanning') return { label: '巡检中', type: 'warning', reason: '正在巡检/下载中' }
+  if (norm === 'not_aired') return { label: '未开播', type: 'info', reason: '尚未开播' }
+  if (norm === 'pending') return { label: '待定', type: 'info', reason: '暂无判定信息' }
+  // 回退既有启发式判定（旧后端未返回归一 state 字段时）
   if (row.in_emby === true) {
     return { label: '已在库', type: 'success', reason: '该集已在 Emby 媒体库' }
   }
