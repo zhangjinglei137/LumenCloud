@@ -11,8 +11,8 @@
 ## 3. 前端统一走代理
 
 - [x] 3.1 新增 utils/poster.ts 封装 posterUrl(path) 返回 /api/poster?p=...；验证单元测试覆盖编码与 null 处理
-- [ ] 3.2 替换全部使用点：MediaListView（卡片+表格）、MediaDetailView、TmdbSearch、MediaAddView、ApprovalsView、EmbyLibraryView 订阅场景；验证前端 npm run build 通过
-- [ ] 3.3 保留海报加载失败兜底（imgErrors 标题占位）；验证手工场景（代理不可达时不破页面）
+- [x] 3.2 替换全部使用点：MediaListView（卡片+表格）、MediaDetailView、TmdbSearch、MediaAddView、ApprovalsView、EmbyLibraryView 订阅场景；验证前端 npm run build 通过
+- [x] 3.3 保留海报加载失败兜底（imgErrors 标题占位）；验证手工场景（代理不可达时不破页面）
 
 ## 4. 缓存与性能
 

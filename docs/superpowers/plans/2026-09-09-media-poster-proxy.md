@@ -638,7 +638,7 @@ git commit -m "feat(poster): 前端新增 posterUrl 封装与 vitest 单测基�
 - Consumes: `posterUrl` from `../utils/poster`
 - Produces: 无（行为等价替换；`TMDB_POSTER_BASE` 常量删除后全仓无引用）
 
-- [ ] **Step 1: 逐文件替换（先改 import，后改 :src）**
+- [x] **Step 1: 逐文件替换（先改 import，后改 :src）**
 
 统一模式：`import { TMDB_POSTER_BASE, ... } from '../types'` → 拆分类型 import + 新增 `import { posterUrl } from '../utils/poster'`。
 
@@ -707,17 +707,17 @@ git commit -m "feat(poster): 前端新增 posterUrl 封装与 vitest 单测基�
 ```
 （同时更新 :45 注释，移除「配合 TMDB_POSTER_BASE 拼完整 URL」措辞 → 「前端经 posterUrl 走后端代理」）
 
-- [ ] **Step 2: 全仓 grep 确认 TMDB_POSTER_BASE 无残留**
+- [x] **Step 2: 全仓 grep 确认 TMDB_POSTER_BASE 无残留**
 
 Run: `grep -rn "TMDB_POSTER_BASE" frontend/src/`
 Expected: 无输出（0 匹配）
 
-- [ ] **Step 3: 运行前端测试 + 构建**
+- [x] **Step 3: 运行前端测试 + 构建**
 
 Run: `npm test && npm run build`（workdir: `frontend`）
 Expected: vitest PASS + `vue-tsc --noEmit` 无类型错误 + `vite build` 成功（产物写入 `backend/static`）
 
-- [ ] **Step 4: 验证兜底保留（task 3.3）**
+- [x] **Step 4: 验证兜底保留（task 3.3）**
 
 核对 5 个改动文件，确认以下兜底逻辑原样保留（代码事实核对，非手工运行）：
 - MediaListView：`imgErrors.has(m.id)` / `@error="imgErrors.add(m.id)"` / `lc-poster-fallback` 分支
@@ -727,7 +727,7 @@ Expected: vitest PASS + `vue-tsc --noEmit` 无类型错误 + `vite build` 成功
 
 预期：全部保留，未删除或弱化任何 fallback 逻辑。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add frontend/src/types/index.ts frontend/src/components/TmdbSearch.vue frontend/src/views/MediaListView.vue frontend/src/views/MediaDetailView.vue frontend/src/views/MediaAddView.vue frontend/src/views/ApprovalsView.vue
