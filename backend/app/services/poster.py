@@ -58,8 +58,21 @@ def _validate_poster_path(p: str) -> bool:
 
 
 def _base_url() -> str:
-    """图床根地址（Task 3 引入镜像配置前，临时返回官方图床地址）。"""
-    return POSTER_DEFAULT_BASE
+    """海报图床根地址：镜像（tmdb_poster_proxy）优先，否则官方 image.tmdb.org。
+
+    误填防御（复用 tmdb.py _base_url 语义）：无 scheme 的 host:port
+    （如 192.168.3.31:7897）一定是误填的科学上网代理端口 → 明确报错。
+    """
+    mirror = (
+        config_store.get("tmdb_poster_proxy", settings.TMDB_POSTER_PROXY) or ""
+    ).strip().rstrip("/")
+    if mirror and "://" not in mirror and ":" in mirror:
+        raise PosterUnavailable(
+            f"图床镜像地址疑似填了代理端口（{mirror}）。tmdb_poster_proxy 应为图床"
+            "反代根地址（如 https://tmdb-image.example.com）；科学上网代理请填到"
+            "「TMDB 出口代理」（tmdb_http_proxy）。设置页 → 服务凭据 → 元数据 · TMDB 修改。"
+        )
+    return mirror or POSTER_DEFAULT_BASE
 
 
 def _client_factory():

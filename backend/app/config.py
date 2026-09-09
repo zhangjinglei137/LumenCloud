@@ -65,6 +65,10 @@ class Settings(BaseSettings):
     # 代理）。与 TMDB_PROXY（镜像根地址）相互独立可叠加：镜像请求同样可走该出口；
     # 无镜像时配合官方地址（api.themoviedb.org）使用。
     TMDB_HTTP_PROXY: str = ""
+    # 图床镜像根地址（反代根，如 https://tmdb-image.example.com）：配置后海报
+    # 代理从此镜像取图，未配置回退官方 image.tmdb.org。与 TMDB_PROXY（API 镜像）
+    # 相互独立。
+    TMDB_POSTER_PROXY: str = ""
     EMBY_BASE_URL: str = ""
     EMBY_API_KEY: str = ""
     CLOUDSAVER_BASE_URL: str = ""

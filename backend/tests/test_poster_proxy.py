@@ -111,3 +111,52 @@ def test_alert_fires_again_after_cooldown_expired(monkeypatch):
     )
     poster_mod._alert("/t/p/w500/x.jpg")
     assert len(calls) == 2
+
+
+# ---- Task 3：图床镜像（_base_url 镜像优先 + 误填防御）----
+
+def test_base_url_prefers_mirror(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.config_store._cache",
+        {"tmdb_poster_proxy": "https://mirror.example.com"},
+    )
+    assert poster_mod._base_url() == "https://mirror.example.com"
+
+
+def test_base_url_falls_back_to_official(monkeypatch):
+    monkeypatch.setattr("app.services.config_store._cache", {})
+    assert poster_mod._base_url() == "https://image.tmdb.org"
+
+
+def test_base_url_rejects_proxy_port(monkeypatch):
+    """误填科学上网代理端口（无 scheme 的 host:port）→ PosterUnavailable。"""
+    monkeypatch.setattr(
+        "app.services.config_store._cache",
+        {"tmdb_poster_proxy": "192.168.3.31:7897"},
+    )
+    with pytest.raises(poster_mod.PosterUnavailable):
+        poster_mod._base_url()
+
+
+def test_mirror_path_requests(monkeypatch):
+    """配置镜像后回源 URL 使用镜像根地址。"""
+    monkeypatch.setattr(
+        "app.services.config_store._cache",
+        {"tmdb_poster_proxy": "https://mirror.example.com"},
+    )
+    monkeypatch.setattr(poster_mod, "_POSTER_CACHE", {})
+    calls: list[str] = []
+    resp = SimpleNamespace(status_code=200, content=b"img", headers={"content-type": "image/png"})
+    monkeypatch.setattr(poster_mod, "_client_factory", _make_client_factory(resp, calls))
+    asyncio.run(poster_mod.fetch_poster("/t/p/w500/x.png"))
+    assert calls == ["https://mirror.example.com/t/p/w500/x.png"]
+
+
+def test_settings_whitelist_contains_poster_proxy():
+    from app.routers.settings import _WHITELIST_EXACT
+    assert "tmdb_poster_proxy" in _WHITELIST_EXACT
+
+
+def test_config_has_poster_proxy_field():
+    from app.config import settings as s
+    assert hasattr(s, "TMDB_POSTER_PROXY")
