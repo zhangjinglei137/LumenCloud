@@ -63,6 +63,16 @@ _PAUSE_CONFIG_KEY = "download_queue_paused"
 _TQ_ACTIVE = ("pending", "probing", "ready", "unmatched", "error")
 _DQ_ACTIVE = ("pending", "transferring", "downloading", "scrape", "library", "quota_wait")
 
+# 夸克分享地址域名（share_url 构造集中一处；无分享码时前端降级为不可点击）
+_QUARK_SHARE_URL = "https://pan.quark.cn/s"
+
+
+def _share_url(code: str | None) -> str | None:
+    """夸克分享地址；无分享码返回 None（前端据此降级为不可点击）。"""
+    if not code:
+        return None
+    return f"{_QUARK_SHARE_URL}/{code}"
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
@@ -88,19 +98,22 @@ def _load_transfer_queue_model():
     return TransferQueue
 
 
-async def _list_flat(session: AsyncSession, limit: int, offset: int) -> list[dict]:
-    """扁平任务列表（Task 9 契约）：TaskQueue(活跃探测态) ∪ DownloadQueue(活跃执行态)
-    合一，join Media 取 title，终态（tq done / dq done|skipped|failed）剔除；同
-    (media_id, episode) 已有 DQ 活跃行时不展示 task_queue 探测快照（promote 遗留快照
-    去重，延续树视图 Playwright 修复）。跨表按 updated_at 倒序 + id 倒序决胜，
-    limit/offset 分页作用于扁平行切片。
+async def _list_flat(session: AsyncSession, limit: int, offset: int, is_admin: bool) -> dict:
+    """扁平任务列表（{items, total} 分页契约）：TaskQueue(活跃探测态) ∪
+    DownloadQueue(活跃执行态) 合一，join Media 取 title，终态（tq done /
+    dq done|skipped|failed）剔除；同 (media_id, episode) 已有 DQ 活跃行时不展示
+    task_queue 探测快照（promote 遗留快照去重，延续树视图 Playwright 修复）。
+    跨表按创建时间升序（TQ 用 created_at=enqueued_at 键，DQ 用 enqueued_at），
+    id 升序决胜；total 为去重后全量，limit/offset 分页作用于扁平行切片。
+    share_code 仅 admin 明文（guest 为 null，§9.1 脱敏）；size_estimated 为
+    估算标记输出（Task 2 落库前取默认 False，字段契约先行）。
     """
     dq_rows = (
         (
             await session.execute(
                 select(DownloadQueue)
                 .where(DownloadQueue.status.in_(_DQ_ACTIVE))
-                .order_by(DownloadQueue.updated_at.desc(), DownloadQueue.id.desc())
+                .order_by(DownloadQueue.enqueued_at.asc(), DownloadQueue.id.asc())
             )
         )
         .scalars()
@@ -111,7 +124,7 @@ async def _list_flat(session: AsyncSession, limit: int, offset: int) -> list[dic
             await session.execute(
                 select(TaskQueue)
                 .where(TaskQueue.status.in_(_TQ_ACTIVE))
-                .order_by(TaskQueue.updated_at.desc(), TaskQueue.id.desc())
+                .order_by(TaskQueue.created_at.asc(), TaskQueue.id.asc())
             )
         )
         .scalars()
@@ -145,6 +158,8 @@ async def _list_flat(session: AsyncSession, limit: int, offset: int) -> list[dic
             "node": None,  # 探测视图无节点概念
             "file_name": tq.file_name,
             "file_size": tq.file_size,
+            "share_code": tq.share_code if is_admin else None,
+            "size_estimated": bool(getattr(tq, "size_estimated", False)),
             "updated_at": _iso(tq.updated_at),
             "enqueued_at": _iso(tq.created_at),
         })
@@ -159,28 +174,42 @@ async def _list_flat(session: AsyncSession, limit: int, offset: int) -> list[dic
             "node": dq.status,  # 执行视图：node=status（与树子节点同口径）
             "file_name": dq.file_name,
             "file_size": dq.file_size,
+            "share_code": dq.share_code if is_admin else None,
+            "size_estimated": bool(getattr(dq, "size_estimated", False)),
             "updated_at": _iso(dq.updated_at),
             "enqueued_at": _iso(dq.enqueued_at),
         })
 
-    # 跨表合并排序：最新 updated_at 倒序（空值置后），id 倒序决胜
-    rows.sort(key=lambda r: (r["updated_at"] or "", r["id"]), reverse=True)
-    return rows[offset: offset + limit]
+    # 跨表合并排序：创建时间升序（enqueued_at 统一键，TQ=created_at 映射），id 升序决胜
+    rows.sort(key=lambda r: (r["enqueued_at"] or "", r["id"]))
+    return {"items": rows[offset: offset + limit], "total": len(rows)}
 
 
 async def _list_download(
-    session: AsyncSession, limit: int, offset: int,
-) -> list[dict]:
-    """下载队列扁平列表（§8.1，?type=download）：按准入顺序（enqueued_at 倒序）。"""
+    session: AsyncSession, limit: int, offset: int, is_admin: bool,
+) -> dict:
+    """下载队列扁平列表（§8.1，?type=download，{items, total} 分页契约）：
+    活跃态按准入顺序（enqueued_at 升序，id 升序决胜）；share_code/share_url
+    仅 admin 明文（guest 为 null，§9.1 脱敏）；size_estimated 估算标记输出。
+    total 与主查询同 where（活跃态）取 count，保证分页总数与列表一致。
+    """
     rows = (
         await session.execute(
             select(DownloadQueue, Media)
             .outerjoin(Media, Media.id == DownloadQueue.media_id)
-            .order_by(DownloadQueue.enqueued_at.desc(), DownloadQueue.id.desc())
+            .where(DownloadQueue.status.in_(_DQ_ACTIVE))
+            .order_by(DownloadQueue.enqueued_at.asc(), DownloadQueue.id.asc())
             .limit(limit)
             .offset(offset)
         )
     ).all()
+    total = (
+        await session.execute(
+            select(func.count())
+            .select_from(DownloadQueue)
+            .where(DownloadQueue.status.in_(_DQ_ACTIVE))
+        )
+    ).scalar_one()
     result = []
     for dq, media in rows:
         result.append({
@@ -190,7 +219,9 @@ async def _list_download(
             "episode": dq.episode,
             "file_name": dq.file_name,
             "file_size": dq.file_size,
-            "share_code": dq.share_code,
+            "share_code": dq.share_code if is_admin else None,
+            "share_url": _share_url(dq.share_code) if is_admin else None,
+            "size_estimated": bool(getattr(dq, "size_estimated", False)),
             "status": dq.status,
             "node_attempt": dq.node_attempt,
             "node_error": dq.node_error,
@@ -200,7 +231,7 @@ async def _list_download(
             "enqueued_at": _iso(dq.enqueued_at),
             "updated_at": _iso(dq.updated_at),
         })
-    return result
+    return {"items": result, "total": total}
 
 
 @router.get("/queue")
@@ -210,11 +241,16 @@ async def list_queue(
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
     type: Annotated[Optional[str], Query()] = None,
-) -> list[dict]:
-    """扁平任务列表（Task 9 契约：两队列活跃行合一 + 终态剔除）或 ?type=download 下载队列扁平列表。"""
+) -> dict:
+    """扁平任务列表或 ?type=download 下载队列（{items, total} 分页契约）。
+
+    权限：GET /queue 维持 get_current_user（登录即可读）；字段层面脱敏——
+    share_code/share_url 仅 admin 明文，guest 一律 null（§9.1 口径）。
+    """
+    is_admin = user.role == "admin"
     if type == "download":
-        return await _list_download(session, limit, offset)
-    return await _list_flat(session, limit, offset)
+        return await _list_download(session, limit, offset, is_admin)
+    return await _list_flat(session, limit, offset, is_admin)
 
 
 # ---------------------------------------------------------------------------
