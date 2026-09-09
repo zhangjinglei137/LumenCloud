@@ -1,0 +1,14 @@
+{
+  "change": "settings-credentials-ui",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "9442d40b6efe80eca965f57d8aebcdb09cfdc05c947397f812d725600e52d47a",
+  "files": [
+    { "path": "docs/openspec/changes/settings-credentials-ui/proposal.md", "sha256": "52cf6546a065e300b3699773b03314038533e295d0ce5f5112eecdd873478801" },
+    { "path": "docs/openspec/changes/settings-credentials-ui/design.md", "sha256": "9e99ff28f199258d569fc5d766ae9af48549b7b9b0a7e21565e1c2a314511afb" },
+    { "path": "docs/openspec/changes/settings-credentials-ui/tasks.md", "sha256": "13b6ff602f6e19e552d8f0c16a6c111a719e305aad357070916970fa8834c242" },
+    { "path": "docs/openspec/changes/settings-credentials-ui/specs/settings-credentials-ui/spec.md", "sha256": "c394bdf4d4f5d9c9cd274a4edacfbfe7eb4efcf4a6934de7d2413ec51bce0ee9" }
+  ]
+}

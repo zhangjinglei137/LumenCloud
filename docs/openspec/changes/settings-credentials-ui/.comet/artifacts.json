@@ -1,0 +1,8 @@
+{
+  "openspec_proposal": "docs/openspec/changes/settings-credentials-ui/proposal.md",
+  "openspec_design": "docs/openspec/changes/settings-credentials-ui/design.md",
+  "openspec_tasks": "docs/openspec/changes/settings-credentials-ui/tasks.md",
+  "openspec_delta_spec": "docs/openspec/changes/settings-credentials-ui/specs/settings-credentials-ui/spec.md",
+  "handoff_context": "docs/openspec/changes/settings-credentials-ui/.comet/handoff/design-context.json",
+  "handoff_markdown": "docs/openspec/changes/settings-credentials-ui/.comet/handoff/design-context.md"
+}
