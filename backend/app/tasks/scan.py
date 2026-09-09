@@ -951,13 +951,18 @@ def _json_dumps(v):
 
 
 async def _enqueue(media_id: int, episode_key: str, file_name: str, file_size: int,
-                   share_code: str, payload: dict) -> str:
+                   share_code: str, payload: dict, *,
+                   size_estimated: bool = False) -> str:
     """巡检入队只写 task_queue（queue-flow-rework Task 2：只写队列，移除同步 promote 双写）。
 
     探测完成即产出：scan 搜索/匹配/大小过滤通过后，把探测结果快照写 task_queue
     （status='ready'——转存凭据收集完毕，等待下载队列取件）。同步 promote 双写
     download_queue 已移除（下载队列后续从 task_queue 取件，Task 4）；download_name
     落盘名生成一并移除（迁移至 Task 7）。
+
+    size_estimated：file_size 是否为「分享总大小 / 文件数」均摊估算值（cloudSaver
+    share-list 不返回单文件 size，_walk_share 估算后置标记）。取件/promote 全链路
+    拷贝该标记，下载完成用 aria2 totalLength 回填真实大小后清除（Task 2）。
 
     幂等：事务内先查 task_queue 同键记录，命中则跳过；写入撞
     UNIQUE(media_id, episode) 则捕获 IntegrityError 判定为并发冲突。
@@ -981,6 +986,7 @@ async def _enqueue(media_id: int, episode_key: str, file_name: str, file_size: i
                 episode=episode_key,
                 file_name=file_name,
                 file_size=file_size,
+                size_estimated=size_estimated,
                 share_code=share_code,
                 status="ready",  # 凭据收集完毕，等待下载队列取件（queue-flow-rework Task 2）
                 pwd_id=payload.get("pwd_id") or payload.get("pwdId"),
@@ -1535,7 +1541,8 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
                 continue
 
             payload = _enqueue_payload(info, f)
-            res = await _enqueue(media_id, matched_key, file_name, file_size, share_code, payload)
+            res = await _enqueue(media_id, matched_key, file_name, file_size, share_code, payload,
+                                 size_estimated=bool(f.get("size_estimated")))
             if res == "enqueued":
                 enqueued += 1
                 item = missing_items_by_key.get(matched_key)

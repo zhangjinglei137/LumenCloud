@@ -471,8 +471,14 @@ async def _poll_downloading_tasks() -> None:
 
         status = (st or {}).get("status")
         if status == "complete":
+            # Task 2：用 aria2 totalLength 回填真实 file_size 并清估算标记；
+            # totalLength 缺失/非法 → real_size=None（不回填，保持估算值）。
+            try:
+                real_size = int((st or {}).get("totalLength") or 0) or None
+            except (TypeError, ValueError):
+                real_size = None
             await _complete_download(dq_id, media_id, episode, file_name, quark_path,
-                                     retry_c, node_attempt)
+                                     retry_c, node_attempt, real_size=real_size)
         elif status in ("error", "removed"):
             await _fail_download(dq_id, media_id, episode, file_name, quark_path,
                                  retry_c, node_attempt, f"aria2 任务状态 {status}")
@@ -524,7 +530,8 @@ async def _after_complete_promote(media_id: int, episode: str, file_name: str) -
 
 
 async def _complete_download(dq_id, media_id, episode, file_name, quark_path,
-                             retry_snapshot, node_attempt_snapshot) -> None:
+                             retry_snapshot, node_attempt_snapshot, *,
+                             real_size: int | None = None) -> None:
     """下载完成推进（G6 决策 / §4.2）：downloading → scrape（触发刮削，不删夸克）。
 
     与旧三表版（双表 done + 删夸克）的差异：
@@ -533,22 +540,30 @@ async def _complete_download(dq_id, media_id, episode, file_name, quark_path,
       b. 触发刮削执行器（_after_complete_promote：nastools force 同步 + 通知）；
       c. **不删夸克文件**（G6：入库确认后由后续 lane 删除）；
       d. media 离开 downloading 后检查是否还有其他进行中任务，无则回 tracking。
+
+    real_size（Task 2）：aria2 tell_status 的 totalLength（真实字节数）。
+    非 None 时回填 DownloadQueue.file_size 并清除 size_estimated 估算标记
+    （size_estimated 列可空，但 file_size NOT NULL——real_size 缺失时必须跳过
+    file_size 写入，避免把 NULL 写进 NOT NULL 列导致整条 UPDATE 失败）。
     """
     t0 = _time.monotonic()  # Q8①：真实耗时
     now = _now()
     async with async_session() as s:
         async with s.begin():
+            vals = {
+                "status": "scrape",
+                "node_attempt": 0,
+                "node_started_at": now,
+                "node_finished_at": now,
+                "node_error": None,
+                "updated_at": now,
+            }
+            if real_size is not None:
+                vals.update(file_size=real_size, size_estimated=False)
             r = await s.execute(
                 update(DownloadQueue)
                 .where(DownloadQueue.id == dq_id, DownloadQueue.status == "downloading")
-                .values(
-                    status="scrape",
-                    node_attempt=0,
-                    node_started_at=now,
-                    node_finished_at=now,
-                    node_error=None,
-                    updated_at=now,
-                )
+                .values(**vals)
             )
             if r.rowcount == 0:
                 # 幂等：已被 aria2 回调（trigger_download_complete）/并发轮询推进，
@@ -1328,6 +1343,7 @@ async def _fetch_from_task_queue(num: int = 10) -> int:
                         s.add(DownloadQueue(
                             media_id=r.media_id, episode=r.episode, task_queue_id=r.id,
                             file_name=file_name, file_size=file_size,
+                            size_estimated=r.size_estimated,
                             share_code=share_code,
                             pwd_id=r.pwd_id, stoken=r.stoken, receive_code=r.receive_code,
                             fids=r.fids, fid_tokens=r.fid_tokens, folder_id=r.folder_id,
@@ -1610,17 +1626,29 @@ async def trigger_download_complete(gid: str) -> bool:
                 if dq is None:
                     return False  # gid 查不到 / 已非 downloading（幂等）
                 dq_id, media_id, episode, file_name = dq.id, dq.media_id, dq.episode, dq.file_name
+                # Task 2：aria2 真实大小回填（回调路径与轮询对齐）。tell_status
+                # 失败静默不回填（保持估算值，事件丢失由轮询兜底）；totalLength
+                # 缺失/非法同样返回 None。
+                real_size: int | None = None
+                try:
+                    st = await aria2.client.tell_status(gid)
+                    real_size = int((st or {}).get("totalLength") or 0) or None
+                except Exception:  # noqa: BLE001
+                    pass  # aria2 查询失败 → 不回填，保持估算值
+                vals = {
+                    "status": "scrape",
+                    "node_attempt": 0,
+                    "node_started_at": now,
+                    "node_finished_at": now,
+                    "node_error": None,
+                    "updated_at": now,
+                }
+                if real_size is not None:
+                    vals.update(file_size=real_size, size_estimated=False)
                 r = await s.execute(
                     update(DownloadQueue)
                     .where(DownloadQueue.id == dq_id, DownloadQueue.status == "downloading")
-                    .values(
-                        status="scrape",
-                        node_attempt=0,
-                        node_started_at=now,
-                        node_finished_at=now,
-                        node_error=None,
-                        updated_at=now,
-                    )
+                    .values(**vals)
                 )
                 if r.rowcount != 1:
                     return False  # 已被轮询/回调并发推进（幂等）

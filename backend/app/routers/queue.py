@@ -661,6 +661,7 @@ async def promote_task(
     session.add(DownloadQueue(
         media_id=tq.media_id, episode=tq.episode, task_queue_id=tq.id,
         file_name=tq.file_name or "", file_size=tq.file_size or 0,
+        size_estimated=tq.size_estimated,
         share_code=tq.share_code or "",
         pwd_id=tq.pwd_id, stoken=tq.stoken, receive_code=tq.receive_code,
         fids=tq.fids, fid_tokens=tq.fid_tokens, folder_id=tq.folder_id,

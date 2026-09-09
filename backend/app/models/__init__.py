@@ -134,6 +134,7 @@ class TaskQueue(Base):
     # ---- 探测结果快照（ready 时填充，promote 时整体拷贝进 download_queue）----
     file_name = mapped_column(Text)                        # 夸克分享原始文件名
     file_size = mapped_column(BigInteger)                  # 字节；探测到才有
+    size_estimated = mapped_column(Boolean)                # file_size 为均摊估算值（cloudSaver 无单文件 size）
     share_code = mapped_column(Text)                       # 夸克分享码（12 位）
     pwd_id = mapped_column(Text)
     stoken = mapped_column(Text)
@@ -176,6 +177,7 @@ class DownloadQueue(Base):
     # ---- 分享信息快照（promote 时从 task_queue 整体拷贝，转存阶段独立）----
     file_name = mapped_column(Text, nullable=False)        # 夸克原始文件名
     file_size = mapped_column(BigInteger, nullable=False)  # 字节
+    size_estimated = mapped_column(Boolean)                # file_size 为均摊估算值（cloudSaver 无单文件 size）
     share_code = mapped_column(Text, nullable=False)
     pwd_id = mapped_column(Text)
     stoken = mapped_column(Text)
