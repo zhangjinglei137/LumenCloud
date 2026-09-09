@@ -33,6 +33,18 @@ logs/
 .codegraph/
 .opencode/
 
+# ---- opencode/Comet 等 AI 工具生成物（非项目文件） ----
+.agents/
+skills-lock.json
+.superpowers/
+
+# ---- Comet 生成的项目级 agent 指令（工具托管，不入库） ----
+AGENTS.md
+CLAUDE.md
+
+# ---- OpenSpec 归档目录占位（真实归档内容由 archive 流程提交） ----
+docs/openspec/changes/archive/.gitkeep
+
 # ---- 前端构建产物（Docker 构建时由 frontend-builder 阶段重建） ----
 backend/static/
 # ---- deepwork 进度（git 本地） ----
@@ -44,3 +56,8 @@ scripts/backup/
 
 # playwright-cli 浏览器会话数据
 .playwright-cli/
+# >>> Comet managed project state >>>
+!/.comet/
+/.comet/*
+!/.comet/config.yaml
+# <<< Comet managed project state <<<
