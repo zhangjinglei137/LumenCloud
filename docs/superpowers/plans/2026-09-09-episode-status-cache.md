@@ -337,7 +337,7 @@ git commit -m "feat(episode-cache): 集信息缓存读写 refresh_episode_info/g
 - Consumes: `refresh_episode_info`（Task 2）、`Media`、`async_session`、`get_job_enabled`
 - Produces: `episode_info_refresh_job`（APScheduler job 包装），注册到 scheduler
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `backend/tests/test_scheduler.py` 追加：
 
@@ -356,7 +356,7 @@ def test_episode_info_refresh_job_runs_for_tv_media(monkeypatch):
     assert calls == []  # 空库不刷
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 ```bash
 cd backend && pytest tests/test_scheduler.py -k "episode_info_refresh" -q 2>&1 | tail -6
@@ -364,7 +364,7 @@ cd backend && pytest tests/test_scheduler.py -k "episode_info_refresh" -q 2>&1 |
 
 Expected: FAIL（module not found）。
 
-- [ ] **Step 3: 创建任务模块**
+- [x] **Step 3: 创建任务模块**
 
 创建 `backend/app/tasks/episode_info_refresh.py`：
 
@@ -417,7 +417,7 @@ async def episode_info_refresh_job() -> None:
         logger.exception("[episode_info_refresh] 定时任务异常")
 ```
 
-- [ ] **Step 4: scheduler.py 注册 job**
+- [x] **Step 4: scheduler.py 注册 job**
 
 在 `backend/app/scheduler.py`：
 1. import 行加 `episode_info_refresh`：`from app.tasks import capacity_alert, cleanup, episode_info_refresh, library_check, ...`
@@ -445,7 +445,7 @@ JOB_EPISODE_INFO_REFRESH = "episode_info_refresh"
 
 4. 模块 docstring 的 job 表新增一行说明。
 
-- [ ] **Step 5: 运行确认通过**
+- [x] **Step 5: 运行确认通过**
 
 ```bash
 cd backend && pytest tests/test_scheduler.py -k "episode_info_refresh" -q 2>&1 | tail -6
@@ -454,7 +454,7 @@ cd backend && python -c "from app.scheduler import JOB_IDS; assert 'episode_info
 
 Expected: PASS；`JOB_IDS` 含 episode_info_refresh。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add backend/app/tasks/episode_info_refresh.py backend/app/scheduler.py backend/tests/test_scheduler.py

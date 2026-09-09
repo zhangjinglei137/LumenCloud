@@ -13,8 +13,8 @@
 
 ## 3. 每日定时刷新任务
 
-- [ ] 3.1 scheduler.py 注册 `episode_info_refresh` 任务（默认每日一次，system_config 键 `episode_info_refresh_interval_hours` 默认 24，get_job_enabled 开关可停用），验证任务注册进 scheduler 且开关读取生效
-- [ ] 3.2 实现刷新遍历：查询全部 tv media 逐个调用 refresh_episode_info，单影视失败跳过并 log warning，验证全量刷新不中断且失败不影响其余
+- [x] 3.1 scheduler.py 注册 `episode_info_refresh` 任务（默认每日一次，system_config 键 `episode_info_refresh_interval_hours` 默认 24，get_job_enabled 开关可停用），验证任务注册进 scheduler 且开关读取生效
+- [x] 3.2 实现刷新遍历：查询全部 tv media 逐个调用 refresh_episode_info，单影视失败跳过并 log warning，验证全量刷新不中断且失败不影响其余
 
 ## 4. 标记状态机与集数统计修正
 
