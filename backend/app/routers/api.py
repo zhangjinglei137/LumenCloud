@@ -23,6 +23,7 @@ from app.routers import (
     nastools_notify,
     notifications,
     notify,
+    poster,
     queue,
     settings,
     tmdb,
@@ -36,6 +37,7 @@ _business_router.include_router(media.router)
 _business_router.include_router(queue.router)
 _business_router.include_router(capacity.router)
 _business_router.include_router(tmdb.router)
+_business_router.include_router(poster.router)
 _business_router.include_router(emby.router)
 _business_router.include_router(approvals.router)
 _business_router.include_router(settings.router)
