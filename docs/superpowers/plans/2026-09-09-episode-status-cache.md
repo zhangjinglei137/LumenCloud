@@ -677,7 +677,7 @@ git commit -m "feat(media-status): 统一标记状态机 resolve_episode_status 
 - Consumes: `_finalize_done`（既有）、`EpisodeState`、`_parse_episode`、`fmt_episode`
 - Produces: finalize 时同步 `episode_state(state='done', file_size)` 双表一致；列表聚合自然 +1
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `backend/tests/test_library_check.py` 追加（同步风格，沿用既有 `db`/`env` fixture 与 `run()` 包装）：
 
@@ -727,7 +727,7 @@ def test_finalize_done_syncs_episode_state(db, env, monkeypatch):
 
 （沿用 test_library_check.py 既有 mock 模式：`env` fixture 已 mock `_remove_quark_files`/notifier/spawn；`patch_db` 把 `async_session` 指向 in-memory db。若 `_finalize_done` 内部引用 `notifier`/`_spawn` 均已被 env fixture 替换。）
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 ```bash
 cd backend && pytest tests/test_library_check.py -k "finalize" -q 2>&1 | tail -6
@@ -735,7 +735,7 @@ cd backend && pytest tests/test_library_check.py -k "finalize" -q 2>&1 | tail -6
 
 Expected: FAIL（episode_state 未同步）。
 
-- [ ] **Step 3: 实现双表同步**
+- [x] **Step 3: 实现双表同步**
 
 在 `_finalize_done` 中，置 dq done 的同一事务内追加 episode_state upsert：
 
@@ -772,7 +772,7 @@ Expected: FAIL（episode_state 未同步）。
 
 需确保 `select`/`EpisodeState` 已 import（library_check.py 已有 `EpisodeState` 引用则复用）。
 
-- [ ] **Step 4: 运行确认通过**
+- [x] **Step 4: 运行确认通过**
 
 ```bash
 cd backend && pytest tests/test_library_check.py -q 2>&1 | tail -8
@@ -780,7 +780,7 @@ cd backend && pytest tests/test_library_check.py -q 2>&1 | tail -8
 
 Expected: PASS（新增用例 + 既有不回归）。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add backend/app/tasks/library_check.py backend/tests/test_library_check.py

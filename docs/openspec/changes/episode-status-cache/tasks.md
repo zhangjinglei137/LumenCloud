@@ -25,8 +25,8 @@
 
 ## 5. 入库完成联动更新
 
-- [ ] 5.1 library_check._finalize_done 完成单集入库时同步更新该集在库状态（写 episode_state 或标记在库，供列表/详情聚合自然反映），验证 finalize 后列表集数统计 +1
-- [ ] 5.2 补充测试：入库完成触发状态更新与统计联动，验证 `pytest` 通过
+- [x] 5.1 library_check._finalize_done 完成单集入库时同步更新该集在库状态（写 episode_state 或标记在库，供列表/详情聚合自然反映），验证 finalize 后列表集数统计 +1
+- [x] 5.2 补充测试：入库完成触发状态更新与统计联动，验证 `pytest` 通过
 
 ## 6. 前端展示修正
 
