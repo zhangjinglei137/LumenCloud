@@ -2,6 +2,8 @@
 comet_change: settings-credentials-ui
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-09-09-settings-credentials-ui
+status: final
 ---
 
 # Design Doc: settings-credentials-ui 服务凭据表单交互与废弃配置项清理

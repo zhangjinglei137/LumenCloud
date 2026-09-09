@@ -2,6 +2,7 @@
 change: settings-credentials-ui
 design-doc: docs/superpowers/specs/2026-09-09-settings-credentials-ui-design.md
 base-ref: 4c0b5c369efb96fb92e82bb4682a854f5c63c04c
+archived-with: 2026-09-09-settings-credentials-ui
 ---
 
 # settings-credentials-ui 实施计划
