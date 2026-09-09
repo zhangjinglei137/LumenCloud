@@ -81,7 +81,7 @@ git commit -m "feat(docker): 为 lumencloud/db 容器注入 TZ=Asia/Shanghai"
 - Consumes: FastAPI `jsonable_encoder` 原函数（`fastapi.encoders`）
 - Produces: `backend/app/json.py` 导出 `install_zulu_encoder()`（接线函数，幂等）；所有 API 响应 datetime 均带 `Z` 后缀
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 创建 `backend/tests/test_json_encoder.py`：
 
@@ -123,12 +123,12 @@ def test_nested_datetime_in_dict():
     assert out["created_at"] == "2026-09-09T01:15:00Z"
 ```
 
-- [ ] **Step 2: 运行测试验证失败**
+- [x] **Step 2: 运行测试验证失败**
 
 Run: `cd backend && python -m pytest tests/test_json_encoder.py -v`
 Expected: FAIL（`ModuleNotFoundError: No module named 'app.json'`）
 
-- [ ] **Step 3: 实现 `backend/app/json.py`**
+- [x] **Step 3: 实现 `backend/app/json.py`**
 
 ```python
 """docker-timezone：全局 UTC+Z 时间序列化。
@@ -159,7 +159,7 @@ def install_zulu_encoder() -> None:
     routing.jsonable_encoder = jsonable_encoder_zulu
 ```
 
-- [ ] **Step 4: 接线 `backend/app/main.py`**
+- [x] **Step 4: 接线 `backend/app/main.py`**
 
 在 `app = FastAPI(...)` 之前（约 line 100）加入：
 
@@ -170,7 +170,7 @@ from app.json import install_zulu_encoder
 install_zulu_encoder()
 ```
 
-- [ ] **Step 5: `queue.py:_iso` 补 Z**
+- [x] **Step 5: `queue.py:_iso` 补 Z**
 
 `backend/app/routers/queue.py:71-72`：
 
@@ -179,17 +179,17 @@ def _iso(dt: Optional[datetime]) -> Optional[str]:
     return dt.isoformat() + "Z" if dt else None
 ```
 
-- [ ] **Step 6: 运行测试验证通过**
+- [x] **Step 6: 运行测试验证通过**
 
 Run: `cd backend && python -m pytest tests/test_json_encoder.py -v`
 Expected: 5 项全部 PASS
 
-- [ ] **Step 7: 回归 smoke（若环境可用）**
+- [x] **Step 7: 回归 smoke（若环境可用）**
 
 Run: `cd backend && python -m pytest tests/test_api_smoke.py tests/test_queue.py -q`
 Expected: 通过或仅有与本次改动无关的既有失败（记录）；不得引入新失败
 
-- [ ] **Step 8: 提交**
+- [x] **Step 8: 提交**
 
 ```bash
 git add backend/app/json.py backend/app/main.py backend/app/routers/queue.py backend/tests/test_json_encoder.py
@@ -208,7 +208,7 @@ git commit -m "feat(backend): 统一 API 时间字段输出 UTC+Z 标注"
 - Consumes: 无（format.ts 自包含，不新增依赖）
 - Produces: `formatTime`（东八区 `YYYY-MM-DD HH:mm`）、`timeAgo`、`timeUntil` 显式东八区；对既有调用方签名不变
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `frontend/src/utils/format.test.ts` 追加（保持既有 describe 块不变）：
 
@@ -244,7 +244,7 @@ describe('东八区时间格式化（docker-timezone）', () => {
 })
 ```
 
-- [ ] **Step 2: 运行测试验证失败**
+- [x] **Step 2: 运行测试验证失败**
 
 Run: `cd frontend && npx vitest run src/utils/format.test.ts`
 Expected: FAIL（`timeAgo` 签名不匹配 / 断言不通过）
