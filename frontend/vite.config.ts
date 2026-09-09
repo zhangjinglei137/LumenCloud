@@ -1,3 +1,4 @@
+/// <reference types="vitest" />
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
@@ -14,6 +15,9 @@ export default defineConfig({
         changeOrigin: true,
       },
     },
+  },
+  test: {
+    environment: 'node',
   },
   build: {
     // 构建产物直接输出到 backend/static，由 FastAPI 直出（含 SPA fallback）
