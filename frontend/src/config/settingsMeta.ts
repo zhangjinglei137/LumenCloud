@@ -237,11 +237,6 @@ export const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
       { value: false, label: '关闭' },
     ],
   },
-  download_queue_max_concurrent: {
-    label: '下载队列最大并发数（已废弃）',
-    desc: '遗留配置：旧版下载队列的并发上限。当前版本已改为容量准入调度机制，该值不再生效，无需修改；仅为兼容历史数据保留，后续版本可能移除。',
-    default: '已废弃，不再生效',
-  },
   scrape_revert_timeout_hours: {
     label: '刮削节点超时回退（小时）',
     desc: '下载队列的子任务在「刮削」节点停留超过该时长仍无进展时，自动回退重试，避免单条任务永久卡死。',
