@@ -474,7 +474,7 @@ git commit -m "feat(episode-cache): 每日定时刷新集信息缓存任务"
 - Consumes: `get_episode_info`（Task 2）、`_parse_episode`、`TmdbCache.number_of_episodes`、三表聚合
 - Produces: `resolve_episode_status(local_status, in_emby, air_date, now) -> str`；详情 episode_state 新字段 `name`/归一 `state`；列表 `episode_stats.total` 用 TMDB 全集数
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `backend/tests/test_media_two_queue.py` 追加（或用新增 `test_episode_status.py`）：
 
@@ -503,7 +503,7 @@ def test_resolve_episode_status_error_over_scanning():
     assert resolve_episode_status("failed", False, "2026-01-01", date(2026, 9, 9)) == "error"
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 ```bash
 cd backend && pytest tests/test_media_two_queue.py -k "resolve_episode_status" -q 2>&1 | tail -6
@@ -511,7 +511,7 @@ cd backend && pytest tests/test_media_two_queue.py -k "resolve_episode_status" -
 
 Expected: FAIL（`ImportError: cannot import name 'resolve_episode_status'`）。
 
-- [ ] **Step 3: 实现 `resolve_episode_status`**
+- [x] **Step 3: 实现 `resolve_episode_status`**
 
 在 `backend/app/routers/media.py` 顶部（`_parse_episode` 附近）追加：
 
@@ -553,7 +553,7 @@ def resolve_episode_status(
 
 顶部需要 `from datetime import date`（若未导入）。
 
-- [ ] **Step 4: 修正列表 `list_media` 的 total**
+- [x] **Step 4: 修正列表 `list_media` 的 total**
 
 在 `list_media` 中，`_stats(media_id)` 的 `total` 改为 TMDB 全集数优先：
 
@@ -598,7 +598,7 @@ def resolve_episode_status(
 
 需在 `list_media` 的 media_rows 循环外查 tmdb_totals，`_stats` 闭包可访问。
 
-- [ ] **Step 5: 修正详情 `get_media_detail` 合并视图**
+- [x] **Step 5: 修正详情 `get_media_detail` 合并视图**
 
 在 `get_media_detail` 中，把 `episode_state` 输出改为「TMDB 全集轴 + 本地状态合并」：
 
@@ -650,7 +650,7 @@ def resolve_episode_status(
 
 返回中 `"episode_state": merged_episodes`（替代现有 episode_rows DTO 列表）。`tmdb_episodes` 顶层字段保留兼容（与原逻辑一致）。无 tmdb_eps 时回退现有 episode_rows DTO 列表（保留有记录集展示）。
 
-- [ ] **Step 6: 运行测试确认通过**
+- [x] **Step 6: 运行测试确认通过**
 
 ```bash
 cd backend && pytest tests/test_media_two_queue.py tests/test_media_episode_tags.py tests/test_api_smoke.py -q 2>&1 | tail -8
@@ -658,7 +658,7 @@ cd backend && pytest tests/test_media_two_queue.py tests/test_media_episode_tags
 
 Expected: PASS（新增 resolve 用例 + 既有 media 用例不回归）。
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```bash
 git add backend/app/routers/media.py backend/tests/

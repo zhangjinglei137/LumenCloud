@@ -18,10 +18,10 @@
 
 ## 4. 标记状态机与集数统计修正
 
-- [ ] 4.1 routers/media.py 新增统一状态判定 `resolve_episode_status(ep)`（已在库>异常>巡检中>未开播>待定，输入综合 episode_state/task_queue/download_queue/Emby 收录/首播日期），验证单测覆盖各状态优先级
-- [ ] 4.2 修正列表 episode_stats 聚合：可用集数按真实已入库状态统计，验证「已有 x/xx 集」不再恒为 0（构造 5/20 入库场景断言 5）
-- [ ] 4.3 修正详情 episode_state 输出：逐集状态经 resolve_episode_status 归一、单集大小取 download_queue.file_size（回退 episode_state.file_size，禁止共享第一个文件大小），验证多集大小各异时逐行真实值
-- [ ] 4.4 详情接口输出集信息缓存列表（调用 get_episode_info，movie/无 tmdb_id 返回 [] 不阻断），验证详情 JSON 含 tmdb_episodes 且无缓存时为空列表
+- [x] 4.1 routers/media.py 新增统一状态判定 `resolve_episode_status(ep)`（已在库>异常>巡检中>未开播>待定，输入综合 episode_state/task_queue/download_queue/Emby 收录/首播日期），验证单测覆盖各状态优先级
+- [x] 4.2 修正列表 episode_stats 聚合：可用集数按真实已入库状态统计，验证「已有 x/xx 集」不再恒为 0（构造 5/20 入库场景断言 5）
+- [x] 4.3 修正详情 episode_state 输出：逐集状态经 resolve_episode_status 归一、单集大小取 download_queue.file_size（回退 episode_state.file_size，禁止共享第一个文件大小），验证多集大小各异时逐行真实值
+- [x] 4.4 详情接口输出集信息缓存列表（调用 get_episode_info，movie/无 tmdb_id 返回 [] 不阻断），验证详情 JSON 含 tmdb_episodes 且无缓存时为空列表
 
 ## 5. 入库完成联动更新
 
