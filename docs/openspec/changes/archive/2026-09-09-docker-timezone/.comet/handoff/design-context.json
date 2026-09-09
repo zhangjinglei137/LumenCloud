@@ -1,0 +1,14 @@
+{
+  "change": "docker-timezone",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "8388cec0c72066dec268819d487e95dad97ed7d445a83ea8e23b8e8108303139",
+  "files": [
+    { "path": "docs/openspec/changes/docker-timezone/proposal.md", "sha256": "1d06fed349e95bc614e8d8e61d69b03f98f8e5d870484ae82641ec2303bed4e3" },
+    { "path": "docs/openspec/changes/docker-timezone/design.md", "sha256": "ef15dce94700b0e938016675c53c835e0baa205c4024e866b2569844825fd1d5" },
+    { "path": "docs/openspec/changes/docker-timezone/tasks.md", "sha256": "9e9096fd13db2ca5330ec445a0ea0c37110d39904d31be28a1df85431f85e5ba" },
+    { "path": "docs/openspec/changes/docker-timezone/specs/timezone-display/spec.md", "sha256": "726f96ca1adaf51c30bd8fe7b2fbe9b95b2cb22ab4ee048fe125c2e9af641571" }
+  ]
+}
