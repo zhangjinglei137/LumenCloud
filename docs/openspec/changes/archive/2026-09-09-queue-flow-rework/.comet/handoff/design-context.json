@@ -1,0 +1,16 @@
+{
+  "change": "queue-flow-rework",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "1c34010ba024aab41e5b0e814a95f156e6da0309c0b5f07356bf21e6c99058da",
+  "files": [
+    { "path": "docs/openspec/changes/queue-flow-rework/proposal.md", "sha256": "8ae9c2e5689b16985bc9fb894770161460cba4465e3fc9717a854f66bb65e12e" },
+    { "path": "docs/openspec/changes/queue-flow-rework/design.md", "sha256": "78dce8f21f7f19294e2b7fface060a3500345fd58df7cf9f72f3c07a6ee72d6e" },
+    { "path": "docs/openspec/changes/queue-flow-rework/tasks.md", "sha256": "d58fdccf1745e64cb4fdcf1ae1f1babf629101da95879e5b7a295a20f5a025d2" },
+    { "path": "docs/openspec/changes/queue-flow-rework/specs/media-pipeline/spec.md", "sha256": "02aaf6af561cc7adc5030e767c0c9f96b51962cc0bc7b3bf331658f82f87e88d" },
+    { "path": "docs/openspec/changes/queue-flow-rework/specs/pipeline-admission/spec.md", "sha256": "3c9ae7f3d04f03fdd9c66828a0dd1cf352e8fffb7d089c9abd5152ecae2c2223" },
+    { "path": "docs/openspec/changes/queue-flow-rework/specs/pipeline-transfer/spec.md", "sha256": "d80ffefe1828c37a1d2027b93022996e0f943a135be7b476fc20df7cbe3cafb3" }
+  ]
+}
