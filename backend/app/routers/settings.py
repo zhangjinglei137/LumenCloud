@@ -70,6 +70,10 @@ _WHITELIST_EXACT = {
 # 必须从 editable_keys 排除——若进入该清单，前端会把此键当作服务凭据字段渲染成文本框。
 _EDITABLE_KEYS = frozenset(_WHITELIST_EXACT - {"emby_series_library_ids"})
 
+# 已废弃设置键：system_config 存量保留，但 GET 响应不再透传（避免前端
+# fallback 展示英文键名）。PATCH 白名单（_WHITELIST_EXACT）本就不含这些键。
+_RETIRED_EXACT = frozenset({"download_queue_max_concurrent"})
+
 
 def _is_allowed_key(key: str) -> bool:
     return key in _WHITELIST_EXACT or key.startswith("scheduler.")
@@ -133,6 +137,8 @@ async def get_settings(
     rows = (await session.execute(select(SystemConfig).order_by(SystemConfig.key))).scalars().all()
     config: dict[str, str] = {}
     for r in rows:
+        if r.key in _RETIRED_EXACT:
+            continue  # 已废弃键不透传（存量保留，不删）
         if config_store.is_sensitive(r.key):
             config[r.key] = "***"  # 敏感键不回显值（占位）
         else:
