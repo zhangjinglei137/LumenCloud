@@ -264,7 +264,7 @@ git commit -m "feat(settings): 清除按钮移入输入框同行布局"
 - Consumes: 既有 `_RETIRED_EXACT` 透传排除逻辑（settings.py:140-141）
 - Produces: `editable_keys` 响应不含 `scan_interval_minutes`；GET `system_config`/`config` 不透传存量该键；PATCH 该键返回 422
 
-- [ ] **Step 1: 写失败测试——扩展 `backend/tests/test_settings_retired.py`**
+- [x] **Step 1: 写失败测试——扩展 `backend/tests/test_settings_retired.py`**
 
 在文件末尾追加：
 
@@ -307,12 +307,12 @@ async def test_scan_interval_minutes_retired_and_not_editable():
 
 > 注意：先阅读 `test_settings_retired.py` 现有 `_ADMIN_PASSWORD` / 登录辅助变量名，若命名不同则沿用现有约定（本文件已含 `_recreate_admin` 与登录流程）。
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cd backend && pytest tests/test_settings_retired.py -x -q`
 Expected: FAIL（`editable_keys` 仍含该键、GET 仍透传）
 
-- [ ] **Step 3: 实现——settings.py 两处修改**
+- [x] **Step 3: 实现——settings.py 两处修改**
 
 1. `backend/app/routers/settings.py:36`：从 `_WHITELIST_EXACT` 删除 `"scan_interval_minutes",` 行
 2. `backend/app/routers/settings.py:75`：将
@@ -329,12 +329,12 @@ _RETIRED_EXACT = frozenset({"download_queue_max_concurrent", "scan_interval_minu
 
 （`_EDITABLE_KEYS = _WHITELIST_EXACT - {emby_series_library_ids}` 自动不再包含该键，无需额外改动）
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `cd backend && pytest tests/test_settings_retired.py -q`
 Expected: PASS（既有废弃键用例 + 新用例全绿）
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/app/routers/settings.py backend/tests/test_settings_retired.py
