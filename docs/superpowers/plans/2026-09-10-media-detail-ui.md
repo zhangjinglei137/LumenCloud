@@ -467,17 +467,17 @@ git commit -m "feat(media-detail)：详情页布局重构与集数分组导航"
 **Files:**（验证，一般不改文件；若有问题回到对应 Task 修复）
 - Run: `frontend/` 全量测试与构建
 
-- [ ] **Step 1: 全量单元测试**
+- [x] **Step 1: 全量单元测试**
 
 Run: `cd frontend && npm run test`
 Expected: 全部 PASS（新增 + 既有用例）。
 
-- [ ] **Step 2: 生产构建**
+- [x] **Step 2: 生产构建**
 
 Run: `cd frontend && npm run build`
 Expected: `vue-tsc --noEmit` 无错误，`vite build` 成功产出 `dist/`。
 
-- [ ] **Step 3: 手动验证清单**（需注解结果，作为验证证据）
+- [x] **Step 3: 手动验证清单**（需注解结果，作为验证证据）
 
 1. 打开某 350 集剧集详情：分组 tag 出现 1-100/101-200/201-300/301-350
 2. 点击「101-200」→ 表格仅 101-200 共 100 行；点「全部」恢复全量
@@ -487,7 +487,7 @@ Expected: `vue-tsc --noEmit` 无错误，`vite build` 成功产出 `dist/`。
 6. 转存队列区块彻底消失
 7. 窄屏（<768px）：header 紧凑组换行到整行，标题不被挤压，无横向溢出
 
-- [ ] **Step 4: 提交（如有遗留修改）**
+- [x] **Step 4: 提交（如有遗留修改）**
 
 ```bash
 git add -A frontend/src
