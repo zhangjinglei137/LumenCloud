@@ -2,6 +2,7 @@
 change: remove-deprecated-settings
 design-doc: docs/superpowers/specs/2026-09-09-remove-deprecated-settings-design.md
 base-ref: 11d5051725a57ab858eee276c86c22d92e249c34
+archived-with: 2026-09-09-remove-deprecated-settings
 ---
 
 # 废弃设置项清理实施计划（remove-deprecated-settings）
