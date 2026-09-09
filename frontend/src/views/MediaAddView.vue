@@ -4,8 +4,9 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import TmdbSearch from '../components/TmdbSearch.vue'
 import { useMediaStore } from '../stores/media'
-import { TMDB_POSTER_BASE, type TmdbSearchResult } from '../types'
+import type { TmdbSearchResult } from '../types'
 import { mediaTypeLabel } from '../utils/format'
+import { posterUrl } from '../utils/poster'
 
 const router = useRouter()
 const store = useMediaStore()
@@ -54,7 +55,7 @@ async function submit() {
           <div class="lc-poster" style="width: 72px; border-radius: 8px; flex-shrink: 0">
             <img
               v-if="selected.poster_path"
-              :src="`${TMDB_POSTER_BASE}${selected.poster_path}`"
+              :src="posterUrl(selected.poster_path)!"
               :alt="selected.title"
             />
             <span v-else class="lc-poster-fallback" style="font-size: 12px; padding: 8px">暂无海报</span>

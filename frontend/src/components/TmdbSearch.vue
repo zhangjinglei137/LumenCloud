@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { searchTmdbApi } from '../api'
-import { TMDB_POSTER_BASE, type TmdbSearchResult } from '../types'
+import type { TmdbSearchResult } from '../types'
 import { mediaTypeLabel } from '../utils/format'
+import { posterUrl } from '../utils/poster'
 
 const props = withDefaults(
   defineProps<{
@@ -39,8 +40,8 @@ function select(item: TmdbSearchResult) {
   emit('select', item)
 }
 
-function posterUrl(p: string | null): string | null {
-  return p ? `${TMDB_POSTER_BASE}${p}` : null
+function posterSrc(p: string | null): string | null {
+  return posterUrl(p)
 }
 </script>
 
@@ -75,7 +76,7 @@ function posterUrl(p: string | null): string | null {
         @click="select(item)"
       >
         <div class="poster">
-          <img v-if="posterUrl(item.poster_path)" :src="posterUrl(item.poster_path)!" :alt="item.title" loading="lazy" />
+          <img v-if="posterSrc(item.poster_path)" :src="posterSrc(item.poster_path)!" :alt="item.title" loading="lazy" />
           <span v-else>暂无海报</span>
         </div>
         <div class="name">

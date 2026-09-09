@@ -42,7 +42,7 @@ export interface MediaItem {
   media_type: MediaType | string
   status: string
   in_emby: boolean
-  /** TMDB 海报路径（含前缀 / 的相对路径；配合 TMDB_POSTER_BASE 拼完整 URL；可为空） */
+  /** TMDB 海报路径（含前缀 / 的相对路径；前端经 posterUrl 走后端代理；可为空） */
   poster_path?: string | null
   /** 影视状态（TMDB 原值，如 Released / Returning Series；后端 _media_dto 回传；存量可能为 null） */
   series_status?: string | null
@@ -378,8 +378,6 @@ export interface TmdbSearchResult {
   /** 年份（movie=release_date / tv=first_air_date 的前 4 位；person 或无年份时为 null） */
   year?: string | null
 }
-
-export const TMDB_POSTER_BASE = 'https://image.tmdb.org/t/p/w500'
 
 // ---------- Emby 影视库 ----------
 /** Emby 条目类型：movie=电影，series=剧集 */

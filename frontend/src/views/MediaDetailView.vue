@@ -4,7 +4,6 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useMediaStore } from '../stores/media'
 import { useAuthStore } from '../stores/auth'
-import { TMDB_POSTER_BASE } from '../types'
 import {
   episodeStateTag,
   episodeStateTooltip,
@@ -21,6 +20,7 @@ import {
   taskStatusLabel,
   taskStatusType,
 } from '../utils/format'
+import { posterUrl } from '../utils/poster'
 
 const route = useRoute()
 const router = useRouter()
@@ -161,7 +161,7 @@ async function onDelete() {
           <div class="lc-poster" style="width: 120px; border-radius: 10px">
             <img
               v-if="detail.poster_path && !posterBroken"
-              :src="`${TMDB_POSTER_BASE}${detail.poster_path}`"
+              :src="posterUrl(detail.poster_path)!"
               :alt="detail.title"
               @error="posterBroken = true"
             />

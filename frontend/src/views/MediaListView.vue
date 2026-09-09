@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useMediaStore } from '../stores/media'
 import { useAuthStore } from '../stores/auth'
-import { TMDB_POSTER_BASE, type MediaItem } from '../types'
+import type { MediaItem } from '../types'
 import {
   formatTime,
   mediaStatusLabel,
@@ -16,6 +16,7 @@ import {
   taskStatusType,
   timeAgo,
 } from '../utils/format'
+import { posterUrl } from '../utils/poster'
 
 const router = useRouter()
 const store = useMediaStore()
@@ -143,7 +144,7 @@ async function onDelete(m: MediaItem, e: Event) {
           <div class="lc-poster">
             <img
               v-if="m.poster_path && !imgErrors.has(m.id)"
-              :src="`${TMDB_POSTER_BASE}${m.poster_path}`"
+              :src="posterUrl(m.poster_path)!"
               :alt="m.title"
               loading="lazy"
               @error="imgErrors.add(m.id)"
@@ -204,7 +205,7 @@ async function onDelete(m: MediaItem, e: Event) {
               <div class="title-cell">
                 <img
                   v-if="row.poster_path && !imgErrors.has(row.id)"
-                  :src="`${TMDB_POSTER_BASE}${row.poster_path}`"
+                  :src="posterUrl(row.poster_path)!"
                   :alt="row.title"
                   loading="lazy"
                   class="title-poster"

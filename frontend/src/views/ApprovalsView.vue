@@ -5,8 +5,9 @@ import TmdbSearch from '../components/TmdbSearch.vue'
 import { useApprovalsStore } from '../stores/approvals'
 import { useMediaStore } from '../stores/media'
 import { useAuthStore } from '../stores/auth'
-import { TMDB_POSTER_BASE, type ApprovalItem, type TmdbSearchResult } from '../types'
+import type { ApprovalItem, TmdbSearchResult } from '../types'
 import { formatTime, mediaTypeLabel } from '../utils/format'
+import { posterUrl } from '../utils/poster'
 
 const store = useApprovalsStore()
 const auth = useAuthStore()
@@ -49,10 +50,6 @@ function statusTag(status: string): { label: string; type: string } {
   if (status === 'approved') return { label: '已通过', type: 'success' }
   if (status === 'rejected') return { label: '已拒绝', type: 'danger' }
   return { label: status, type: 'info' }
-}
-
-function poster(url: string | null): string | null {
-  return url ? `${TMDB_POSTER_BASE}${url}` : null
 }
 
 async function onApprove(item: ApprovalItem) {
@@ -166,7 +163,7 @@ async function submitRequest() {
       <div v-else v-loading="store.loading && store.items.length === 0" class="approval-list">
         <div v-for="item in pagedItems" :key="item.id" class="approval-item">
           <div class="poster">
-            <img v-if="poster(item.poster_path)" :src="poster(item.poster_path)!" :alt="item.title" loading="lazy" />
+            <img v-if="posterUrl(item.poster_path)" :src="posterUrl(item.poster_path)!" :alt="item.title" loading="lazy" />
             <span v-else>{{ item.title }}</span>
           </div>
           <div class="body">
