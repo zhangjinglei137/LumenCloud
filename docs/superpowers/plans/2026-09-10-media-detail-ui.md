@@ -311,7 +311,7 @@ git commit -m "feat(media-detail)：新增集数分组状态与过滤逻辑"
 - Consumes: `groups` / `activeGroup` / `filteredRows` / `episodeName` / `form` / `saveSettings` / `auth.isAdmin`（Task 2 与现有 script）
 - Produces: 修改后的模板布局（无新导出）
 
-- [ ] **Step 1: 写失败测试（模板断言）**
+- [x] **Step 1: 写失败测试（模板断言）**
 
 更新 `frontend/src/views/MediaDetailView.test.ts`（Task 2 已建冒烟测试文件），追加模板元素断言（stub 需新增 `el-radio-group`/`el-radio-button` 与 `v-loading` 指令处理）：
 
@@ -339,7 +339,7 @@ describe('MediaDetailView 布局（media-detail-ui）', () => {
 
 > 挂载 media-detail-view 需要正确处理 `v-loading` 自定义指令；若 Element Plus 组件树引入过量副作用，允许把 `EP_STUBS` 换成全局 stub（`global: { stubs: [...EP_STUBS 键] }`）并局部 stub `el-table` 等，只断言模板结构与 `.transfer-queue-block` 缺席。
 
-- [ ] **Step 2: 实现模板**
+- [x] **Step 2: 实现模板**
 
 `<template>` 结构调整为：
 
@@ -448,12 +448,12 @@ describe('MediaDetailView 布局（media-detail-ui）', () => {
 
 删除 `.queue-list` / `.queue-item` 相关样式。
 
-- [ ] **Step 3: 运行测试验证通过**
+- [x] **Step 3: 运行测试验证通过**
 
 Run: `cd frontend && npx vitest run src/views/MediaDetailView.test.ts && npm run build`
 Expected: 组件测试 pass、`vue-tsc` + `vite build` 成功、无 unused import 告警。
 
-- [ ] **Step 4: 提交**
+- [x] **Step 4: 提交**
 
 ```bash
 git add frontend/src/views/MediaDetailView.vue frontend/src/views/MediaDetailView.test.ts
