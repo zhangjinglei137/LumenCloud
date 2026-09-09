@@ -2,6 +2,7 @@
 change: episode-status-cache
 design-doc: docs/superpowers/specs/2026-09-09-episode-status-cache-design.md
 base-ref: 93850d5355af929ea1d94da9a9231b204cd6b7ec
+archived-with: 2026-09-09-episode-status-cache
 ---
 
 # episode-status-cache 实施计划
