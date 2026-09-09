@@ -22,17 +22,37 @@ export function formatBytes(bytes: number | null | undefined): string {
   return `${bytes} B`
 }
 
-export function formatTime(iso: string | null | undefined): string {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return iso
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+/** 无时区后缀的 ISO 按 UTC 解释（补 Z）；带后缀按绝对时刻解析 */
+function parseTime(iso: string): Date {
+  const hasZone = /(?:Z|[+-]\d{2}:?\d{2})$/.test(iso)
+  return hasZone ? new Date(iso) : new Date(iso + 'Z')
 }
 
-export function timeAgo(iso: string | null | undefined): string {
+/** 东八区显式格式化（Intl timeZone=Asia/Shanghai），输出 YYYY-MM-DD HH:mm */
+function formatCst(date: Date): string {
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(date)
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? ''
+  return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')}`
+}
+
+export function formatTime(iso: string | null | undefined): string {
   if (!iso) return '—'
-  const diff = Date.now() - new Date(iso).getTime()
+  const d = parseTime(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  return formatCst(d)
+}
+
+export function timeAgo(iso: string | null | undefined, now: number = Date.now()): string {
+  if (!iso) return '—'
+  const diff = now - parseTime(iso).getTime()
   if (Number.isNaN(diff)) return iso
   const min = Math.floor(diff / 60000)
   if (min < 1) return '刚刚'
@@ -294,9 +314,9 @@ export const DOWNLOAD_ACTIVE_STATUSES: readonly string[] = [
 ]
 
 /** 未来时间的相对倒计时（unmatched 静默「2 天后重试」）；已过期返回 null */
-export function timeUntil(iso: string | null | undefined): string | null {
+export function timeUntil(iso: string | null | undefined, now: number = Date.now()): string | null {
   if (!iso) return null
-  const diff = new Date(iso).getTime() - Date.now()
+  const diff = parseTime(iso).getTime() - now
   if (Number.isNaN(diff) || diff <= 0) return null
   const min = Math.ceil(diff / 60000)
   if (min < 60) return `${min} 分钟后`

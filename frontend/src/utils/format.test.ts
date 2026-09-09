@@ -29,3 +29,33 @@ describe('归一集数状态映射（episode-status-cache）', () => {
     expect(formatBytes(null)).toBe('—')
   })
 })
+
+import { formatTime, timeAgo, timeUntil } from './format'
+
+describe('东八区时间格式化（docker-timezone）', () => {
+  it('naive UTC 输入按 UTC 解释并渲染东八区', () => {
+    // 09:15 UTC → 17:15 东八区
+    expect(formatTime('2026-09-09T09:15:00')).toBe('2026-09-09 17:15')
+  })
+  it('带 Z 输入解析为绝对时刻后渲染东八区', () => {
+    expect(formatTime('2026-09-09T09:15:00Z')).toBe('2026-09-09 17:15')
+  })
+  it('带 +08:00 偏移输入渲染东八区一致', () => {
+    expect(formatTime('2026-09-09T17:15:00+08:00')).toBe('2026-09-09 17:15')
+  })
+  it('空值与非法输入回退', () => {
+    expect(formatTime(null)).toBe('—')
+    expect(formatTime(undefined)).toBe('—')
+    expect(formatTime('not-a-date')).toBe('not-a-date')
+  })
+  it('timeAgo 基于绝对时刻差，跨时区一致', () => {
+    // 固定 now：2026-09-09T10:00:00Z，输入为 5 分钟前的绝对时刻
+    const now = Date.parse('2026-09-09T10:00:00Z')
+    const fiveMinAgoUtc = new Date(now - 5 * 60000).toISOString()
+    expect(timeAgo(fiveMinAgoUtc, now)).toBe('5 分钟前')
+  })
+  it('timeUntil 已过期返回 null', () => {
+    const now = Date.parse('2026-09-09T10:00:00Z')
+    expect(timeUntil('2026-09-09T09:00:00Z', now)).toBeNull()
+  })
+})
