@@ -9,14 +9,11 @@ import {
   episodeDisplayName,
   episodeStateTag,
   episodeStateTooltip,
-  formatBytes,
   formatGb,
   formatTime,
   mediaStatusLabel,
   mediaStatusType,
   mediaTypeLabel,
-  queueStatusLabel,
-  queueStatusType,
   seriesStatusLabel,
   seriesStatusType,
   taskStatusLabel,
@@ -97,8 +94,6 @@ const filteredRows = computed(() => {
     return n >= g.start && n <= g.end
   })
 })
-// 模板接入归 Task 3；vue-tsc noUnusedLocals 下此处按已使用标记，接入模板后移除
-void filteredRows
 
 function episodeLabel(ep: Record<string, unknown>): string {
   const season = ep.season ?? ep.season_number
@@ -238,151 +233,114 @@ async function onDelete() {
             <el-button v-if="auth.isAdmin" type="danger" plain @click="onDelete">删除影视</el-button>
           </div>
         </div>
+        <!-- 大小与巡检设置（仅管理员，窄屏换行） -->
+        <div v-if="auth.isAdmin" class="header-settings">
+          <div class="hs-item" v-if="detail.media_type !== 'movie'">
+            <label class="hs-label">单集大小上限 (GB)</label>
+            <el-input-number v-model="form.max_episode_size_gb" :min="0" :precision="1" :step="0.5" size="small" />
+          </div>
+          <div class="hs-item" v-if="detail.media_type === 'movie'">
+            <label class="hs-label">电影大小上限 (GB)</label>
+            <el-input-number v-model="form.max_movie_size_gb" :min="0" :precision="1" :step="1" size="small" />
+          </div>
+          <div class="hs-item">
+            <label class="hs-label">巡检间隔 (分钟)</label>
+            <el-input-number v-model="form.scan_interval_minutes" :min="5" :step="5" size="small" />
+          </div>
+          <el-button type="primary" :loading="saving" size="small" @click="saveSettings">保存</el-button>
+        </div>
       </div>
 
-      <el-row :gutter="16">
-        <!-- 影视状态（电影：无集数概念） -->
-        <el-col :xs="24" :md="14">
-          <div v-if="detail.media_type === 'movie'" class="lc-panel">
-            <h3 class="lc-panel-title">影视状态</h3>
-            <el-tag :type="seriesStatusType(detail.series_status, 'movie')" effect="plain">
-              {{ seriesStatusLabel(detail.series_status, 'movie') }}
-            </el-tag>
-            <p class="lc-muted" style="margin-top: 8px; font-size: 12px">电影无集数概念，状态以 TMDB 为准</p>
-          </div>
+      <!-- 影视状态（电影：无集数概念，单列全宽） -->
+      <div v-if="detail.media_type === 'movie'" class="lc-panel">
+        <h3 class="lc-panel-title">影视状态</h3>
+        <el-tag :type="seriesStatusType(detail.series_status, 'movie')" effect="plain">
+          {{ seriesStatusLabel(detail.series_status, 'movie') }}
+        </el-tag>
+        <p class="lc-muted" style="margin-top: 8px; font-size: 12px">电影无集数概念，状态以 TMDB 为准</p>
+      </div>
 
-          <!-- 遗漏集 -->
-          <div v-if="detail.media_type !== 'movie'" class="lc-panel">
-            <h3 class="lc-panel-title">集数状态（{{ episodes.length }}）</h3>
-            <!-- 四色图例：tag 分类说明，悬停标签可查看原始执行状态等详情 -->
-            <p class="ep-legend lc-muted">
-              <span class="ep-legend-item"><i class="ep-dot success" />已在库</span>
-              <span class="ep-legend-item"><i class="ep-dot info" />未开播</span>
-              <span class="ep-legend-item"><i class="ep-dot warning" />已开播</span>
-              <span class="ep-legend-item"><i class="ep-dot danger" />异常</span>
-              <span class="ep-legend-hint">悬停状态标签查看详情</span>
-            </p>
+      <!-- 集数状态（剧集：单列全宽） -->
+      <div v-if="detail.media_type !== 'movie'" class="lc-panel">
+        <h3 class="lc-panel-title">集数状态（{{ episodes.length }}）</h3>
+        <!-- 四色图例：tag 分类说明，悬停标签可查看原始执行状态等详情 -->
+        <p class="ep-legend lc-muted">
+          <span class="ep-legend-item"><i class="ep-dot success" />已在库</span>
+          <span class="ep-legend-item"><i class="ep-dot info" />未开播</span>
+          <span class="ep-legend-item"><i class="ep-dot warning" />已开播</span>
+          <span class="ep-legend-item"><i class="ep-dot danger" />异常</span>
+          <span class="ep-legend-hint">悬停状态标签查看详情</span>
+        </p>
 
-            <!-- TMDB 全集：展示完整集数 + 首播日期 -->
-            <div v-if="tmdbEpisodes.length > 0" class="tmdb-episodes">
-              <div class="tmdb-episodes-title">TMDB 全集（{{ tmdbEpisodes.length }} 集）</div>
-              <div class="tmdb-episodes-grid">
-                <div
-                  v-for="(ep, idx) in tmdbEpisodes"
-                  :key="idx"
-                  class="tmdb-episodes-item"
-                  :title="ep.name ?? undefined"
-                >
-                  <div class="tmdb-episodes-label">
-                    <i class="ep-dot" :class="tmdbEpisodeStateType(ep)" />
-                    <span>{{ tmdbEpisodeLabel(ep) }}</span>
-                  </div>
-                  <div class="tmdb-episodes-date lc-muted">{{ ep.air_date ?? '—' }}</div>
-                </div>
+        <!-- 分组导航（有分组数据且非电影才渲染） -->
+        <div v-if="groups.length > 0" class="ep-group-nav">
+          <el-radio-group v-model="activeGroup" size="small">
+            <el-radio-button :value="null">全部</el-radio-button>
+            <el-radio-button v-for="g in groups" :key="g.label" :value="g.label">{{ g.label }}</el-radio-button>
+          </el-radio-group>
+        </div>
+
+        <el-empty
+          v-if="episodes.length === 0"
+          :description="
+            tmdbEpisodes.length > 0 ? '暂无任务记录，TMDB 全集见下方列表' : '暂无集数记录，触发一次巡检后会建立基线'
+          "
+          :image-size="80"
+        />
+        <el-table v-else :data="filteredRows" size="small" max-height="600">
+          <el-table-column label="集" width="110">
+            <template #default="{ row }">{{ episodeLabel(row as Record<string, unknown>) }}</template>
+          </el-table-column>
+          <el-table-column label="名称" min-width="140">
+            <template #default="{ row }">
+              <span :title="episodeName(row as Record<string, unknown>)">
+                {{ episodeName(row as Record<string, unknown>) }}
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column label="状态" width="96" align="center">
+            <template #default="{ row }">
+              <el-tooltip placement="top" :show-after="200">
+                <template #content>
+                  <div v-for="(line, i) in episodeStateTooltip(row)" :key="i">{{ line }}</div>
+                </template>
+                <el-tag size="small" effect="plain" :type="row.__tag.type">
+                  {{ row.__tag.label }}
+                </el-tag>
+              </el-tooltip>
+            </template>
+          </el-table-column>
+          <el-table-column label="大小" width="100" align="right">
+            <template #default="{ row }">
+              {{ formatGb((row as Record<string, unknown>).size_gb as number | null | undefined) }}
+            </template>
+          </el-table-column>
+          <el-table-column label="更新时间">
+            <template #default="{ row }">
+              {{ formatTime((row as Record<string, unknown>).updated_at as string | undefined) }}
+            </template>
+          </el-table-column>
+        </el-table>
+
+        <!-- TMDB 全集（保留完整展示，移到表格下方） -->
+        <div v-if="tmdbEpisodes.length > 0" class="tmdb-episodes">
+          <div class="tmdb-episodes-title">TMDB 全集（{{ tmdbEpisodes.length }} 集）</div>
+          <div class="tmdb-episodes-grid">
+            <div
+              v-for="(ep, idx) in tmdbEpisodes"
+              :key="idx"
+              class="tmdb-episodes-item"
+              :title="ep.name ?? undefined"
+            >
+              <div class="tmdb-episodes-label">
+                <i class="ep-dot" :class="tmdbEpisodeStateType(ep)" />
+                <span>{{ tmdbEpisodeLabel(ep) }}</span>
               </div>
-            </div>
-
-            <el-empty
-              v-if="episodes.length === 0"
-              :description="
-                tmdbEpisodes.length > 0 ? '暂无任务记录，TMDB 全集见上方列表' : '暂无集数记录，触发一次巡检后会建立基线'
-              "
-              :image-size="80"
-            />
-            <el-table v-else :data="episodeRows" size="small" max-height="480">
-              <el-table-column label="集" width="110">
-                <template #default="{ row }">{{ episodeLabel(row as Record<string, unknown>) }}</template>
-              </el-table-column>
-              <el-table-column label="名称" min-width="140">
-                <template #default="{ row }">
-                  <span :title="episodeName(row as Record<string, unknown>)">
-                    {{ episodeName(row as Record<string, unknown>) }}
-                  </span>
-                </template>
-              </el-table-column>
-              <el-table-column label="状态" width="96" align="center">
-                <template #default="{ row }">
-                  <el-tooltip placement="top" :show-after="200">
-                    <template #content>
-                      <div v-for="(line, i) in episodeStateTooltip(row)" :key="i">{{ line }}</div>
-                    </template>
-                    <el-tag size="small" effect="plain" :type="row.__tag.type">
-                      {{ row.__tag.label }}
-                    </el-tag>
-                  </el-tooltip>
-                </template>
-              </el-table-column>
-              <el-table-column label="大小" width="100" align="right">
-                <template #default="{ row }">
-                  {{ formatGb((row as Record<string, unknown>).size_gb as number | null | undefined) }}
-                </template>
-              </el-table-column>
-              <el-table-column label="更新时间">
-                <template #default="{ row }">
-                  {{ formatTime((row as Record<string, unknown>).updated_at as string | undefined) }}
-                </template>
-              </el-table-column>
-            </el-table>
-          </div>
-        </el-col>
-
-        <el-col :xs="24" :md="10">
-          <!-- 转存队列摘要 -->
-          <div class="lc-panel">
-            <h3 class="lc-panel-title">转存队列</h3>
-            <el-empty
-              v-if="!detail.transfer_queue || detail.transfer_queue.length === 0"
-              description="暂无队列任务"
-              :image-size="80"
-            />
-            <div v-else class="queue-list">
-              <div v-for="(q, i) in detail.transfer_queue" :key="q.id ?? i" class="queue-item">
-                <div class="name" :title="q.file_name">{{ q.file_name ?? '—' }}</div>
-                <div class="meta">
-                  <el-tag size="small" :type="queueStatusType(q.status)" effect="plain">
-                    {{ queueStatusLabel(q.status) }}
-                  </el-tag>
-                  <span class="lc-muted">{{ formatBytes(q.file_size) }}</span>
-                  <span class="lc-muted">{{ formatTime(q.updated_at) }}</span>
-                </div>
-              </div>
+              <div class="tmdb-episodes-date lc-muted">{{ ep.air_date ?? '—' }}</div>
             </div>
           </div>
-
-          <!-- 大小覆盖设置 -->
-          <div class="lc-panel">
-            <h3 class="lc-panel-title">大小与巡检设置</h3>
-            <el-alert
-              v-if="!auth.isAdmin"
-              type="info"
-              :closable="false"
-              show-icon
-              title="仅管理员可修改"
-              style="margin-bottom: 12px"
-            />
-            <el-form label-position="top" :disabled="!auth.isAdmin">
-              <el-form-item label="单集大小上限（GB，留空用全局默认）">
-                <el-input-number v-model="form.max_episode_size_gb" :min="0" :precision="1" :step="0.5" style="width: 100%" />
-              </el-form-item>
-              <el-form-item v-if="detail.media_type === 'movie'" label="电影大小上限（GB，留空用全局默认）">
-                <el-input-number v-model="form.max_movie_size_gb" :min="0" :precision="1" :step="1" style="width: 100%" />
-              </el-form-item>
-              <el-form-item label="巡检间隔（分钟）">
-                <el-input-number v-model="form.scan_interval_minutes" :min="5" :step="5" style="width: 100%" />
-              </el-form-item>
-              <el-form-item label="状态">
-                <el-select v-model="form.status" style="width: 100%">
-                  <el-option label="订阅中" value="tracking" />
-                  <el-option label="已暂停" value="paused" />
-                </el-select>
-              </el-form-item>
-              <el-button v-if="auth.isAdmin" type="primary" :loading="saving" style="width: 100%" @click="saveSettings">
-                保存设置
-              </el-button>
-            </el-form>
-          </div>
-        </el-col>
-      </el-row>
+        </div>
+      </div>
     </template>
   </div>
 </template>
@@ -391,6 +349,8 @@ async function onDelete() {
 .detail-header {
   display: flex;
   gap: 20px;
+  flex-wrap: wrap; /* 窄屏紧凑组换行 */
+  align-items: flex-start;
 }
 
 .info {
@@ -413,32 +373,29 @@ async function onDelete() {
   gap: 10px;
 }
 
-.queue-list {
+/* 头部紧凑设置组（仅管理员可见） */
+.header-settings {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  margin-left: auto; /* 靠最右 */
+  flex-wrap: wrap;
+}
+
+.hs-item {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 2px;
 }
 
-.queue-item {
-  border: 1px solid var(--lc-border);
-  border-radius: 10px;
-  padding: 10px 12px;
-}
-
-.queue-item .name {
-  font-size: 13px;
-  font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  margin-bottom: 6px;
-}
-
-.queue-item .meta {
-  display: flex;
-  align-items: center;
-  gap: 10px;
+.hs-label {
   font-size: 12px;
+  color: var(--lc-text-secondary, #909399);
+}
+
+/* 集数分组导航 */
+.ep-group-nav {
+  margin: 0 0 12px;
 }
 
 /* 集数状态四色图例（与 ep-dot 对应 el-tag type：success/info/warning/danger） */
@@ -530,5 +487,12 @@ async function onDelete() {
 
 .ep-dot.default {
   background: var(--el-text-color-placeholder);
+}
+
+@media (max-width: 768px) {
+  .header-settings {
+    flex-basis: 100%;
+    margin-left: 0;
+  }
 }
 </style>
