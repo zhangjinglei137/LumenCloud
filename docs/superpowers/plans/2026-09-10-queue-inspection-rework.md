@@ -139,23 +139,24 @@ git commit -m "feat(queue)：巡检/下载队列分页契约、创建时间升�
 
 ---
 
-### Task 1b: 既有测试旧契约断言同步（test_queue.py / test_scan_run_phases.py）
+### Task 1b: 既有测试旧契约断言同步（test_queue.py / test_scan_run_phases.py / test_api_smoke.py）
 
-**背景（Task 1 契约变更的必要清理，found by Task 1 implementer）：**
+**背景（Task 1 契约变更的必要清理，found by Task 1 implementer + Task 1b implementer）：**
 Task 1 将 `GET /queue` 返回从裸数组改为 `{items, total}`、行字段新增 `share_code`/`share_url`/`size_estimated`（guest 视角 null）、`_list_download` 新增活跃态过滤（total/items 同口径）。既有测试仍断言旧契约：
 
 - `backend/tests/test_queue.py`：`test_list_flat_union_dq_tq_with_fields`、`test_list_flat_excludes_terminal_states`、`test_list_flat_dedup_promoted_snapshot`、`test_list_flat_contract_fields_and_no_credentials`（断言恰 10 字段定界且 share_code 不在行内）、`test_list_download_flat_type_download`（断言终态 done 行仍返回）→ 6 用例直接调用 `list_queue(user=..., session=...)` 裸拿数组
 - `backend/tests/test_scan_run_phases.py`：`test_scan_queue_has_no_tree_fields` 一带调用 `await list_queue(user=MagicMock(), session=s, limit=100, offset=0)` 直接遍历裸数组
+- `backend/tests/test_api_smoke.py`（Task 1b 发现，范围已扩展）：`test_full_auth_and_api_flow` 中 guest 视图 `isinstance(rows, list)`（:179）、admin 视图 `isinstance(a_rows, list)`（:197）、retry 后 `{row["episode"]: row for row in r.json()}`（:334）三处裸数组断言 + `_SENSITIVE_QUEUE_FIELDS` 含 `share_code`（:40，新契约下 admin 明文返回 share_code，该常量集合不再适用 admin）
 
 **Files:**
-- Modify: `backend/tests/test_queue.py`（6 处调用点 + 字段定界断言 + 新增 admin/guest 脱敏用例）、`backend/tests/test_scan_run_phases.py`（1 处调用点）
+- Modify: `backend/tests/test_queue.py`（6 处调用点 + 字段定界断言 + 新增 admin/guest 脱敏用例）、`backend/tests/test_scan_run_phases.py`（1 处调用点）、`backend/tests/test_api_smoke.py`（3 处调用点 + 敏感字段常量拆分）
 - Test: 复用既有文件，无需新增文件
 
 **Interfaces:**
 - Consumes: Task 1 新契约 `{items, total}`、行字段 `share_code`/`share_url`/`size_estimated`（admin 明文 / guest null）、`_list_download` 活跃态过滤（终态不返回）
 - Produces: 全量 `pytest` 绿色；既有队列测试语义与新契约一致
 
-- [ ] **Step 1: 改 `test_queue.py` 六处断言**
+- [x] **Step 1: 改 `test_queue.py` 六处断言**
 
 模式：`rows = run(_case())` → `res = run(_case()); rows = res["items"]`；并在合适处补 `assert res["total"] == N`（N 为该用例活跃行数）：
 - `test_list_flat_union_dq_tq_with_fields`：3 行 `res["total"] == 3`
@@ -169,21 +170,29 @@ Task 1 将 `GET /queue` 返回从裸数组改为 `{items, total}`、行字段新
 - admin 调用 `list_queue(...)`：flat 与 download 两态均见明文 share_code；download 态见 share_url == `https://pan.quark.cn/s/<code>`
 - guest 调用：share_code / share_url 均为 None（两态皆验）
 
-- [ ] **Step 2: 改 `test_scan_run_phase.py` 调用处**
+- [x] **Step 2: 改 `test_scan_run_phase.py` 调用处**
 
 `rows = await list_queue(user=MagicMock(), session=s, limit=100, offset=0)` → `res = await list_queue(...); rows = res["items"]`；`by_id = {r["media_id"]: r for r in rows}` 遍历保持；补充 `res["total"]` 数量断言（按其 seed 活跃行数）。
 
-- [ ] **Step 3: 运行定向**
+- [x] **Step 3: 改 `test_api_smoke.py` 三处 + 敏感字段常量**
 
-Run: `cd backend && pytest tests/test_queue.py tests/test_scan_run_phases.py tests/test_queue_list.py -v`
+seed 背景：DQ S01E01 status=pending（share_code=AbCd1234XyZq）、DQ S01E02 status=failed（终态，被剔除）→ 活跃行仅 1 条，`res["total"] == 1`。
+
+- guest 视图（:178-191）：`rows = r.json()` → `body = r.json(); rows = body["items"]`；补 `assert body["total"] == 1`；`_SENSITIVE_QUEUE_FIELDS` 断言保持（guest 视角 share_code 等凭据不在行内，语义不变）
+- admin 视图（:194-200）：`a_rows = r.json()` → `ab = r.json(); a_rows = ab["items"]`；**`_SENSITIVE_QUEUE_FIELDS` 不再适用于 admin 的 share_code** —— 拆分：断言 `all(r.get("share_code") == "AbCd1234XyZq" for r in a_rows)`（admin 明文）且其余敏感字段（stoken/receive_code/fid_tokens/pwd_id/folder_id/fids）不在行内（`_SENSITIVE_QUEUE_FIELDS - {"share_code"}` 集合，或定义 `_QUEUE_CREDENTIAL_FIELDS_EX_SHARE_CODE`）
+- retry 后（:333-335）：`by_ep = {row["episode"]: row for row in r.json()}` → `body = r.json(); by_ep = {row["episode"]: row for row in body["items"]}`
+
+- [x] **Step 4: 运行定向**
+
+Run: `cd backend && pytest tests/test_queue.py tests/test_scan_run_phases.py tests/test_queue_list.py tests/test_api_smoke.py -v`
 Expected: 全通过
 
-- [ ] **Step 4: 全量后端回归**
+- [x] **Step 5: 全量后端回归**
 
 Run: `cd backend && pytest`
-Expected: 全通过（含 Task 1 新增 test_queue_list.py）
+Expected: 全通过（含 Task 1 新增 test_queue_list.py 与全部既有用例）
 
-- [ ] **Step 5: 勾选并提交**
+- [x] **Step 6: 勾选并提交**
 
 ```
 勾选 tasks.md 1.6

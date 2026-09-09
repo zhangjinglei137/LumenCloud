@@ -7,33 +7,29 @@
 
 ## 预检裁定（plan 修正）
 
-- Task 1 Step 1 测试骨架引用了不存在的 `db` fixture → 已修正计划：改为完全参照 test_media_two_queue.py 基建（模块级临时数据目录 + TestClient + _auth token + async_session seed）。plan 文本已更新。
+- Task 1 Step 1 测试骨架引用了不存在的 `db` fixture → 已修正计划：改为完全参照 test_media_two_queue.py 基建。
+- Task 1b 范围扩展：`test_api_smoke.py` 也是 Task 1 契约波及面（fix-2 BLOCKED 报告）→ plan 与 tasks.md 1.6 已扩展包含该文件与 `_SENSITIVE_QUEUE_FIELDS` 拆分。
 
-## Task 1 — 后端分页契约 + 排序 + 分享码字段（queue.py 路由层）
+## Task 1 — 后端分页契约 + 排序 + 分享码字段（queue.py 路由层） ✅ 完成
 
-- 状态：`done`（cop 完成，review 通过）
-- OpenSpec 映射：tasks.md 1.1 / 1.2 / 1.3 / 1.4 / 1.5
-- 命中风险信号：公共 API 契约变更 + 安全敏感面（share_code 脱敏）→ 已派发 ora-1 每任务 reviewer
-- 实现提交哈希：27edc97（base 4a4682d）
-- RED/GREEN 证据：7 passed（test_queue_list.py）；回归 20 passed
-- 审查结果：spec-✅ quality-Approved，findings=0/0/4（全部 Minor，不阻断）
-  - Minor：guest 视角 share_url 未被测试显式断言（覆盖缺口 → Task 1b 新用例补上）
-  - Minor：`_list_flat` 去重语义未被新套件直接覆盖（既有套件覆盖，接受）
-  - Minor：test_queue_list.py 文件结尾无换行（deferred）
-  - Minor：`_list_flat` 全量加载后切片（brief 强制决策，接受）
-- 审查-修复轮次：0/1（无需修复轮）
-- 勾选：tasks.md 1.1-1.5 待协调者勾选提交
+- 实现 27edc97 → 勾选提交 7f3e254；ora-1 审查 spec-✅ Approved（0/0/4 Minor）
 
-## Task 1b — 既有测试旧契约断言同步（test_queue.py / test_scan_run_phases.py）
+## Task 1b — 既有测试旧契约断言同步（test_queue.py / test_scan_run_phases.py / test_api_smoke.py） ✅ 完成
 
-- 状态：`pending`（即将派发）
-- OpenSpec 映射：tasks.md 1.6
-- 风险信号预判：无实质风险（纯测试断言同步，非风险任务）→ 预计不派发每任务 reviewer
-- 说明：新增 admin/guest share_code 与 guest share_url 显式断言用例（回应 Task 1 Minor #1）
+- 状态：`done`
+- OpenSpec 映射：tasks.md 1.6（已勾选，task-checkoff PASS）
+- 实现提交哈希：9cc82c8（base 7f3e254）
+- RED/GREEN 证据：RED `6 failed, 44 passed`（旧契约）→ GREEN 定向 52 passed / 全量 478 passed
+- 审查结果（ora-2）：spec-✅ quality-Approved，0 Critical / 0 Important / 3 Minor（全部接受）
+  - Minor#1 test_queue.py:242 用例名 `and_no_credentials` 与 admin 明文语义偏差（功能正确，docstring 已更新）→ 接受
+  - Minor#2 admin download 视图 share_url 仅断言单行 → brief 单例要求已满足，接受
+  - Minor#3 `_seed_queue_data` 全表 delete 无 WHERE → 与既有 `_recreate_admin` 模式一致，接受
+- 修复轮次：0（BLOCKED 一次为范围扩展，非质量修复）
 
-## 待处理事项（deferred minors）
+## 待处理事项（deferred minors / 跟进）
 
-1. guest 视角 share_url 测试显式断言 → Task 1b 新用例覆盖（test_list_share_code_admin_vs_guest）
-2. `_list_download` 新增活跃态过滤语义：前端下载 Tab「仅看活跃」在 Task 4 派发时确认
-3. size_estimated 模型列由 Task 2 落库，Task 1 用 getattr 防御式输出 → 顺序正常
-4. test_queue_list.py 文件结尾无换行（deferred，Verify 前统一）
+1. test_api_smoke 与 test_queue_list 共享模块级 engine 的顺序依赖（预存在基建问题，fix-2 以 seed 前清理局部规避）→ 记录，Verify 前评估是否需 conftest 级隔离（不在本 change 范围，倾向不动）
+2. `_list_download` 活跃态过滤语义：前端下载 Tab「仅看活跃」开关与后端同口径 → Task 4 派发时确认
+3. size_estimated 模型列由 Task 2 落库 → 待执行
+4. test_queue_list.py 文件结尾无换行（ora-1 Minor#3）→ deferred，Verify 前统一
+5. test_queue.py:242 用例名语义偏差（ora-2 Minor#1）→ deferred，Verify 前评估改名

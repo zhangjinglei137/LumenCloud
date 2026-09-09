@@ -7,7 +7,7 @@
 - [x] 1.3 巡检队列扁平行补 `media_title`（join media.title）与明文 `share_code`（仅 admin；guest 不返回，沿用 §9.1 脱敏），验证 admin/guest 返回差异
 - [x] 1.4 下载队列输出补 `share_url`（夸克分享地址，由 share_code 构造，域名集中常量），无 share_code 返回 null，验证 URL 构造正确
 - [x] 1.5 补充后端测试：排序/分页/脱敏/分享 URL 用例，验证 `pytest` 通过
-- [ ] 1.6 更新既有测试的旧契约断言（`test_queue.py` 的 10 字段定界/裸数组遍历、`test_scan_run_phases.py` 的 list_queue 调用处）：契约已变 `{items,total}` + share_code 明文，同步断言，验证 `pytest` 全量通过
+- [x] 1.6 更新既有测试的旧契约断言（`test_queue.py` 的 10 字段定界/裸数组遍历、`test_scan_run_phases.py`、`test_api_smoke.py` 的 list_queue 调用处与 `_SENSITIVE_QUEUE_FIELDS` 拆分）：契约已变 `{items,total}` + share_code 明文，同步断言，验证 `pytest` 全量通过
 
 ## 2. 后端：大小真实值调查与修复
 
