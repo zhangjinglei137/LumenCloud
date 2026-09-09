@@ -4,7 +4,7 @@ APScheduler（AsyncIOScheduler）—— 单进程内嵌调度器（设计文档 
 - 单 uvicorn 进程（--workers 1）内嵌，MemoryJobStore；任务状态持久化在业务表
   （task_run / episode_state / transfer_queue），重启后按表内状态恢复（recover_on_boot），
   不依赖 jobstore 持久化。
-- 注册 9 个 job（id 固定）：
+- 注册 10 个 job（id 固定）：
   | job_id                   | 触发器                                | 阶段 4 行为 |
   |--------------------------|---------------------------------------|-------------|
   | scan_all_media           | IntervalTrigger(minutes=1)            | B 定时：每分钟 tick，scan_all_media 按各 media last_scan_at 到期过滤；注册默认 paused，阶段 4 经 system_config 启用 |
@@ -16,6 +16,7 @@ APScheduler（AsyncIOScheduler）—— 单进程内嵌调度器（设计文档 
   | recover_stale            | IntervalTrigger(hours=1)              | P2-2 新增：运行期超时回退（recover 不只 boot）；定时默认关闭 |
   | capacity_alert           | IntervalTrigger(hours=1)              | 阶段 4（交付 E）：每小时主动统计写容量快照（Q6 趋势连续）+ 使用率阈值告警；定时默认关闭 |
   | prune_history            | IntervalTrigger(days=1)               | D-1：task_run/容量快照历史清理（保留 30 天，可经 task_run_retention_days 覆盖） |
+  | episode_info_refresh     | IntervalTrigger(hours=24)             | episode-status-cache：每日刷新 TMDB 集信息缓存（tv media，单影视失败跳过） |
 - system_config 双层开关（A-2 方案②）：scheduler_enabled（全局，未配置默认开，false 短路
   全部停用）+ scheduler.<job_id>（job 级，未配置默认跟随总开关——总开关开启即默认启用；
   显式配置 true/false 可单独强制开启 / 单独关闭）。
@@ -31,7 +32,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from app.database import async_session
 from app.models import SystemConfig
-from app.tasks import capacity_alert, cleanup, library_check, nastools_sync, notification_scan, recovery, scan, transfer
+from app.tasks import capacity_alert, cleanup, episode_info_refresh, library_check, nastools_sync, notification_scan, recovery, scan, transfer
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,7 @@ JOB_NOTIFICATION_SCAN = "notification_scan"
 JOB_RECOVER_STALE = "recover_stale"
 JOB_CAPACITY_ALERT = "capacity_alert"
 JOB_PRUNE_HISTORY = "prune_history"
+JOB_EPISODE_INFO_REFRESH = "episode_info_refresh"
 
 JOB_IDS = [
     JOB_SCAN_ALL_MEDIA,
@@ -56,6 +58,7 @@ JOB_IDS = [
     JOB_RECOVER_STALE,
     JOB_CAPACITY_ALERT,
     JOB_PRUNE_HISTORY,
+    JOB_EPISODE_INFO_REFRESH,
 ]
 
 # MemoryJobStore：任务状态持久化走业务表，jobstore 仅承载调度
@@ -198,6 +201,16 @@ def register_jobs() -> None:
         cleanup.prune_history_job,
         IntervalTrigger(days=1),
         id=JOB_PRUNE_HISTORY,
+        paused=True,  # P3-4：注册即暂停（冷切换铁律），由 _apply_job_switches 恢复
+        max_instances=1,
+        coalesce=True,
+        replace_existing=True,
+    )
+    # episode-status-cache：每日刷新 TMDB 集信息缓存（避免实时查询缓慢）
+    scheduler.add_job(
+        episode_info_refresh.episode_info_refresh_job,
+        IntervalTrigger(hours=24),
+        id=JOB_EPISODE_INFO_REFRESH,
         paused=True,  # P3-4：注册即暂停（冷切换铁律），由 _apply_job_switches 恢复
         max_instances=1,
         coalesce=True,

@@ -82,3 +82,17 @@ def test_config_read_error_propagates(monkeypatch):
     monkeypatch.setattr(scheduler_mod, "_get_config_value", _boom)
     with pytest.raises(RuntimeError):
         run(get_job_enabled(scheduler_mod.JOB_SCAN_ALL_MEDIA))
+
+
+def test_episode_info_refresh_job_runs_for_tv_media(monkeypatch):
+    from app.tasks import episode_info_refresh as eir
+    from app.tasks.episode_info_refresh import episode_info_refresh_job
+
+    calls = []
+    async def fake_refresh(tmdb_id):
+        calls.append(tmdb_id)
+        return 1
+    monkeypatch.setattr(eir, "refresh_episode_info", fake_refresh)
+    # media 查询返回空 → 不调用（框架已建表）
+    run(episode_info_refresh_job())
+    assert calls == []  # 空库不刷
