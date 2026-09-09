@@ -852,7 +852,7 @@ git commit -m "feat(poster): 新增海报代理内存 TTL 缓存"
 - Consumes: 全部既有产物
 - Produces: 通过证据（测试输出、构建产物）
 
-- [ ] **Step 1: 补鉴权测试（未登录 401 / 登录 200）**
+- [x] **Step 1: 补鉴权测试（未登录 401 / 登录 200）**
 
 `backend/tests/test_poster_auth.py`（参考 `test_api_smoke.py` 的 TestClient + lifespan 模式）——本文件**仅断言未登录 401 事实**；登录态 200 链路由 `test_poster_proxy.py` 路由直调覆盖（user 传 fake + mock 回源），避免 TestClient 事件循环与 `_client_factory` monkeypatch 的隔离复杂度：
 
@@ -879,17 +879,17 @@ def test_poster_requires_auth():
         assert r.status_code == 401
 ```
 
-- [ ] **Step 2: 运行全量后端测试**
+- [x] **Step 2: 运行全量后端测试**
 
 Run: `python -m pytest tests/ -q`（workdir: `backend`）
 Expected: 全部 PASS。若存在与本次 change 无关的 pre-existing 失败，记录失败用例名与根因（归因），不视为本 change 回归；但新增的 poster 相关用例必须全绿。
 
-- [ ] **Step 3: 运行前端测试 + 构建**
+- [x] **Step 3: 运行前端测试 + 构建**
 
 Run: `npm test && npm run build`（workdir: `frontend`）
 Expected: PASS（vitest）+ 构建成功（`backend/static` 更新）
 
-- [ ] **Step 4: 记录构建证据（guard 依赖）**
+- [x] **Step 4: 记录构建证据（guard 依赖）**
 
 ```bash
 comet state record-check media-poster-proxy build --command "npm test && npm run build" --exit-code 0
@@ -897,7 +897,7 @@ comet state record-check media-poster-proxy build --command "npm test && npm run
 
 > 说明：如 guard 已自动探测到 npm 构建命令并成功执行，可跳过；否则人工记录。
 
-- [ ] **Step 5: Commit 剩余变更（如有）并确认 tasks.md 全勾选**
+- [x] **Step 5: Commit 剩余变更（如有）并确认 tasks.md 全勾选**
 
 ```bash
 git add -A
