@@ -1,0 +1,14 @@
+{
+  "change": "media-poster-proxy",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "41ed8effbf458a3bd90d1a12f006e16065e9c0a39f27f39311e567c3be89bb87",
+  "files": [
+    { "path": "docs/openspec/changes/media-poster-proxy/proposal.md", "sha256": "08a09811fa69dd4f7ae38d08e033d3d5acc4f1fd5727553f23d58f03589a5b06" },
+    { "path": "docs/openspec/changes/media-poster-proxy/design.md", "sha256": "d3fbfb78f1f8922d85b2ed7d280f4db6afd47cd3c1da377dc467aca5e59ecad9" },
+    { "path": "docs/openspec/changes/media-poster-proxy/tasks.md", "sha256": "46dff0e4657249025986e44f944412e286fe9bba83b31e66d6060bd0b55c9f63" },
+    { "path": "docs/openspec/changes/media-poster-proxy/specs/poster-proxy/spec.md", "sha256": "b0946cf9818de11ef133eb8772c238d9017730477a67aedd7b0a9f105a231c1a" }
+  ]
+}

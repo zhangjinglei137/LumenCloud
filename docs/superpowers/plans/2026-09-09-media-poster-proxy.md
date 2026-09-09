@@ -2,6 +2,7 @@
 change: media-poster-proxy
 design-doc: docs/superpowers/specs/2026-09-09-media-poster-proxy-design.md
 base-ref: 11d5051725a57ab858eee276c86c22d92e249c34
+archived-with: 2026-09-09-media-poster-proxy
 ---
 
 # 影视海报图床代理（media-poster-proxy）实施计划
