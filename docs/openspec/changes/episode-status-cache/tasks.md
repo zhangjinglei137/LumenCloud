@@ -30,7 +30,7 @@
 
 ## 6. 前端展示修正
 
-- [ ] 6.1 frontend/src/utils/format.ts 新增归一状态文案与颜色映射（已在库/巡检中/异常/未开播/待定），验证 MEDIA_STATUS_MAP/集数状态映射含新状态
-- [ ] 6.2 MediaListView episodeText 展示真实集数统计（有统计显示 x/xx，无统计回退），验证列表不再全为 0
-- [ ] 6.3 MediaDetailView 集数状态行使用归一状态与真实大小（大小缺失显示 —），验证详情集数状态展示正确
-- [ ] 6.4 前端测试补充状态文案/集数统计格式化用例，验证 `vitest` 通过
+- [x] 6.1 frontend/src/utils/format.ts 新增归一状态文案与颜色映射（已在库/巡检中/异常/未开播/待定），验证 MEDIA_STATUS_MAP/集数状态映射含新状态
+- [x] 6.2 MediaListView episodeText 展示真实集数统计（有统计显示 x/xx，无统计回退），验证列表不再全为 0
+- [x] 6.3 MediaDetailView 集数状态行使用归一状态与真实大小（大小缺失显示 —），验证详情集数状态展示正确
+- [x] 6.4 前端测试补充状态文案/集数统计格式化用例，验证 `vitest` 通过

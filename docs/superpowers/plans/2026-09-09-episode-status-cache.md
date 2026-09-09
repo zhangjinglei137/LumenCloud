@@ -801,7 +801,7 @@ git commit -m "fix(media-status): 入库完成同步 episode_state 双表，集�
 - Consumes: 后端 `episode_stats.total/available`、详情 `episode_state[].state/name/file_size`
 - Produces: `EPISODE_STATUS_MAP`（in_library/error/scanning/not_aired/pending → 文案/颜色）；`episodeStatusLabel/Type`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 创建 `frontend/src/utils/format.test.ts`：
 
@@ -831,7 +831,7 @@ describe('归一集数状态映射（episode-status-cache）', () => {
 })
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 ```bash
 cd frontend && npx vitest run src/utils/format.test.ts 2>&1 | tail -8
@@ -839,7 +839,7 @@ cd frontend && npx vitest run src/utils/format.test.ts 2>&1 | tail -8
 
 Expected: FAIL（`episodeStatusLabel` 未定义）。
 
-- [ ] **Step 3: 实现 format.ts 映射**
+- [x] **Step 3: 实现 format.ts 映射**
 
 在 `frontend/src/utils/format.ts` 追加：
 
@@ -864,11 +864,11 @@ export function episodeStatusType(status: string | null | undefined): string {
 }
 ```
 
-- [ ] **Step 4: 适配 MediaListView episodeText**
+- [x] **Step 4: 适配 MediaListView episodeText**
 
 `MediaListView.vue` 的 `episodeText` 已使用 `s.available ?? s.downloaded` 与 `s.total`——后端数值修正后自动正确；无需改结构。仅确认电影分支与无统计回退保持。如需要把「未开播/待定」集计入 total 的语义澄清，保持现状（total 来自后端）。
 
-- [ ] **Step 5: 适配 MediaDetailView 集数状态行**
+- [x] **Step 5: 适配 MediaDetailView 集数状态行**
 
 `MediaDetailView.vue`：
 1. `episodeRows` computed 已对每行做 `episodeStateTag` —— 归一状态来自后端 `state` 字段。若后端 `state` 为 `in_library/error/scanning/not_aired/pending`，前端 `episodeStateTag` 需兼容这些新状态（在后端未返回 `in_emby` 时靠 `state` 判定）。追加 fallback：
@@ -889,7 +889,7 @@ function episodeStateTag(row: Record<string, unknown>, today: Date = new Date())
 
 2. 集数状态表格的「大小」列展示 `row.size_gb`（已有 `formatGb`）——后端已改逐行真实值，缺失时前端显示 '—'。确认表格「集」列用 `episodeLabel(row)`（SxxExx），新增「名称」列展示 `row.name`（若有）。
 
-- [ ] **Step 6: 运行确认通过**
+- [x] **Step 6: 运行确认通过**
 
 ```bash
 cd frontend && npx vitest run src/utils/format.test.ts 2>&1 | tail -6
@@ -898,7 +898,7 @@ cd frontend && npm run build 2>&1 | tail -6
 
 Expected: PASS；build 通过（vue-tsc 无类型错误）。
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```bash
 git add frontend/src/utils/format.ts frontend/src/utils/format.test.ts frontend/src/views/MediaListView.vue frontend/src/views/MediaDetailView.vue
