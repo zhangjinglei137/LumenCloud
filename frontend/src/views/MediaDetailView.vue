@@ -5,6 +5,8 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { useMediaStore } from '../stores/media'
 import { useAuthStore } from '../stores/auth'
 import {
+  buildEpisodeGroups,
+  episodeDisplayName,
   episodeStateTag,
   episodeStateTooltip,
   formatBytes,
@@ -70,6 +72,34 @@ const tmdbEpisodes = computed(() => {
   })
 })
 
+/** 组总数（分组依据）：episode_state 最大集号；无 episode_state 时用 TMDB 全长 */
+const episodeTotal = computed<number>(() => {
+  const nums = episodes.value.map((e) => Number(e.episode_number)).filter((n) => Number.isFinite(n))
+  if (nums.length > 0) return Math.max(...nums)
+  return tmdbEpisodes.value.length
+})
+
+/** 每 100 集分组 tag（电影/无数据返回空数组 → 不渲染导航） */
+const groups = computed(() => buildEpisodeGroups(episodeTotal.value))
+
+/** 当前选中分组的 label；null = 全部 */
+const activeGroup = ref<string | null>(null)
+
+/** 分组过滤后的表格行；无集号行始终显示 */
+const filteredRows = computed(() => {
+  const active = activeGroup.value
+  const g = groups.value.find((grp) => grp.label === active)
+  if (!g) return episodeRows.value
+  return episodeRows.value.filter((row) => {
+    // EpisodeState 类型未声明 episode_number（spread 后索引签名丢失），按 Record 访问
+    const n = Number((row as Record<string, unknown>).episode_number)
+    if (!Number.isFinite(n)) return true
+    return n >= g.start && n <= g.end
+  })
+})
+// 模板接入归 Task 3；vue-tsc noUnusedLocals 下此处按已使用标记，接入模板后移除
+void filteredRows
+
 function episodeLabel(ep: Record<string, unknown>): string {
   const season = ep.season ?? ep.season_number
   const episodeNumber = ep.episode_number
@@ -81,10 +111,9 @@ function episodeLabel(ep: Record<string, unknown>): string {
   return '—'
 }
 
-/** 集数名称（后端 TMDB 缓存轴提供 episode_state.name；缺失时显示 —） */
+/** 名称列展示（原 episodeName 函数替换为 format 层纯函数） */
 function episodeName(ep: Record<string, unknown>): string {
-  const name = ep.name
-  return typeof name === 'string' && name !== '' ? name : '—'
+  return episodeDisplayName(ep)
 }
 
 /** 格式化 TMDB 集数为 S01E04 */
