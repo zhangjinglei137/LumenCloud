@@ -2,29 +2,27 @@
 
 ## Current Task
 
-- **Task**: Task 6: 前端状态映射与展示修正
+- **Task**: Task 7: 全量回归验证
 - **Phase**: implementing
 - **review_mode**: standard
-- **Model**: 中档（计划含完整代码 → 转写+测试）
-- **Base commit**: c1d0b68231b863ed55c23aba4203a20e2ae0dcd5
-- **风险信号**: 纯前端展示改动（format.ts + 视图）；预计 diff < 200 行，可能不命中风险信号 → 无 task reviewer（standard 非风险任务直接勾选）
+- **Model**: 中档（验证任务）
+- **Base commit**: 25ce12cb667797e4e6213f0576d54c40dec3c498
+- **风险信号**: 无（纯验证，无生产代码改动）→ 无 task reviewer
 
 ## Implementer 记录
 
 - 实现提交: 待回报
-- RED 证据: 待回报
-- GREEN 证据: 待回报
-- 变更文件: frontend/src/utils/format.ts, frontend/src/utils/format.test.ts (create), frontend/src/views/MediaDetailView.vue, frontend/src/views/MediaListView.vue
+- RED 证据: 不适用（验证任务）
+- GREEN 证据: 后端全量 pytest + 前端 vitest/build
+- 变更文件: 无生产代码；可能勾选 tasks.md
 
 ## Task Review 记录
 
-- 审查阶段: 待定（若命中风险信号才派发）
-- 反馈: 无
-- 修复轮次: 0/1
+- 审查阶段: 不适用（无风险信号）
 
 ## OpenSpec Task 映射
 
-- OpenSpec tasks.md: 6.1 format.ts 状态映射 + 6.2 MediaListView + 6.3 MediaDetailView + 6.4 前端测试
+- OpenSpec tasks.md: 7（全量回归）+ 勾选 tasks.md 全部
 
 ## 已完成
 
@@ -33,3 +31,4 @@
 - Task 3: complete (commits 02c8bad..e0de64d, 1 Important fixed round 1, re-review all addressed)
 - Task 4: complete (commits ce1fd80..4efe715, 1 Important fixed round 1, re-review all addressed)
 - Task 5: complete (commits 1e487ac..c0af545, review clean — Approved, 3 minors deferred)
+- Task 6: complete (commits c1d0b68..bfa6bab, 无风险信号直接放行, 2 minors deferred)

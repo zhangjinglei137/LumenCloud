@@ -912,7 +912,7 @@ git commit -m "feat(media-status): 前端归一集数状态映射与列表/详�
 **Files:**
 - 无新文件；全量跑既有测试
 
-- [ ] **Step 1: 后端全量测试**
+- [x] **Step 1: 后端全量测试**
 
 ```bash
 cd backend && python -m pytest -q 2>&1 | tail -10
@@ -920,7 +920,7 @@ cd backend && python -m pytest -q 2>&1 | tail -10
 
 Expected: 全部通过（无回归；新增 episode_info / resolve / finalize 用例绿）。
 
-- [ ] **Step 2: 前端全量测试 + 构建**
+- [x] **Step 2: 前端全量测试 + 构建**
 
 ```bash
 cd frontend && npx vitest run 2>&1 | tail -6
@@ -929,7 +929,7 @@ cd frontend && npm run build 2>&1 | tail -6
 
 Expected: vitest 全绿；build 通过。
 
-- [ ] **Step 3: 收尾提交（若 Task 1-6 有遗漏未提交）**
+- [x] **Step 3: 收尾提交（若 Task 1-6 有遗漏未提交）**
 
 ```bash
 git status --short
@@ -938,6 +938,6 @@ git add -A && git commit -m "chore(episode-status-cache): 全量回归与收尾"
 
 （若没有未提交改动则跳过本步。）
 
-- [ ] **Step 4: 勾选 tasks.md 全部任务并记录验证**
+- [x] **Step 4: 勾选 tasks.md 全部任务并记录验证**
 
 确认 `docs/openspec/changes/episode-status-cache/tasks.md` 全部勾选；在 build 记录真实构建证据。
