@@ -7,9 +7,9 @@
 
 ## 2. 集信息回源与缓存写入
 
-- [ ] 2.1 services/tmdb.py 新增 `refresh_episode_info(tmdb_id)`：复用 `get_tv_all_episodes` 回源并将每集 upsert 到 `episode_info_cache`，验证单影视刷新后缓存表出现对应季/集/名称/首播日期行
-- [ ] 2.2 services/tmdb.py 新增 `get_episode_info(tmdb_id)` 读缓存函数（无缓存返回 []），验证返回结构与 spec（season/episode/name/air_date）一致
-- [ ] 2.3 新增后端测试（tests/test_tmdb.py 或新增测试文件）覆盖：刷新写缓存、刷新失败保留旧数据、读取空缓存返回 []，验证 `pytest` 通过
+- [x] 2.1 services/tmdb.py 新增 `refresh_episode_info(tmdb_id)`：复用 `get_tv_all_episodes` 回源并将每集 upsert 到 `episode_info_cache`，验证单影视刷新后缓存表出现对应季/集/名称/首播日期行
+- [x] 2.2 services/tmdb.py 新增 `get_episode_info(tmdb_id)` 读缓存函数（无缓存返回 []），验证返回结构与 spec（season/episode/name/air_date）一致
+- [x] 2.3 新增后端测试（tests/test_tmdb.py 或新增测试文件）覆盖：刷新写缓存、刷新失败保留旧数据、读取空缓存返回 []，验证 `pytest` 通过
 
 ## 3. 每日定时刷新任务
 

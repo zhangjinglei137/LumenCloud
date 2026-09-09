@@ -133,7 +133,7 @@ git commit -m "feat(episode-cache): 新增 episode_info_cache 集信息缓存表
 - Consumes: `get_tv_all_episodes(tmdb_id)`（既有，返回 [{season, episode, air_date, name}]）、`async_session`、`EpisodeInfoCache`（Task 1）
 - Produces: `refresh_episode_info(tmdb_id: int) -> int`、`get_episode_info(tmdb_id: int) -> list[dict]`，供 Task 3/4 使用
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `backend/tests/test_tmdb_cache.py` 追加：
 
@@ -230,7 +230,7 @@ def test_refresh_episode_info_empty_preserves_old(db, monkeypatch):
     assert run(_count()) == 1
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 ```bash
 cd backend && pytest tests/test_tmdb_cache.py -k "episode_info" -q 2>&1 | tail -8
@@ -238,7 +238,7 @@ cd backend && pytest tests/test_tmdb_cache.py -k "episode_info" -q 2>&1 | tail -
 
 Expected: FAIL（`AttributeError: module 'app.services.tmdb' has no attribute 'get_episode_info'`）。
 
-- [ ] **Step 3: 实现读写函数**
+- [x] **Step 3: 实现读写函数**
 
 在 `backend/app/services/tmdb.py` 末尾（`get_tv_all_episodes` 之后）追加：
 
@@ -309,7 +309,7 @@ async def get_episode_info(tmdb_id: int) -> list[dict]:
     ]
 ```
 
-- [ ] **Step 4: 运行确认通过**
+- [x] **Step 4: 运行确认通过**
 
 ```bash
 cd backend && pytest tests/test_tmdb_cache.py -k "episode_info" -q 2>&1 | tail -8
@@ -317,7 +317,7 @@ cd backend && pytest tests/test_tmdb_cache.py -k "episode_info" -q 2>&1 | tail -
 
 Expected: PASS（4 个用例全绿）。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add backend/app/services/tmdb.py backend/tests/test_tmdb_cache.py
