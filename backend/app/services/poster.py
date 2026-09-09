@@ -99,7 +99,12 @@ async def fetch_poster(p: str) -> tuple[bytes, str]:
     返回 (bytes, content_type)。失败：PosterUnavailable（配置误填/缺失）或
     Exception（网络/非 2xx，路由映射 502）。
     """
-    base = _base_url()  # Task 3 实现；先临时内联官方地址
+    now = time.monotonic()
+    hit = _POSTER_CACHE.get(p)
+    if hit is not None and now < hit[0]:
+        return hit[2], hit[1]
+
+    base = _base_url()
     url = f"{base}{p}"
     try:
         async with _client_factory() as client:
@@ -111,4 +116,7 @@ async def fetch_poster(p: str) -> tuple[bytes, str]:
         _alert(p)
         raise Exception(f"上游返回 HTTP {resp.status_code}")
     ctype = resp.headers.get("content-type", "image/jpeg")
+    # 上限未满才写入；失败路径不写缓存（避免临时故障期缓存错误状态）
+    if len(_POSTER_CACHE) < _POSTER_CACHE_MAX:
+        _POSTER_CACHE[p] = (now + _POSTER_CACHE_TTL, ctype, resp.content)
     return resp.content, ctype

@@ -160,3 +160,47 @@ def test_settings_whitelist_contains_poster_proxy():
 def test_config_has_poster_proxy_field():
     from app.config import settings as s
     assert hasattr(s, "TMDB_POSTER_PROXY")
+
+
+# ---- Task 6：内存 TTL 缓存 ----
+
+def _fetch_calls_with_factory(monkeypatch, resp, calls):
+    monkeypatch.setattr(poster_mod, "_client_factory", _make_client_factory(resp, calls))
+
+
+def test_cache_hit_skips_upstream(monkeypatch):
+    monkeypatch.setattr(
+        poster_mod, "_POSTER_CACHE",
+        {"/t/p/w500/x.jpg": (time.monotonic() + 100, "image/jpeg", b"cached")},
+    )
+    calls: list[str] = []
+    resp = SimpleNamespace(status_code=200, content=b"fresh", headers={"content-type": "image/jpeg"})
+    monkeypatch.setattr(poster_mod, "_client_factory", _make_client_factory(resp, calls))
+    content, ctype = asyncio.run(poster_mod.fetch_poster("/t/p/w500/x.jpg"))
+    assert content == b"cached"
+    assert calls == []  # 未触发回源
+
+
+def test_cache_expired_refetches(monkeypatch):
+    monkeypatch.setattr(
+        poster_mod, "_POSTER_CACHE",
+        {"/t/p/w500/x.jpg": (time.monotonic() - 1, "image/jpeg", b"stale")},
+    )
+    calls: list[str] = []
+    resp = SimpleNamespace(status_code=200, content=b"fresh", headers={"content-type": "image/jpeg"})
+    monkeypatch.setattr(poster_mod, "_client_factory", _make_client_factory(resp, calls))
+    content, ctype = asyncio.run(poster_mod.fetch_poster("/t/p/w500/x.jpg"))
+    assert content == b"fresh"
+    assert calls == ["https://image.tmdb.org/t/p/w500/x.jpg"]
+
+
+def test_cache_cap_drops_writes(monkeypatch):
+    monkeypatch.setattr(
+        poster_mod, "_POSTER_CACHE",
+        {f"/t/p/w{k}.jpg": (time.monotonic() + 100, "image/jpeg", b"x") for k in range(poster_mod._POSTER_CACHE_MAX)},
+    )
+    calls: list[str] = []
+    resp = SimpleNamespace(status_code=200, content=b"fresh", headers={"content-type": "image/jpeg"})
+    monkeypatch.setattr(poster_mod, "_client_factory", _make_client_factory(resp, calls))
+    asyncio.run(poster_mod.fetch_poster("/t/p/w500/overflow.jpg"))
+    assert poster_mod._POSTER_CACHE.get("/t/p/w500/overflow.jpg") is None  # 未写入
