@@ -5,31 +5,28 @@
 > review_mode: standard（仅风险任务派发每任务 reviewer，最多 1 轮 review-fix）
 > tdd_mode: tdd
 
-## 预检裁定（plan 修正）
+## Task 2 — size_estimated 落库 + aria2 真实大小回填（数据链路）
 
-- Task 1 Step 1 测试骨架引用了不存在的 `db` fixture → 已修正计划：改为完全参照 test_media_two_queue.py 基建。
-- Task 1b 范围扩展：`test_api_smoke.py` 也是 Task 1 契约波及面（fix-2 BLOCKED 报告）→ plan 与 tasks.md 1.6 已扩展包含该文件与 `_SENSITIVE_QUEUE_FIELDS` 拆分。
+- 状态：`task-review`（fix-3 回报 DONE_WITH_CONCERNS）
+- OpenSpec 映射：tasks.md 2.1 / 2.2
+- 命中风险信号：数据/schema 迁移 + 并发/锁（aria2 回填条件更新）→ 派发每任务 reviewer
+- 实现提交哈希：6dfe309（base 34cf38a）
+- 变更文件：迁移 0016 + models + scan.py + transfer.py + queue.py + 新测试（383+/20-）
+- RED/GREEN 证据：定向 7 passed（RED 首跑 7 failed）；回归 64 passed + 补跑 118 passed；全量 485 passed
+- 审查-修复轮次：0/1（进行中，ora-3）
+- 顾虑/裁定记录：
+  - **Ruling（fix-3 报告，协调者认可）**：brief 写 `down_revision="0015"`，实际 revision id 为 `"0015_episode_info_cache"` → implementer 已按实际 id 实现并真跑 upgrade head/downgrade 冒烟验证（含全链 16 个迁移）。plan brief 的 down_revision 需修正（小偏差，不阻断）
+  - real_size=None 条件构造 values 规避 file_size NOT NULL 写 NULL → 正确
+  - trigger_download_complete 事务内新增 tell_status RPC，aria2 故障静默不回填 → 符合设计
 
-## Task 1 — 后端分页契约 + 排序 + 分享码字段（queue.py 路由层） ✅ 完成
+## 已完成任务归档（摘要）
 
-- 实现 27edc97 → 勾选提交 7f3e254；ora-1 审查 spec-✅ Approved（0/0/4 Minor）
-
-## Task 1b — 既有测试旧契约断言同步（test_queue.py / test_scan_run_phases.py / test_api_smoke.py） ✅ 完成
-
-- 状态：`done`
-- OpenSpec 映射：tasks.md 1.6（已勾选，task-checkoff PASS）
-- 实现提交哈希：9cc82c8（base 7f3e254）
-- RED/GREEN 证据：RED `6 failed, 44 passed`（旧契约）→ GREEN 定向 52 passed / 全量 478 passed
-- 审查结果（ora-2）：spec-✅ quality-Approved，0 Critical / 0 Important / 3 Minor（全部接受）
-  - Minor#1 test_queue.py:242 用例名 `and_no_credentials` 与 admin 明文语义偏差（功能正确，docstring 已更新）→ 接受
-  - Minor#2 admin download 视图 share_url 仅断言单行 → brief 单例要求已满足，接受
-  - Minor#3 `_seed_queue_data` 全表 delete 无 WHERE → 与既有 `_recreate_admin` 模式一致，接受
-- 修复轮次：0（BLOCKED 一次为范围扩展，非质量修复）
+- Task 1 ✅：实现 27edc97 → 勾选 7f3e254；ora-1 spec-✅（0/0/4 Minor）
+- Task 1b ✅：实现 9cc82c8 → 勾选 34cf38a；ora-2 spec-✅（0/0/3 Minor）；BLOCKED 一次为范围扩展
 
 ## 待处理事项（deferred minors / 跟进）
 
-1. test_api_smoke 与 test_queue_list 共享模块级 engine 的顺序依赖（预存在基建问题，fix-2 以 seed 前清理局部规避）→ 记录，Verify 前评估是否需 conftest 级隔离（不在本 change 范围，倾向不动）
-2. `_list_download` 活跃态过滤语义：前端下载 Tab「仅看活跃」开关与后端同口径 → Task 4 派发时确认
-3. size_estimated 模型列由 Task 2 落库 → 待执行
-4. test_queue_list.py 文件结尾无换行（ora-1 Minor#3）→ deferred，Verify 前统一
-5. test_queue.py:242 用例名语义偏差（ora-2 Minor#1）→ deferred，Verify 前评估改名
+1. test_api_smoke 与 test_queue_list 共享模块级 engine 的顺序依赖（预存在基建，已局部规避）→ Verify 前评估，倾向不动
+2. `_list_download` 活跃态过滤语义：前端下载 Tab「仅看活跃」开关 → Task 4 派发时确认
+3. test_queue_list.py 结尾无换行、test_queue.py:242 用例名语义偏差 → deferred，Verify 前统一
+4. plan Task 2 brief 的 down_revision 偏差 → 勾选 Task 2 时同步修正 plan 文本（写 "0015_episode_info_cache"）

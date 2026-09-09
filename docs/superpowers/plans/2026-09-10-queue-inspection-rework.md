@@ -215,7 +215,7 @@ git commit -m "test(queue)：既有测试同步新契约 {items,total} 与 share
 - Consumes: `scan._walk_share` 返回 dict 的 `size_estimated` key；`aria2.client.tell_status(gid)['totalLength']`
 - Produces: `TaskQueue.size_estimated` / `DownloadQueue.size_estimated` 列；`_complete_download(..., real_size: int | None = None)` 新增可选参数
 
-- [ ] **Step 1: 写迁移**（新建 `backend/alembic/versions/0016_queue_size_estimated.py`）
+- [x] **Step 1: 写迁移**（新建 `backend/alembic/versions/0016_queue_size_estimated.py`）
 
 ```python
 """Add size_estimated to task_queue / download_queue.
@@ -228,7 +228,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision = "0016"
-down_revision = "0015"
+down_revision = "0015_episode_info_cache"  # 实际 revision id（brief 初稿写 "0015" 为偏差，已修正）
 branch_labels = None
 depends_on = None
 
@@ -243,7 +243,7 @@ def downgrade() -> None:
     op.drop_column("task_queue", "size_estimated")
 ```
 
-- [ ] **Step 2: 模型加列**（`backend/app/models/__init__.py`）
+- [x] **Step 2: 模型加列**（`backend/app/models/__init__.py`）
 
 `TaskQueue`（115-152 区）：`file_size` 后加：
 
@@ -253,7 +253,7 @@ def downgrade() -> None:
 
 `DownloadQueue`（155-209 区）：`file_size` 后加同款列。
 
-- [ ] **Step 3: 写入路径打通**
+- [x] **Step 3: 写入路径打通**
 
 a) `scan.py _enqueue`（953-997）签名加 `size_estimated: bool = False`，写入 `size_estimated=size_estimated`；调用点（约 :1538 `_enqueue(...)`）在 `file_size=int(f.get("file_size") or 0)` 处补 `size_estimated=bool(f.get("size_estimated"))` 实参（f 来自 `_walk_share`，已带该标记）。
 
@@ -261,7 +261,7 @@ b) `transfer.py _fetch_from_task_queue`（1314-1335 取件生成 DQ 处）：`Do
 
 c) `queue.py promote_task`（624-633 手动 promote 生成 DQ 处）：构造补 `size_estimated=tq.size_estimated`。
 
-- [ ] **Step 4: aria2 真实值回填**（`transfer.py`）
+- [x] **Step 4: aria2 真实值回填**（`transfer.py`）
 
 `_complete_download`（526）签名加 `real_size: int | None = None`，update `.values(...)` 补：
 
@@ -297,7 +297,7 @@ c) `queue.py promote_task`（624-633 手动 promote 生成 DQ 处）：构造补
 
 update `.values(...)` 同样条件化追加 `file_size=real_size, size_estimated=False`。
 
-- [ ] **Step 5: 写并运行测试**（`backend/tests/test_queue_size_estimated.py`）
+- [x] **Step 5: 写并运行测试**（`backend/tests/test_queue_size_estimated.py`）
 
 ```python
 """size_estimated 落库 / 拷贝 / aria2 回填链路测试。"""
@@ -312,7 +312,7 @@ update `.values(...)` 同样条件化追加 `file_size=real_size, size_estimated
 Run: `cd backend && pytest tests/test_queue_size_estimated.py tests/test_transfer.py tests/test_council_fixes.py -v`
 Expected: 新用例 PASS，既有 transfer 测试不回归
 
-- [ ] **Step 6: 勾选 OpenSpec 任务并提交**
+- [x] **Step 6: 勾选 OpenSpec 任务并提交**
 
 ```
 勾选 tasks.md 2.1 / 2.2
