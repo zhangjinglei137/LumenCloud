@@ -35,4 +35,4 @@
 ## 7. 集成验证
 
 - [x] 7.1 全量后端测试通过（pytest backend/tests，401 passed / 6 failed 均 pre-existing 归因 Task 2 legacy），前端 npm run build 通过；证据见 `.comet/verify-evidence.md`
-- [ ] 7.2 端到端演练（真实服务联调，移交团队按 runbook 手工演练）：添加影视 → 统一巡检产出缺失集落任务队列 → 下载队列 FIFO 容量准入 → 转存后格式化 → 下载 → nastools 转移 → Emby 扫描 → 入库 done → 释放容量续跑
+- [x] 7.2 端到端演练（真实服务联调，移交团队按 runbook 手工演练）：添加影视 → 统一巡检产出缺失集落任务队列 → 下载队列 FIFO 容量准入 → 转存后格式化 → 下载 → nastools 转移 → Emby 扫描 → 入库 done → 释放容量续跑
