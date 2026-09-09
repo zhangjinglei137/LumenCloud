@@ -531,11 +531,11 @@ comet state record-check settings-credentials-ui build --command "cd frontend &&
 - Consumes: Task 1-5 产物
 - Produces: 手动验证记录（存证于验证报告）
 
-- [ ] **Step 1: 启动前端 + 后端（用户侧操作）**
+- [x] **Step 1: 启动前端 + 后端（用户侧操作）**
 
 按项目方式启动前后端服务，打开设置页「服务凭据」Tab。
 
-- [ ] **Step 2: 逐项核对**
+- [x] **Step 2: 逐项核对**
 
 1. 清除按钮与输入框同行（alist_base_url 等字段），窄屏窗口按钮可换行不挤压
 2. 必填字段旁只显示「必填」标签，无「否则…」长文案；可选字段显示「可选」
@@ -543,7 +543,7 @@ comet state record-check settings-credentials-ui build --command "cd frontend &&
 4. 点击「清除」二次确认后清除生效、其余字段不变；填写字段点「保存全部」正常
 5. quark_default_folder 的「验证 folderId」按钮正常显示在同行
 
-- [ ] **Step 3: 记录结果**
+- [x] **Step 3: 记录结果**
 
 手动验证结果记入 Verify 阶段报告（本任务仅执行与记录，不单独提交）。
 
