@@ -116,6 +116,10 @@ export const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
     placeholder: '留空 = 官方地址 https://api.themoviedb.org',
     default: '可选，留空 = 官方地址',
   },
+  tmdb_poster_proxy: {
+    label: '图床镜像地址',
+    desc: 'TMDB 图床反代根地址（如 https://tmdb-image.example.com）。误填科学上网代理端口会报错，代理请填到「TMDB 出口代理」。未配置时回退官方图床。',
+  },
   tmdb_http_proxy: {
     label: 'TMDB 出口代理',
     desc: '可选。设置 HTTP(S) 出口代理（如 http://127.0.0.1:7890），TMDB 请求经其出口访问。镜像优先：已配置「TMDB 镜像根地址」时镜像请求同样可走该出口；无镜像时配合官方地址直连官方。',
