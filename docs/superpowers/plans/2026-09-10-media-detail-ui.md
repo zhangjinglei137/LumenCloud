@@ -156,7 +156,7 @@ git commit -m "test(media-detail)：新增集数分组与名称回退纯函数"
   - `filteredRows = computed(() => EpisodeRow[])`（模板表格改用；无集号行不受过滤）
   - `episodeTotal = computed(() => number)`（episode_state 最大 episode_number，tmdbEpisodes.length 兜底）
 
-- [ ] **Step 1: 写失败测试（组件渲染级验证）**
+- [x] **Step 1: 写失败测试（组件渲染级验证）**
 
 沿用仓库先例 `SettingsView.test.ts` 的模式（`@vitest-environment jsdom` + `vi.mock` store/route + Element Plus stub），不引入 `@pinia/testing`。分组/回退逻辑由 Task 1 纯函数单测覆盖；**本 Task 组件测试只做挂载冒烟**（防 script 改动引入运行错误与类型破坏）——模板元素的详细断言（`.ep-group-nav`、`.header-settings`、转存队列移除）归入 Task 3 Step 1。
 
@@ -239,12 +239,12 @@ describe('MediaDetailView script 冒烟（media-detail-ui）', () => {
 
 > 注：若挂载受 Element Plus 未注册指令（`v-loading`）等副作用影响超预期，在 stubs/global config 中补充（如 `global: { directives: { loading: () => {} } }`）；仍无法稳定挂载时允许降级为「构建通过」并把冒烟验证并入 Task 3 手动清单，commit message 注明。
 
-- [ ] **Step 2: 运行测试验证失败**
+- [x] **Step 2: 运行测试验证失败**
 
 Run: `cd frontend && npx vitest run src/views/MediaDetailView.test.ts`
 Expected: 测试文件或用例失败/挂载报错（尚未改动视图，组测为占位）。
 
-- [ ] **Step 3: script 段实现**
+- [x] **Step 3: script 段实现**
 
 在 `frontend/src/views/MediaDetailView.vue` 的 `<script setup>` 中：
 
@@ -288,12 +288,12 @@ function episodeName(ep: Record<string, unknown>): string {
 
 注意：`ref`/`computed` 已在顶部 import（保留）；`buildEpisodeGroups`/`episodeDisplayName` 是新增 import；`episodeTotal` 依赖 `tmdbEpisodes` computed（已在 script 定义）。不要显式 import 任何类型（`EpisodeGroup` 由 `groups` computed 推导）。
 
-- [ ] **Step 4: 运行测试验证通过**
+- [x] **Step 4: 运行测试验证通过**
 
 Run: `cd frontend && npx vitest run src/views/MediaDetailView.test.ts && npm run build`
 Expected: 冒烟测试通过（或按注记降级后仅 build 通过）；`vue-tsc` 无类型错误。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add frontend/src/views/MediaDetailView.vue frontend/src/views/MediaDetailView.test.ts
