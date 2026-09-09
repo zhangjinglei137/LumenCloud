@@ -20,7 +20,7 @@ export const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
     label: 'AList 服务地址',
     desc: '视频网盘网关，提供 /quark 挂载、直链与空间释放。填 alist 的部署地址，需能被本系统访问。',
     placeholder: 'http://主机IP:5244',
-    default: '必填（否则转存与直链不可用）',
+    default: '必填',
   },
   alist_token: {
     label: 'AList 管理令牌',
@@ -35,7 +35,7 @@ export const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
     label: 'cloudSaver 服务地址',
     desc: '网盘搜索 + 转存服务的部署地址，用于搜索夸克分享码并转存到中转目录。',
     placeholder: 'http://主机IP:端口',
-    default: '必填（否则搜索与转存不可用）',
+    default: '必填',
   },
   cloudsaver_username: {
     label: 'cloudSaver 账号',
@@ -56,7 +56,7 @@ export const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
     label: 'aria2 RPC 地址',
     desc: '下载器 aria2 的 RPC 接口地址，系统通过它把分享内容真实下载到本地。',
     placeholder: 'http://主机IP:6800/jsonrpc',
-    default: '必填（否则无法下载）',
+    default: '必填',
   },
   aria2_token: {
     label: 'aria2 RPC 密钥',
@@ -71,7 +71,7 @@ export const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
     label: 'NasTools 服务地址',
     desc: '目录同步入库服务。下载完成后通知 NasTools，把影视文件整理并同步进 Emby 媒体库。',
     placeholder: 'http://主机IP:3000',
-    default: '必填（否则不会自动入库）',
+    default: '必填',
   },
   nastools_username: {
     label: 'NasTools 账号',
@@ -92,7 +92,7 @@ export const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
     label: 'Emby 服务地址',
     desc: 'Emby 媒体服务器地址，用于展示「是否已入库」状态。',
     placeholder: 'http://主机IP:8096',
-    default: '必填（否则无法判定入库状态）',
+    default: '必填',
   },
   emby_api_key: {
     label: 'Emby API 密钥',
@@ -107,14 +107,14 @@ export const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
     label: 'TMDB API 密钥',
     desc: '影视元数据搜索用，需要在 TMDB 官网（themoviedb.org）免费申请。⚠️ 注意：不要把科学上网代理端口填到这里；如需代理请在容器或系统网络层配置。',
     placeholder: '不修改可保持原样',
-    default: '必填（否则无法搜索影视信息）',
+    default: '必填',
     sensitive: true,
   },
   tmdb_proxy: {
     label: 'TMDB 镜像根地址',
     desc: '可选。仅当你自建了 TMDB 反代镜像时才填写；镜像优先——已配置则所有 TMDB 请求走该镜像根地址；留空 = 使用官方地址 https://api.themoviedb.org。⚠️ 不要填科学上网代理端口（如 192.168.3.31:7897），那样会返回 400 错误；科学上网代理请填到「TMDB 出口代理」。',
     placeholder: '留空 = 官方地址 https://api.themoviedb.org',
-    default: '可选，留空 = 官方地址',
+    default: '可选',
   },
   tmdb_poster_proxy: {
     label: '图床镜像地址',
@@ -124,7 +124,7 @@ export const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
     label: 'TMDB 出口代理',
     desc: '可选。设置 HTTP(S) 出口代理（如 http://127.0.0.1:7890），TMDB 请求经其出口访问。镜像优先：已配置「TMDB 镜像根地址」时镜像请求同样可走该出口；无镜像时配合官方地址直连官方。',
     placeholder: 'http://127.0.0.1:7890（留空 = 直连）',
-    default: '可选，留空 = 直连',
+    default: '可选',
   },
 
   // ---------- 内部回调鉴权（自动生成，editable_keys 白名单内） ----------
@@ -148,7 +148,7 @@ export const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
     label: 'PushPlus 推送令牌',
     desc: '可选。用于把任务结果推送到微信；留空则只用站内通知。',
     placeholder: '不修改可保持原样',
-    default: '可选，留空 = 只用站内通知',
+    default: '可选',
     sensitive: true,
   },
 
@@ -157,7 +157,7 @@ export const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
     label: '夸克中转目录 folderId',
     desc: '转存默认落到的夸克目录 ID（即 alist Quark 驱动的 root_folder_id，可用 alist 管理 API /api/admin/storage/list 查询）。留空 = 不指定目录。可在本页点「验证 folderId」一键检测与 AList 挂载根目录是否一致。',
     placeholder: '不修改可保持原样',
-    default: '可选，留空 = 不指定',
+    default: '可选',
     sensitive: true,
   },
 
@@ -165,7 +165,7 @@ export const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
   emby_series_library_ids: {
     label: '剧集页可见的 Emby 媒体库',
     desc: '勾选的媒体库内容会显示在 Emby 影视库的「剧集」Tab，用于把动漫库排除在剧集之外。不勾选任何库 = 不按白名单过滤（显示全部剧集）。',
-    default: '可选，不选 = 不过滤',
+    default: '可选',
     multiSelect: true,
     optionsSource: 'embyLibraries',
   },
@@ -193,11 +193,6 @@ export const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
     label: '电影大小上限（GB）',
     desc: '新订阅电影的默认大小上限，超过的文件会被拒绝下载。',
     default: '默认 5.0 GB',
-  },
-  scan_interval_minutes: {
-    label: '扫描间隔（分钟）（已废弃）',
-    desc: '遗留配置：巡检已改为全局统一调度，全局间隔由定时任务的触发周期控制，该配置不再生效，无需修改；仅为兼容历史数据保留，后续版本可能移除。',
-    default: '已废弃，不再生效',
   },
   nastools_sync_cooldown_minutes: {
     label: 'NasTools 同步冷却（分钟）',
