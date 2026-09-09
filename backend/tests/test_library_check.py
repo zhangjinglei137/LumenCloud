@@ -578,3 +578,48 @@ def test_list_library_paginates_all_items(db, monkeypatch):
     assert len(result) == 1000  # 全量返回，不被 Limit=500 截断
     assert result[0]["title"] == "Movie0"
     assert result[999]["title"] == "Movie999"
+
+
+# ---------------------------------------------------------------------------
+# Task 5：入库完成（_finalize_done）同步 episode_state 双表（集数统计联动）
+# ---------------------------------------------------------------------------
+
+def test_finalize_done_syncs_episode_state(db, env, monkeypatch):
+    """finalize 后 download_queue=done 且 episode_state 双表一致（state='done'）。"""
+    from app.models import EpisodeState
+    from app.tasks.library_check import _finalize_done
+
+    patch_db(monkeypatch, db)
+    # media(downloading) + download_queue(status='library', file_size 有值)
+    async def seed():
+        async with db() as s:
+            media = Media(title="测试剧", media_type="tv", tmdb_id=77, status="downloading")
+            s.add(media)
+            await s.commit()
+            await s.refresh(media)
+            dq = DownloadQueue(
+                media_id=media.id, episode="S01E01", status="library",
+                file_name="剧.S01E01.mkv", file_size=2 * 1024 ** 3,
+                share_code="sc123", quark_path="/quark/a.mkv",
+                node_started_at=_now(),
+            )
+            s.add(dq)
+            await s.commit()
+            return media.id, dq.id
+    mid, dq_id = run(seed())
+
+    async def do_finalize():
+        await _finalize_done(dq_id, mid, "S01E01", "剧.S01E01.mkv", "/quark/a.mkv", transfer_mod)
+    run(do_finalize())
+
+    async def assert_state():
+        async with db() as s:
+            dq = (await s.execute(select(DownloadQueue).where(DownloadQueue.id == dq_id))).scalar_one()
+            es = (await s.execute(select(EpisodeState).where(
+                EpisodeState.media_id == mid, EpisodeState.episode == "S01E01",
+            ))).scalar_one_or_none()
+            return dq.status, es
+    dq_status, es = run(assert_state())
+    assert dq_status == "done"
+    assert es is not None and es.state == "done"
+    assert es.file_size == 2 * 1024 ** 3

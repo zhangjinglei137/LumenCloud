@@ -52,7 +52,7 @@ from datetime import timedelta
 from sqlalchemy import delete, select, update
 
 from app.database import async_session
-from app.models import DownloadQueue, Media
+from app.models import DownloadQueue, EpisodeState, Media
 from app.services import alist, emby
 from app.services.notifier import (
     EVENT_DOWNLOAD_COMPLETE,
@@ -450,6 +450,30 @@ async def _finalize_done(dq_id, media_id, episode, file_name, quark_path, transf
             )
             if r.rowcount == 0:
                 return  # 已被并发方推进/回退 → 不重复通知、不重复触发 media 回退
+            # episode-status-cache：同步 legacy episode_state（state='done' + file_size），
+            # 保证旧表兼容与列表聚合一致；同 media+episode 已存在则更新不重复插。
+            dq_row = (await s.execute(
+                select(DownloadQueue).where(DownloadQueue.id == dq_id)
+            )).scalar_one_or_none()
+            if dq_row is not None:
+                es = (
+                    await s.execute(
+                        select(EpisodeState).where(
+                            EpisodeState.media_id == media_id,
+                            EpisodeState.episode == episode,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if es is None:
+                    s.add(EpisodeState(
+                        media_id=media_id, episode=episode,
+                        state="done", file_size=dq_row.file_size,
+                        file_name=dq_row.file_name,
+                    ))
+                else:
+                    es.state = "done"
+                    es.file_size = dq_row.file_size
+                    es.file_name = dq_row.file_name
             # P3-6：该 media 无其他进行中集 → tracking
             await transfer_mod._sync_media_status(media_id, s)
 
