@@ -1,0 +1,14 @@
+{
+  "change": "queue-inspection-rework",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "962f062c0fc99824ba195249e4db88234a412f4b450d8ce8d740f851323a0e61",
+  "files": [
+    { "path": "docs/openspec/changes/queue-inspection-rework/proposal.md", "sha256": "10cd0c201170b3ccc3ef04c3f634caaeddbc30e16b5010706b6e981cdc59014f" },
+    { "path": "docs/openspec/changes/queue-inspection-rework/design.md", "sha256": "3a8ba5d87f8e9ffd2f1f9878f7d380cfcffd241ebb543766be53b123f11669ae" },
+    { "path": "docs/openspec/changes/queue-inspection-rework/tasks.md", "sha256": "b9c6fc443cca99282d015f8fedc8053b00fdf4baf65b25aaf9f1a6941fb9bb27" },
+    { "path": "docs/openspec/changes/queue-inspection-rework/specs/queue-inspection-display/spec.md", "sha256": "b4bce3c69a1c962ff2ac94bb828b00fcaf5cc1f3b13f361a7724c6f402048108" }
+  ]
+}
