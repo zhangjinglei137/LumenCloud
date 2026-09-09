@@ -430,7 +430,7 @@ git commit -m "feat(poster): 实现海报回源拉取与失败节流告警"
 - Consumes: `config_store.get(key, default)`、`settings.TMDB_POSTER_PROXY`
 - Produces: `_base_url() -> str` — 镜像优先，未配置回退 `POSTER_DEFAULT_BASE`；无 scheme 的 `host:port` 抛 `PosterUnavailable`
 
-- [ ] **Step 1: 写失败测试（镜像切换 + 防御校验）**
+- [x] **Step 1: 写失败测试（镜像切换 + 防御校验）**
 
 追加到 `tests/test_poster_proxy.py`（`_base_url` 为同步函数，与 tmdb.py 一致）：
 
@@ -486,12 +486,12 @@ def test_config_has_poster_proxy_field():
     assert hasattr(s, "TMDB_POSTER_PROXY")
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `python -m pytest tests/test_poster_proxy.py -v`
 Expected: FAIL（5 个新用例）
 
-- [ ] **Step 3: 实现配置与镜像解析**
+- [x] **Step 3: 实现配置与镜像解析**
 
 `backend/app/config.py`（`TMDB_API_KEY` 附近）新增：
 
@@ -529,12 +529,12 @@ def _base_url() -> str:
     return mirror or POSTER_DEFAULT_BASE
 ```
 
-- [ ] **Step 4: 运行确认通过**
+- [x] **Step 4: 运行确认通过**
 
 Run: `python -m pytest tests/test_poster_proxy.py tests/test_poster_path_validation.py -v`
 Expected: PASS（全部新用例）
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/app/config.py backend/app/routers/settings.py backend/app/services/poster.py backend/tests/test_poster_proxy.py

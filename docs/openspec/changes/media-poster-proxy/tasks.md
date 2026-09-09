@@ -5,8 +5,8 @@
 
 ## 2. 图床镜像配置
 
-- [ ] 2.1 新增配置键 tmdb_poster_proxy（config_store 优先，env TMDB_POSTER_PROXY 兜底），复用 tmdb_proxy 的误填防御校验；验证配置读写与防御校验用例通过
-- [ ] 2.2 代理端点支持镜像地址（配置后从镜像拉取，未配置回退官方）；验证镜像/回退切换用例通过
+- [x] 2.1 新增配置键 tmdb_poster_proxy（config_store 优先，env TMDB_POSTER_PROXY 兜底），复用 tmdb_proxy 的误填防御校验；验证配置读写与防御校验用例通过
+- [x] 2.2 代理端点支持镜像地址（配置后从镜像拉取，未配置回退官方）；验证镜像/回退切换用例通过
 
 ## 3. 前端统一走代理
 
