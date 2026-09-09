@@ -38,7 +38,7 @@ base-ref: 4c0b5c369efb96fb92e82bb4682a854f5c63c04c
 - Consumes: `SettingFieldMeta`（`frontend/src/types/index.ts:253`，含 `default` 字段）
 - Produces: 精简后的 `SETTING_FIELD_META`（凭据键 default 为「必填/可选」、无 `scan_interval_minutes` 键）；`getSettingMeta('scan_interval_minutes')` 走 fallback 返回 `{ label: 'scan_interval_minutes', desc: '' }`
 
-- [ ] **Step 1: 写失败测试** `frontend/src/config/settingsMeta.test.ts`
+- [x] **Step 1: 写失败测试** `frontend/src/config/settingsMeta.test.ts`
 
 ```ts
 import { describe, expect, it } from 'vitest'
@@ -98,12 +98,12 @@ describe('settingsMeta 废弃项移除', () => {
 })
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cd frontend && npx vitest run src/config/settingsMeta.test.ts`
 Expected: FAIL（6 个必填键 default 仍为长文案、scan_interval_minutes 仍存在）
 
-- [ ] **Step 3: 实现——替换 default 文案**
+- [x] **Step 3: 实现——替换 default 文案**
 
 `frontend/src/config/settingsMeta.ts` 中：
 
@@ -121,16 +121,16 @@ Expected: FAIL（6 个必填键 default 仍为长文案、scan_interval_minutes 
 | 160 | quark_default_folder | `可选，留空 = 不指定` | `可选` |
 | 168 | emby_series_library_ids | `可选，不选 = 不过滤` | `可选` |
 
-- [ ] **Step 4: 实现——删除废弃条目**
+- [x] **Step 4: 实现——删除废弃条目**
 
 删除 `frontend/src/config/settingsMeta.ts:197-201` 的 `scan_interval_minutes` 整个条目（含 label/desc/default 三字段）。`CRED_GROUP_ORDER`/`CRED_GROUP_LABELS` 中的 `'scan'` 分组保留（scan_baseline_required 仍存在）。
 
-- [ ] **Step 5: 运行测试确认通过**
+- [x] **Step 5: 运行测试确认通过**
 
 Run: `cd frontend && npx vitest run src/config/settingsMeta.test.ts`
 Expected: PASS（10 个文案断言 + 4 个废弃项断言全绿）
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add frontend/src/config/settingsMeta.ts frontend/src/config/settingsMeta.test.ts
