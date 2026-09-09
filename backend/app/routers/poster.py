@@ -4,7 +4,7 @@
 - 校验非法 → 400；配置误填 → 503；回源失败 → 502；未登录 → 401
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import JSONResponse, Response as FastAPIResponse
+from fastapi.responses import Response as FastAPIResponse
 
 from app.models import User
 from app.routers.deps import get_current_user
@@ -20,10 +20,7 @@ async def get_poster(
 ):
     """代理拉取 TMDB 图床海报图片。"""
     if not _validate_poster_path(p):
-        # 返回 400 Response 而非 raise HTTPException：路由函数直调测试
-        # 断言 resp.status_code==400（brief 验收形式）；ASGI 层语义与
-        # raise HTTPException 一致（400 + {"detail": ...}）。
-        return JSONResponse(status_code=400, content={"detail": "非法海报路径"})
+        raise HTTPException(status_code=400, detail="非法海报路径")
     try:
         content, content_type = await fetch_poster(p)
     except PosterUnavailable as exc:

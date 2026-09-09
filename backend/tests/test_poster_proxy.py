@@ -13,12 +13,11 @@ _USER = SimpleNamespace(id=1, role="user", username="u")
 
 def test_router_rejects_invalid_path(monkeypatch):
     """端点对非法路径返回 400，且不发起对外请求。"""
+    from fastapi import HTTPException
     fetch = AsyncMock()
     monkeypatch.setattr(poster_mod, "fetch_poster", fetch)
 
-    async def _run():
-        return await poster_router.get_poster(p="/t/p/../../etc/passwd", user=_USER)
-
-    resp = asyncio.run(_run())
-    assert resp.status_code == 400
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(poster_router.get_poster(p="/t/p/../../etc/passwd", user=_USER))
+    assert exc_info.value.status_code == 400
     fetch.assert_not_awaited()
