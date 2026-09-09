@@ -36,6 +36,7 @@ services:
       # 可用 .env 覆盖（生产请务必设强密码）；未设时回退默认 lumencloud（仅开发）
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lumencloud}
       POSTGRES_DB: lumencloud
+      TZ: Asia/Shanghai
     volumes:
       # PostgreSQL 数据目录
       - ./pgdata:/var/lib/postgresql/data
@@ -70,6 +71,7 @@ services:
       # 连接 db 服务（compose 内服务名解析；密码与 db.environment 取同一变量，
       # 同步改，避免两处不一致）
       DATABASE_URL: postgresql+asyncpg://lumen:${POSTGRES_PASSWORD:-lumencloud}@db:5432/lumencloud
+      TZ: Asia/Shanghai
     depends_on:
       db:
         condition: service_healthy

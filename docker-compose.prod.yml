@@ -45,6 +45,7 @@ services:
       # fail-closed：未设置 POSTGRES_PASSWORD 时 compose 报错、拒绝启动
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?生产环境必须设置 POSTGRES_PASSWORD}
       POSTGRES_DB: lumencloud
+      TZ: Asia/Shanghai
     volumes:
       - ./pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -74,6 +75,7 @@ services:
     environment:
       # 连接 db 服务（compose 内服务名解析；密码与 db.environment 取同一变量）
       DATABASE_URL: postgresql+asyncpg://lumen:${POSTGRES_PASSWORD:?生产环境必须设置 POSTGRES_PASSWORD}@db:5432/lumencloud
+      TZ: Asia/Shanghai
     depends_on:
       db:
         condition: service_healthy
