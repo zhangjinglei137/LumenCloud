@@ -46,6 +46,9 @@ const EP_STUBS = {
   'el-icon': { template: '<span><slot /></span>' },
   'el-empty': { template: '<div><slot /></div>' },
   'el-input-number': { template: '<input />' },
+  // 订阅状态选择（Task 3 修复轮 1）：label 文案渲染在 select 容器内
+  'el-select': { template: '<select><slot /></select>' },
+  'el-option': { template: '<option />' },
   // 分组导航（Task 3）：label 内容渲染在 ep-group-nav 容器内
   'el-radio-group': { template: '<div class="ep-group-nav"><slot /></div>' },
   'el-radio-button': { template: '<label><slot /></label>' },
@@ -109,7 +112,9 @@ describe('MediaDetailView 布局（media-detail-ui）', () => {
     await flushPromises()
     expect(wrapper.find('.ep-group-nav').exists()).toBe(true) // 有分组数据
     expect(wrapper.find('.header-settings').exists()).toBe(true) // admin 紧凑组
-    expect(wrapper.find('.transfer-queue-block').exists()).toBe(false) // 转存队列已移除
+    expect(wrapper.find('.header-settings select').exists()).toBe(true) // 订阅状态编辑入口（tracking/paused）
+    expect(wrapper.find('.queue-list').exists()).toBe(false) // 原转存队列区块已移除
+    expect(wrapper.html()).not.toContain('转存队列') // 详情页无转存队列
     const html = wrapper.html()
     expect(html).toContain('第一集') // 集数名称展示
     expect(html).toContain('S01E02') // 无名称行回退集号

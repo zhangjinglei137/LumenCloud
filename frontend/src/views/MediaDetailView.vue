@@ -247,6 +247,13 @@ async function onDelete() {
             <label class="hs-label">巡检间隔 (分钟)</label>
             <el-input-number v-model="form.scan_interval_minutes" :min="5" :step="5" size="small" />
           </div>
+          <div class="hs-item">
+            <label class="hs-label">状态</label>
+            <el-select v-model="form.status" size="small">
+              <el-option label="订阅中" value="tracking" />
+              <el-option label="已暂停" value="paused" />
+            </el-select>
+          </div>
           <el-button type="primary" :loading="saving" size="small" @click="saveSettings">保存</el-button>
         </div>
       </div>
