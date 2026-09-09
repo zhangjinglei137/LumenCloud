@@ -512,3 +512,71 @@ async def get_tv_all_episodes(tmdb_id: str | int) -> list[dict[str, Any]]:
     if out:
         _ALL_EPS_CACHE[cache_key] = (_now().timestamp(), out)
     return out
+
+
+# ---------------------------------------------------------------------------
+# 集信息持久化缓存（episode-status-cache）：episode_info_cache 表读写
+# ---------------------------------------------------------------------------
+# 注：此处沿用本模块顶部 import 的 async_session 全局名（测试/替换依赖通过
+# monkeypatch tmdb_mod.async_session 生效），不另起 _async_session 别名——
+# 模块级别名在 import 时一次性绑定真实 sessionmaker，patch 无法覆盖。
+from sqlalchemy import delete as _sa_delete, select as _sa_select, update as _sa_update  # noqa: E402
+from app.models import EpisodeInfoCache as _EpisodeInfoCache  # noqa: E402
+
+
+async def refresh_episode_info(tmdb_id: int) -> int:
+    """回源 TV 全部正片季每集信息并 upsert 到 episode_info_cache；返回写入行数。
+
+    复用 get_tv_all_episodes（含 zh-CN / season 过滤 / 降级语义）：回源失败或空 → 返回 0，
+    保留旧缓存（upsert 不动旧行）。仅供每日刷新任务 / 详情回源兜底调用。
+    """
+    episodes = await get_tv_all_episodes(tmdb_id)
+    if not episodes:
+        return 0
+    count = 0
+    async with async_session() as s:
+        async with s.begin():
+            for ep in episodes:
+                season = ep.get("season")
+                episode = ep.get("episode")
+                if season is None or episode is None:
+                    continue
+                row = await s.execute(
+                    _sa_select(_EpisodeInfoCache).where(
+                        _EpisodeInfoCache.tmdb_id == tmdb_id,
+                        _EpisodeInfoCache.season == season,
+                        _EpisodeInfoCache.episode == episode,
+                    )
+                )
+                existing = row.scalar_one_or_none()
+                if existing is None:
+                    s.add(_EpisodeInfoCache(
+                        tmdb_id=tmdb_id, season=season, episode=episode,
+                        name=ep.get("name"), air_date=ep.get("air_date"),
+                    ))
+                else:
+                    existing.name = ep.get("name")
+                    existing.air_date = ep.get("air_date")
+                count += 1
+    return count
+
+
+async def get_episode_info(tmdb_id: int) -> list[dict]:
+    """读 episode_info_cache，返回 [{season, episode, name, air_date}] 按 season/episode 升序。
+
+    无缓存返回 []（调用方回退回源或降级）。movie / 无 tmdb_id 场景由调用方控制不调用。
+    """
+    async with async_session() as s:
+        rows = (
+            (await s.execute(
+                _sa_select(_EpisodeInfoCache)
+                .where(_EpisodeInfoCache.tmdb_id == tmdb_id)
+                .order_by(_EpisodeInfoCache.season.asc(), _EpisodeInfoCache.episode.asc())
+            ))
+            .scalars()
+            .all()
+        )
+    return [
+        {"season": r.season, "episode": r.episode, "name": r.name, "air_date": r.air_date}
+        for r in rows
+    ]

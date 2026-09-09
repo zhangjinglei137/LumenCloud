@@ -503,3 +503,91 @@ def test_get_tv_all_episodes_network_error_returns_empty(monkeypatch):
         "app.services.tmdb.httpx.AsyncClient", lambda **kw: _BoomClient()
     )
     assert run(tmdb_mod.get_tv_all_episodes(433)) == []
+
+
+# ---------------------------------------------------------------------------
+# episode_info_cache 集信息缓存（episode-status-cache）
+# ---------------------------------------------------------------------------
+# 测试模式与 test_library_check.py 一致：同步 def test_ + run() 包装 +
+# in-memory SQLite（StaticPool）db fixture + monkeypatch tmdb_mod.async_session。
+from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import StaticPool
+
+from app.database import Base
+import app.models  # noqa: F401  注册全部 ORM 模型
+from app.models import EpisodeInfoCache  # noqa: F401
+
+
+@pytest.fixture()
+def db():
+    engine = create_async_engine(
+        "sqlite+aiosqlite://",
+        poolclass=StaticPool,
+        connect_args={"check_same_thread": False},
+    )
+    maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def _create():
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    run(_create())
+    yield maker
+    run(engine.dispose())
+
+
+def _seed_episode_info(db, rows):
+    async def _do():
+        async with db() as s:
+            for r in rows:
+                s.add(EpisodeInfoCache(**r))
+            await s.commit()
+    run(_do())
+
+
+def test_get_episode_info_empty_cache_returns_empty_list(db, monkeypatch):
+    monkeypatch.setattr(tmdb_mod, "async_session", db)
+    result = run(tmdb_mod.get_episode_info(12345))
+    assert result == []
+
+
+def test_get_episode_info_returns_sorted_episodes(db, monkeypatch):
+    monkeypatch.setattr(tmdb_mod, "async_session", db)
+    _seed_episode_info(db, [
+        {"tmdb_id": 9, "season": 1, "episode": 2, "name": "Ep2", "air_date": "2026-01-02"},
+        {"tmdb_id": 9, "season": 1, "episode": 1, "name": "Ep1", "air_date": "2026-01-01"},
+    ])
+    result = run(tmdb_mod.get_episode_info(9))
+    assert [(r["season"], r["episode"]) for r in result] == [(1, 1), (1, 2)]
+    assert result[0]["name"] == "Ep1"
+
+
+def test_refresh_episode_info_upserts_and_counts(db, monkeypatch):
+    monkeypatch.setattr(tmdb_mod, "async_session", db)
+    async def fake_all(tmdb_id):
+        return [
+            {"season": 1, "episode": 1, "air_date": "2026-01-01", "name": "A"},
+            {"season": 1, "episode": 2, "air_date": "2026-01-08", "name": "B"},
+        ]
+    monkeypatch.setattr(tmdb_mod, "get_tv_all_episodes", fake_all)
+    n = run(tmdb_mod.refresh_episode_info(10))
+    assert n == 2
+    async def _count():
+        async with db() as s:
+            return len((await s.execute(select(EpisodeInfoCache).where(EpisodeInfoCache.tmdb_id == 10))).scalars().all())
+    assert run(_count()) == 2
+
+
+def test_refresh_episode_info_empty_preserves_old(db, monkeypatch):
+    monkeypatch.setattr(tmdb_mod, "async_session", db)
+    _seed_episode_info(db, [{"tmdb_id": 11, "season": 1, "episode": 1, "name": "Old", "air_date": "2026-01-01"}])
+    async def fake_empty(tmdb_id):
+        return []
+    monkeypatch.setattr(tmdb_mod, "get_tv_all_episodes", fake_empty)
+    n = run(tmdb_mod.refresh_episode_info(11))
+    assert n == 0
+    async def _count():
+        async with db() as s:
+            return len((await s.execute(select(EpisodeInfoCache).where(EpisodeInfoCache.tmdb_id == 11))).scalars().all())
+    assert run(_count()) == 1
