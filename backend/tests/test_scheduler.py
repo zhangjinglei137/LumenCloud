@@ -11,13 +11,41 @@
 import asyncio
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import StaticPool
 
+import app.models  # noqa: F401  注册全部 ORM 模型
 import app.scheduler as scheduler_mod
+from app.database import Base
+from app.models import Media
 from app.scheduler import get_job_enabled
 
 
 def run(coro):
     return asyncio.run(coro)
+
+
+@pytest.fixture()
+def _db_maker():
+    """隔离 in-memory SQLite（StaticPool 共享连接），create_all 最新模型结构。
+
+    episode_info_refresh 测试注入用：查询真实执行（media 表真实存在），
+    避免假绿（无表时 OperationalError 被 job 包装吞掉、断言空转通过）。
+    """
+    engine = create_async_engine(
+        "sqlite+aiosqlite://",
+        poolclass=StaticPool,
+        connect_args={"check_same_thread": False},
+    )
+    maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def _create():
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    run(_create())
+    yield maker
+    run(engine.dispose())
 
 
 def _fake_get_config_value(config: dict):
@@ -84,7 +112,13 @@ def test_config_read_error_propagates(monkeypatch):
         run(get_job_enabled(scheduler_mod.JOB_SCAN_ALL_MEDIA))
 
 
-def test_episode_info_refresh_job_runs_for_tv_media(monkeypatch):
+def test_episode_info_refresh_job_empty_db_no_calls(_db_maker, monkeypatch):
+    """空库：查询真实成功（0 行）→ 循环不执行 → refresh 0 调用。
+
+    修复假绿：注入隔离 in-memory SQLite（create_all 真实建 media 表）并
+    monkeypatch eir.async_session，查询真实执行而非 no-such-table 异常被
+    job 包装吞掉后断言空转通过。
+    """
     from app.tasks import episode_info_refresh as eir
     from app.tasks.episode_info_refresh import episode_info_refresh_job
 
@@ -93,6 +127,33 @@ def test_episode_info_refresh_job_runs_for_tv_media(monkeypatch):
         calls.append(tmdb_id)
         return 1
     monkeypatch.setattr(eir, "refresh_episode_info", fake_refresh)
-    # media 查询返回空 → 不调用（框架已建表）
+    monkeypatch.setattr(eir, "async_session", _db_maker)
     run(episode_info_refresh_job())
     assert calls == []  # 空库不刷
+
+
+def test_episode_info_refresh_job_runs_for_tv_media(_db_maker, monkeypatch):
+    """tv media（tmdb_id 非空）逐条刷新；movie / tmdb_id 为空的 tv 不刷。"""
+    from app.tasks import episode_info_refresh as eir
+    from app.tasks.episode_info_refresh import episode_info_refresh_job
+
+    async def _seed():
+        async with _db_maker() as s:
+            s.add_all([
+                Media(title="测试剧", media_type="tv", tmdb_id=101, status="tracking"),
+                Media(title="另一剧", media_type="tv", tmdb_id=102, status="tracking"),
+                Media(title="电影", media_type="movie", tmdb_id=103, status="tracking"),
+                Media(title="无 tmdb 剧", media_type="tv", tmdb_id=None, status="tracking"),
+            ])
+            await s.commit()
+
+    calls = []
+    async def fake_refresh(tmdb_id):
+        calls.append(tmdb_id)
+        return 1
+    monkeypatch.setattr(eir, "refresh_episode_info", fake_refresh)
+    monkeypatch.setattr(eir, "async_session", _db_maker)
+
+    run(_seed())
+    run(episode_info_refresh_job())
+    assert sorted(calls) == [101, 102]  # 仅 tv 且 tmdb_id 非空
