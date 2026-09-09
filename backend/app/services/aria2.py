@@ -67,11 +67,21 @@ class Aria2Client:
         if not self._rpc_url:
             raise Aria2Unavailable("ARIA2_RPC_URL 未配置，aria2 RPC 不可用")
 
+        # token 前缀归一化（2026-09 修复）：配置值可能已带 `token:` 前缀
+        # （如 .env 的 ARIA2_TOKEN=token:xxx），无脑再拼一次会变 `token:token:xxx`
+        # → aria2 拒绝 → HTTP 400 → 下载队列永远 pending。已带前缀则原样透传，
+        # 否则补前缀；空值保持传 ""（与修复前行为一致）。
+        raw_token = (self._token or "").strip()
+        if raw_token:
+            secret = raw_token if raw_token.startswith("token:") else f"token:{raw_token}"
+        else:
+            secret = ""
+
         body = {
             "jsonrpc": "2.0",
             "id": "lumencloud",
             "method": method,
-            "params": [f"token:{self._token}" if self._token else "", *params],
+            "params": [secret, *params],
         }
         async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
             try:

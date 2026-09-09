@@ -57,3 +57,72 @@ def test_add_uri_and_remove_params_shapes():
     m_rm, p_rm = calls[1]
     assert m_rm == "aria2.remove"
     assert p_rm == ["gid123"]
+
+
+# ---------------------------------------------------------------------------
+# token 前缀归一化回归（下载队列卡驻修复）
+# ---------------------------------------------------------------------------
+# 背景：.env 的 ARIA2_TOKEN 值本身已带 `token:` 前缀（token:zhangxiaolei...），
+# _rpc 无脑再拼一次 `f"token:{token}"` → 线上 wire 值变 `token:token:...`
+# → aria2 RPC 拒绝 → HTTP 400 Unauthorized → 下载队列永远 pending。
+# 规则：配置值已带 `token:` 前缀时原样透传（单前缀），否则补前缀；空值保持传 ""。
+from app.services import config_store as _cs
+from app.services import aria2 as aria2_mod
+
+
+class _FakePostResponse:
+    """最小 fake httpx 响应：_rpc 只读 status_code 与 json()。"""
+
+    def __init__(self, status_code: int = 200):
+        self.status_code = status_code
+
+    def json(self):
+        return {"jsonrpc": "2.0", "id": "lumencloud", "result": "ok"}
+
+
+class _FakePostClient:
+    """最小 fake httpx.AsyncClient：记录 post(json=...) 构造的请求体（含 wire token）。"""
+
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def post(self, url, json=None, **kwargs):
+        self.calls.append(json or {})
+        return _FakePostResponse(200)
+
+
+def _rpc_body(monkeypatch, aria2_token: str) -> dict:
+    """注入 config_store（aria2_rpc_url/aria2_token）并捕获 _rpc 发出的 body。"""
+    http_client = _FakePostClient()
+    monkeypatch.setattr(aria2_mod.httpx, "AsyncClient", lambda **kw: http_client)
+    monkeypatch.setattr(_cs, "_cache", {
+        "aria2_rpc_url": "http://aria2.test:6800/jsonrpc",
+        "aria2_token": aria2_token,
+    })
+    asyncio.run(aria2_mod.client._rpc("aria2.getGlobalStat", []))
+    assert len(http_client.calls) == 1, "_rpc 应恰好发出一发 POST"
+    return http_client.calls[0]
+
+
+def test_rpc_token_not_prefixed_twice_when_already_prefixed(monkeypatch):
+    """配置 token 已带 `token:` 前缀 → wire params[0] 保持单前缀（token:token: 回归）。"""
+    body = _rpc_body(monkeypatch, "token:zhangxiaolei-raw")
+    assert body["params"][0] == "token:zhangxiaolei-raw"  # 不再重复添加前缀
+
+
+def test_rpc_token_prefixed_when_plain(monkeypatch):
+    """配置 token 不带前缀 → wire params[0] 自动补 `token:` 前缀（原契约保持）。"""
+    body = _rpc_body(monkeypatch, "plain-secret")
+    assert body["params"][0] == "token:plain-secret"
+
+
+def test_rpc_token_empty_stays_empty(monkeypatch):
+    """token 未配置 → wire params[0] 恒为 ""（无需鉴权时保持原行为）。"""
+    body = _rpc_body(monkeypatch, "")
+    assert body["params"][0] == ""
