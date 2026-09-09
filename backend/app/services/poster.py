@@ -57,6 +57,45 @@ def _validate_poster_path(p: str) -> bool:
     return True
 
 
+def _base_url() -> str:
+    """图床根地址（Task 3 引入镜像配置前，临时返回官方图床地址）。"""
+    return POSTER_DEFAULT_BASE
+
+
+def _client_factory():
+    """httpx.AsyncClient 实例化入口（测试 monkeypatch 挂点）。"""
+    return httpx.AsyncClient(timeout=REQUEST_TIMEOUT)
+
+
+def _alert(path: str) -> None:
+    """节流告警：60s 内同 path 只 warning 一次。"""
+    now = time.monotonic()
+    last = _ALERT_COOLDOWN.get(path)
+    if last is None or now - last >= _POSTER_ALERT_TTL:
+        _ALERT_COOLDOWN[path] = now
+        logger.warning("海报代理回源失败 path=%s", path)
+    # 清理过期键，防无限增长
+    if len(_ALERT_COOLDOWN) > _POSTER_CACHE_MAX * 2:
+        for k in [k for k, ts in _ALERT_COOLDOWN.items() if now - ts >= _POSTER_ALERT_TTL]:
+            _ALERT_COOLDOWN.pop(k, None)
+
+
 async def fetch_poster(p: str) -> tuple[bytes, str]:
-    """回源拉取海报（Task 2 实现完整逻辑；此处占位保证路由可测试）。"""
-    raise NotImplementedError
+    """回源拉取海报图片。
+
+    返回 (bytes, content_type)。失败：PosterUnavailable（配置误填/缺失）或
+    Exception（网络/非 2xx，路由映射 502）。
+    """
+    base = _base_url()  # Task 3 实现；先临时内联官方地址
+    url = f"{base}{p}"
+    try:
+        async with _client_factory() as client:
+            resp = await client.get(url)
+    except httpx.HTTPError as exc:
+        _alert(p)
+        raise Exception(f"网络请求失败: {exc}") from exc
+    if resp.status_code != 200:
+        _alert(p)
+        raise Exception(f"上游返回 HTTP {resp.status_code}")
+    ctype = resp.headers.get("content-type", "image/jpeg")
+    return resp.content, ctype
