@@ -607,7 +607,9 @@ def test_queue_scan_tasks_latest_only_and_orphan_empty(_router_db):
 
     async def _case():
         async with _router_db() as s:
-            rows = await list_queue(user=MagicMock(), session=s, limit=100, offset=0)
+            res = await list_queue(user=MagicMock(), session=s, limit=100, offset=0)
+            rows = res["items"]
+            assert res["total"] == 2  # 两条活跃 dq（真实 media + 孤儿），巡检 TaskRun 不参与
             by_id = {r["media_id"]: r for r in rows}
             # 真实 media 行以扁平原样返回，无树字段
             parent = by_id[mid]

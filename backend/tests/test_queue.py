@@ -42,6 +42,10 @@ def _admin():
     return types.SimpleNamespace(role="admin")
 
 
+def _guest():
+    return types.SimpleNamespace(role="guest")
+
+
 @pytest.fixture()
 def db():
     """独立 in-memory SQLite（StaticPool 共享连接）→ 返回 sessionmaker。"""
@@ -167,8 +171,10 @@ def test_list_flat_union_dq_tq_with_fields(db, env):
     async def _case():
         async with db() as s:
             return await queue_mod.list_queue(user=_admin(), session=s)
-    rows = run(_case())
+    res = run(_case())
+    rows = res["items"]
 
+    assert res["total"] == 3
     assert len(rows) == 3
     by_ep = {r["episode"]: r for r in rows}
     # 扁平行：无 children / 聚合字段（非影视分组树）
@@ -203,9 +209,11 @@ def test_list_flat_excludes_terminal_states(db, env):
     async def _case():
         async with db() as s:
             return await queue_mod.list_queue(user=_admin(), session=s)
-    rows = run(_case())
+    res = run(_case())
+    rows = res["items"]
 
     episodes = {r["episode"] for r in rows}
+    assert res["total"] == 8
     assert episodes == {"S01E04", "S01E05", "S01E06", "S01E07", "S01E08", "S01E09",
                         "S01E11", "S01E12"}
     for term in ("S01E01", "S01E02", "S01E03", "S01E10"):
@@ -222,15 +230,18 @@ def test_list_flat_dedup_promoted_snapshot(db, env):
     async def _case():
         async with db() as s:
             return await queue_mod.list_queue(user=_admin(), session=s)
-    rows = run(_case())
+    res = run(_case())
+    rows = res["items"]
 
+    assert res["total"] == 1
     assert len(rows) == 1
     assert rows[0]["id"] == dq_id and rows[0]["episode"] == "S01E01"
     assert rows[0]["status"] == "pending"
 
 
 def test_list_flat_contract_fields_and_no_credentials(db, env):
-    """扁平行契约：恰好 10 字段定界；敏感凭据与树字段一律不返回。"""
+    """扁平行契约：恰好 12 字段定界（含 share_code/size_estimated，无 share_url 键）；
+    admin 明文 share_code；敏感凭据与树字段一律不返回。"""
     mid = run(seed_media(db))
     run(seed_dq(db, mid, episode="S01E01", status="downloading", share_code="AbCd1234XyZq"))
     run(seed_tq(db, mid, episode="S01E02", status="unmatched", share_code="TqXxYyZz1234"))
@@ -238,33 +249,85 @@ def test_list_flat_contract_fields_and_no_credentials(db, env):
     async def _case():
         async with db() as s:
             return await queue_mod.list_queue(user=_admin(), session=s)
-    rows = run(_case())
+    res = run(_case())
+    rows = res["items"]
 
+    assert res["total"] == 2
     assert len(rows) == 2
+    by_ep = {r["episode"]: r for r in rows}
+    # admin 明文 share_code（12 位），size_estimated 契约键先行（Task 2 前恒 False）
+    assert by_ep["S01E01"]["share_code"] == "AbCd1234XyZq"
+    assert by_ep["S01E02"]["share_code"] == "TqXxYyZz1234"
+    assert all(r["size_estimated"] is False for r in rows)
     for r in rows:
         assert set(r.keys()) == {"id", "media_id", "title", "episode", "status", "node",
-                                 "file_name", "file_size", "updated_at", "enqueued_at"}
-        for f in ("share_code", "stoken", "receive_code", "fid_tokens", "pwd_id",
+                                 "file_name", "file_size", "share_code", "size_estimated",
+                                 "updated_at", "enqueued_at"}
+        for f in ("stoken", "receive_code", "fid_tokens", "pwd_id",
                   "folder_id", "fids", "tq_status", "silent_until", "share_code_tail",
                   "error", "children", "aggregate_status", "probe_counts", "scan_tasks"):
             assert f not in r
 
 
 def test_list_download_flat_type_download(db, env):
-    """?type=download → 下载队列扁平列表（§8.1 下载队列 Tab，含终态可选/全量）。"""
+    """?type=download → 下载队列扁平列表（§8.1 Tab；活跃态过滤：终态 done 不再返回）。"""
     mid = run(seed_media(db))
     dq_id = run(seed_dq(db, mid, episode="S01E01", status="downloading"))
-    run(seed_dq(db, mid, episode="S01E02", status="done"))  # 终态仍返回（下载队列 Tab 全量）
+    run(seed_dq(db, mid, episode="S01E02", status="done"))  # 终态被活跃态过滤剔除
 
     async def _case():
         async with db() as s:
             return await queue_mod.list_queue(user=_admin(), session=s, type="download")
-    rows = run(_case())
-    assert len(rows) == 2
-    row = next(r for r in rows if r["id"] == dq_id)
-    assert row["media_title"] == "测试剧"
-    assert row["status"] == "downloading" and row["enqueued_at"] is not None
-    assert row["node_attempt"] == 0
+    res = run(_case())
+    rows = res["items"]
+    assert res["total"] == 1
+    assert len(rows) == 1
+    assert rows[0]["id"] == dq_id
+    assert rows[0]["media_title"] == "测试剧"
+    assert rows[0]["status"] == "downloading" and rows[0]["enqueued_at"] is not None
+    assert rows[0]["node_attempt"] == 0
+
+
+def test_list_share_code_admin_vs_guest(db, env):
+    """share_code 脱敏契约（Task 1）：admin 两视图明文；guest 一律 null。
+
+    flat 契约不输出 share_url 键（仅 download 视图携带），故 guest 脱敏断言
+    分视图：flat 验 share_code None + 无 share_url 键；download 验两者均 None。
+    """
+    mid = run(seed_media(db))
+    run(seed_dq(db, mid, episode="S01E01", status="pending", share_code="AbCd1234XyZq"))
+    run(seed_tq(db, mid, episode="S01E02", status="ready", share_code="TqXxYyZz1234"))
+    run(seed_dq(db, mid, episode="S01E03", status="downloading", share_code="AbCd1234XyZq"))
+
+    async def _flat(user):
+        async with db() as s:
+            return await queue_mod.list_queue(user=user, session=s)
+
+    async def _download(user):
+        async with db() as s:
+            return await queue_mod.list_queue(user=user, session=s, type="download")
+
+    # admin flat：DQ/TQ 均明文 share_code；flat 契约无 share_url 键
+    res = run(_flat(_admin()))
+    by_ep = {r["episode"]: r for r in res["items"]}
+    assert by_ep["S01E01"]["share_code"] == "AbCd1234XyZq"
+    assert by_ep["S01E02"]["share_code"] == "TqXxYyZz1234"
+    assert all("share_url" not in r for r in res["items"])
+
+    # admin download：明文 share_code + share_url 由 share_code 构造
+    res = run(_download(_admin()))
+    row = next(r for r in res["items"] if r["episode"] == "S01E03")
+    assert row["share_code"] == "AbCd1234XyZq"
+    assert row["share_url"] == "https://pan.quark.cn/s/AbCd1234XyZq"
+
+    # guest flat：share_code 全 null；无 share_url 键（不泄露凭据）
+    res = run(_flat(_guest()))
+    assert all(r["share_code"] is None for r in res["items"])
+    assert all("share_url" not in r for r in res["items"])
+
+    # guest download：share_code / share_url 均 null
+    res = run(_download(_guest()))
+    assert all(r["share_code"] is None and r["share_url"] is None for r in res["items"])
 
 
 # ---------------------------------------------------------------------------

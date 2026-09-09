@@ -36,8 +36,10 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from app.main import app  # noqa: E402
 
-# §9.1 网盘凭据字段（L8 树 DTO 白名单）：任何角色都不应返回
-_SENSITIVE_QUEUE_FIELDS = {"share_code", "stoken", "receive_code", "fid_tokens", "pwd_id", "folder_id", "fids"}
+# §9.1 网盘凭据字段（L8 树 DTO 白名单）：任何角色都不应返回。
+# share_code 例外——Task 1 契约：admin 明文返回、guest 一律 null（键存在），
+# 故从凭据字段集拆出单独断言。
+_QUEUE_CREDENTIAL_FIELDS_EX_SHARE_CODE = {"stoken", "receive_code", "fid_tokens", "pwd_id", "folder_id", "fids"}
 
 
 def _auth(token: str) -> dict:
@@ -48,14 +50,21 @@ async def _seed_queue_data():
     """注入一条 pending + 一条 failed 队列数据，供脱敏与 retry 断言（同事件循环）。
 
     影视下载两队列重设计后防重权威源 = download_queue（§3.2），树/重试均以其为对象。
+    队列表先清空：同 pytest 进程内与 test_queue_list 等共享模块级 engine/数据库
+    （后导入模块的 LUMENCLOUD_DATA_DIR 设置对已缓存的 app.main 失效），先清空
+    保证 total==1 / admin 明文断言不依赖运行顺序。
     """
     from datetime import datetime, timezone
 
+    from sqlalchemy import delete
+
     from app.database import async_session
-    from app.models import DownloadQueue, EpisodeState, Media
+    from app.models import DownloadQueue, EpisodeState, Media, TaskQueue
 
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     async with async_session() as session:
+        await session.execute(delete(DownloadQueue))
+        await session.execute(delete(TaskQueue))
         media = Media(title="脱敏测试影视", status="tracking", in_emby=False)
         session.add(media)
         await session.flush()
@@ -172,11 +181,12 @@ def test_full_auth_and_api_flow():
         seed = client.portal.call(_seed_queue_data)
         media_id, failed_dq_id = seed["media_id"], seed["failed_dq_id"]
 
-        # guest 视图：扁平任务列表（Task 9 契约）—— 活跃行合一，终态 failed 已剔除
+        # guest 视图：扁平任务列表（Task 1 契约 {items,total}）—— 活跃行合一，终态 failed 已剔除
         r = client.get("/api/queue", headers=_auth(guest_tok))
         assert r.status_code == 200
-        rows = r.json()
-        assert isinstance(rows, list)
+        body = r.json()
+        assert isinstance(body, dict) and body["total"] == 1
+        rows = body["items"]
         row = next((r for r in rows if r["episode"] == "S01E01"), None)
         assert row is not None
         assert row["media_id"] == media_id
@@ -184,19 +194,23 @@ def test_full_auth_and_api_flow():
         assert row["status"] == "pending"
         assert row["node"] == "pending"
         assert row["file_name"] == "f01.mkv"
-        # 扁平契约：无树字段、无凭据
+        # 扁平契约：无树字段；凭据不泄露（share_code 键存在但 guest 一律 null，
+        # 其余凭据字段不在行内）
         for r in rows:
             assert "children" not in r and "aggregate_status" not in r and "scan_tasks" not in r
-            for f in _SENSITIVE_QUEUE_FIELDS:
+            assert r["share_code"] is None
+            for f in _QUEUE_CREDENTIAL_FIELDS_EX_SHARE_CODE:
                 assert f not in r
 
-        # admin 视图：与 guest 同构（扁平白名单），share_code 亦不掩码返回
+        # admin 视图：与 guest 同构（扁平白名单），share_code 明文返回
         r = client.get("/api/queue", headers=_auth(admin_tok))
         assert r.status_code == 200
-        a_rows = r.json()
-        assert isinstance(a_rows, list)
+        ab = r.json()
+        assert isinstance(ab, dict)
+        a_rows = ab["items"]
+        assert all(r.get("share_code") == "AbCd1234XyZq" for r in a_rows)  # admin 明文
         for r in a_rows:
-            for f in _SENSITIVE_QUEUE_FIELDS:
+            for f in _QUEUE_CREDENTIAL_FIELDS_EX_SHARE_CODE:
                 assert f not in r
 
         # media 详情：episode_state 凭据分级（episode_state 按 updated_at/id 倒序，
@@ -331,7 +345,8 @@ def test_full_auth_and_api_flow():
         )
         # retry 重置为 pending + retry_count 归零（download_queue 为防重权威源）
         r = client.get("/api/queue", headers=_auth(admin_tok))
-        by_ep = {row["episode"]: row for row in r.json()}
+        body = r.json()
+        by_ep = {row["episode"]: row for row in body["items"]}
         assert by_ep["S01E02"]["node"] == "pending"
 
         # ---------- 通知铃铛 ----------
