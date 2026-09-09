@@ -354,12 +354,12 @@ git commit -m "feat(settings): 移除扫描间隔废弃配置项白名单并加�
 - Consumes: `SettingsView.vue` 渲染结果；mock 的 `useSettingsStore`/`useAuthStore`
 - Produces: 组件结构回归断言（必填标签、清除按钮同行、废弃项不渲染）
 
-- [ ] **Step 1: 安装组件测试依赖**
+- [x] **Step 1: 安装组件测试依赖**
 
 Run: `cd frontend && npm install -D @vue/test-utils jsdom`
 Expected: package.json 新增 `@vue/test-utils`、`jsdom` devDependencies，node_modules 安装成功
 
-- [ ] **Step 2: 写测试 `frontend/src/views/SettingsView.test.ts`**
+- [x] **Step 2: 写测试 `frontend/src/views/SettingsView.test.ts`**
 
 ```ts
 // @vitest-environment jsdom
@@ -459,17 +459,17 @@ describe('SettingsView 服务凭据表单', () => {
 
 > 注意：若 `getSettingMeta` 之外的 store 字段（如 `settings.config`）被 onMounted 使用导致 mount 报错，按实际报错补齐 mock 字段（`system_config` 与 `config` 双键，见 SettingsView.vue:47-49）。
 
-- [ ] **Step 3: 运行测试确认通过**
+- [x] **Step 3: 运行测试确认通过**
 
 Run: `cd frontend && npx vitest run src/views/SettingsView.test.ts`
 Expected: PASS（3 个用例：必填标签、同行结构、废弃项不渲染）。若失败为 mock 缺失，补齐 store stub 后重跑。
 
-- [ ] **Step 4: 全量前端测试确认无回归**
+- [x] **Step 4: 全量前端测试确认无回归**
 
 Run: `cd frontend && npm run test`
 Expected: PASS（现有 utils 测试 + 新增 settingsMeta/SettingsView 测试全绿）
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add frontend/package.json frontend/package-lock.json frontend/src/views/SettingsView.test.ts
