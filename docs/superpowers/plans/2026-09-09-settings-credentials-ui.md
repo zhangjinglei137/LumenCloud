@@ -487,22 +487,22 @@ git commit -m "test(settings): 新增设置页组件测试与必填文案测试"
 - Consumes: Task 1-4 的产物
 - Produces: 残留检查结论、构建/测试证据
 
-- [ ] **Step 1: grep「已废弃，不再生效」无残留**
+- [x] **Step 1: grep「已废弃，不再生效」无残留**
 
 Run: `cd frontend && grep -rn "已废弃，不再生效" src/`
 Expected: 无输出
 
-- [ ] **Step 2: grep「扫描间隔（分钟）（已废弃）」无残留**
+- [x] **Step 2: grep「扫描间隔（分钟）（已废弃）」无残留**
 
 Run: `cd frontend && grep -rn "扫描间隔" src/`
 Expected: 无输出（settingsMeta 条目已删除；MediaDetailView 不含此文案）
 
-- [ ] **Step 3: 确认 per-media 字段保留**
+- [x] **Step 3: 确认 per-media 字段保留**
 
 Run: `grep -rn "scan_interval_minutes" backend/app/models/__init__.py backend/app/routers/media.py frontend/src/views/MediaDetailView.vue frontend/src/types/index.ts`
 Expected: 全部命中（模型列、media.py:113/293、MediaDetailView:38/49/342、types:52/104 保留，未被动过）
 
-- [ ] **Step 4: 全量验证**
+- [x] **Step 4: 全量验证**
 
 Run: `cd frontend && npm run build`
 Expected: vue-tsc + vite build 通过
@@ -510,7 +510,7 @@ Expected: vue-tsc + vite build 通过
 Run: `cd backend && pytest -q`
 Expected: 全部测试通过（含扩展后的 test_settings_retired.py）
 
-- [ ] **Step 5: 汇总验证证据**
+- [x] **Step 5: 汇总验证证据**
 
 记录到 `.comet.yaml`（若上一步 pytest 为全量）：
 

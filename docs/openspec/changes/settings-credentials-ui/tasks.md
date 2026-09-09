@@ -10,7 +10,7 @@
 
 - [x] 2.1 删除 settingsMeta.ts 中 `scan_interval_minutes` 条目，验证设置页不再出现「扫描间隔（分钟）（已废弃）」
 - [x] 2.2 backend/app/routers/settings.py editable_keys 白名单移除 `scan_interval_minutes`，验证该键不再可编辑且其余键不受影响
-- [ ] 2.3 全仓 grep 确认「已废弃，不再生效」展示文案无残留（保留 media 模型列与详情页 per-media 字段），验证 grep 干净
+- [x] 2.3 全仓 grep 确认「已废弃，不再生效」展示文案无残留（保留 media 模型列与详情页 per-media 字段），验证 grep 干净
 
 ## 3. 验证
 
