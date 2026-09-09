@@ -746,7 +746,7 @@ git commit -m "feat(poster): 前端海报统一走后端代理并删除直连常
 - Consumes: `_POSTER_CACHE`（模块级 dict）、`time.monotonic()`
 - Produces: `fetch_poster` 增加缓存层（对外签名不变）
 
-- [ ] **Step 1: 写失败测试（缓存命中/过期/上限）**
+- [x] **Step 1: 写失败测试（缓存命中/过期/上限）**
 
 追加到 `tests/test_poster_proxy.py`：
 
@@ -793,12 +793,12 @@ def test_cache_cap_drops_writes(monkeypatch):
     assert poster_mod._POSTER_CACHE.get("/t/p/w500/overflow.jpg") is None  # 未写入
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `python -m pytest tests/test_poster_proxy.py -v`
 Expected: FAIL（3 个缓存用例）
 
-- [ ] **Step 3: 实现缓存读写**
+- [x] **Step 3: 实现缓存读写**
 
 `services/poster.py`：`fetch_poster` 开头加缓存读，成功回源后加缓存写：
 
@@ -828,12 +828,12 @@ async def fetch_poster(p: str) -> tuple[bytes, str]:
     return resp.content, ctype
 ```
 
-- [ ] **Step 4: 运行确认通过**
+- [x] **Step 4: 运行确认通过**
 
 Run: `python -m pytest tests/test_poster_proxy.py tests/test_poster_path_validation.py -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/app/services/poster.py backend/tests/test_poster_proxy.py
