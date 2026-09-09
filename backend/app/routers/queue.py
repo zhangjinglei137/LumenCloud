@@ -69,7 +69,11 @@ def _now() -> datetime:
 
 
 def _iso(dt: Optional[datetime]) -> Optional[str]:
-    return dt.isoformat() + "Z" if dt else None
+    if not dt:
+        return None
+    if dt.tzinfo is None:
+        return dt.isoformat() + "Z"
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 # 兼容旧模块名（其他 lane / capacity.py 仍可能按此名导入该 helper）
