@@ -287,7 +287,7 @@ git commit -m "feat(poster): 新增海报代理路径校验与路由骨架"
 - Consumes: `_validate_poster_path`、`PosterUnavailable`、`config_store.get("tmdb_poster_proxy", settings.TMDB_POSTER_PROXY)`（Task 3 前该 key 未配置恒为空 → 回退官方）
 - Produces: `fetch_poster(p: str) -> tuple[bytes, str]` — 返回 (图片 bytes, content_type)；配置误填抛 `PosterUnavailable`；网络/非 2xx 抛 `Exception`（路由映射 502）
 
-- [ ] **Step 1: 写失败测试（回源成功/失败/节流）**
+- [x] **Step 1: 写失败测试（回源成功/失败/节流）**
 
 追加到 `tests/test_poster_proxy.py`：
 
@@ -346,12 +346,12 @@ def test_fetch_poster_network_error_raises(monkeypatch):
         asyncio.run(poster_mod.fetch_poster("/t/p/w500/x.jpg"))
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `python -m pytest tests/test_poster_proxy.py -v`
 Expected: FAIL — `fetch_poster` 抛 `NotImplementedError`
 
-- [ ] **Step 3: 实现回源逻辑**
+- [x] **Step 3: 实现回源逻辑**
 
 `services/poster.py` 增补：
 
@@ -404,12 +404,12 @@ def _base_url() -> str:
     return POSTER_DEFAULT_BASE
 ```
 
-- [ ] **Step 4: 运行确认通过**
+- [x] **Step 4: 运行确认通过**
 
 Run: `python -m pytest tests/test_poster_proxy.py tests/test_poster_path_validation.py -v`
 Expected: PASS（Test 1 中 test_router_rejects_invalid_path 也通过）
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/app/services/poster.py backend/tests/test_poster_proxy.py
