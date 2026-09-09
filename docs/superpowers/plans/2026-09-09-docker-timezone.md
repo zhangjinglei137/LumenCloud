@@ -249,7 +249,7 @@ describe('东八区时间格式化（docker-timezone）', () => {
 Run: `cd frontend && npx vitest run src/utils/format.test.ts`
 Expected: FAIL（`timeAgo` 签名不匹配 / 断言不通过）
 
-- [ ] **Step 3: 实现 format.ts**
+- [x] **Step 3: 实现 format.ts**
 
 `formatTime` 改为：
 
@@ -316,17 +316,17 @@ export function timeUntil(iso: string | null | undefined, now: number = Date.now
 
 注意：`timeAgo`/`timeUntil` 新增可选参数不破坏既有调用（默认 `Date.now()`）。
 
-- [ ] **Step 4: 运行测试验证通过**
+- [x] **Step 4: 运行测试验证通过**
 
 Run: `cd frontend && npx vitest run src/utils/format.test.ts`
 Expected: 全部 PASS（含既有 episodeStatus 断言）
 
-- [ ] **Step 5: 全量前端测试**
+- [x] **Step 5: 全量前端测试**
 
 Run: `cd frontend && npm run test`
 Expected: 全绿
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add frontend/src/utils/format.ts frontend/src/utils/format.test.ts
