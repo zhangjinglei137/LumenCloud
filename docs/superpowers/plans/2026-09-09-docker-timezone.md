@@ -344,22 +344,22 @@ git commit -m "feat(frontend): 时间格式化显式按东八区渲染"
 - Consumes: Task 3 的统一入口
 - Produces: 核查记录——所有时间展示点均走统一入口，无直接 `new Date` 渲染绕行
 
-- [ ] **Step 1: grep 全仓调用点**
+- [x] **Step 1: grep 全仓调用点**
 
 Run: `cd frontend && grep -rn "formatTime\|timeAgo\|timeUntil" src --include="*.vue" --include="*.ts" | grep -v "\.test\."`
 Expected: 9 个文件均 import 自 `@/utils/format`（或相对路径 utils/format），无内联日期格式化；记录结果
 
-- [ ] **Step 2: 核查绕行点**
+- [x] **Step 2: 核查绕行点**
 
 Run: `cd frontend && grep -rn "new Date(" src --include="*.vue" | grep -v "test"`
 Expected: 仅 `LogsView.vue` 的时长相对差计算（两端解析一致即正确，记录不改造）；`isFutureDate` 为日期粒度判定（不改）
 
-- [ ] **Step 3: 前端构建**
+- [x] **Step 3: 前端构建**
 
 Run: `cd frontend && npm run build`
 Expected: `vue-tsc --noEmit` 无类型错误 + `vite build` 成功
 
-- [ ] **Step 4: 提交（无代码改动则跳过）**
+- [x] **Step 4: 提交（无代码改动则跳过）**
 
 若 Step 2 发现必须改的绕行点，修复后提交；否则本任务无提交。
 
