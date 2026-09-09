@@ -2,6 +2,7 @@
 change: media-detail-ui
 design-doc: docs/superpowers/specs/2026-09-10-media-detail-ui-design.md
 base-ref: c94c3a6252adf9711d89e14c815edd947f9187bd
+archived-with: 2026-09-10-media-detail-ui
 ---
 
 # media-detail-ui 实施计划（影视详情页信息层级与集数浏览）
