@@ -2,7 +2,7 @@
 
 ## 1. 前端：清除按钮位置与必填文案
 
-- [ ] 1.1 SettingsView.vue `.cred-field` 改 flex 布局，清除按钮移入输入框同一行（紧跟输入框后；quark「验证 folderId」保留同字段内），验证清除按钮与输入框同行且窄屏不挤压
+- [x] 1.1 SettingsView.vue `.cred-field` 改 flex 布局，清除按钮移入输入框同一行（紧跟输入框后；quark「验证 folderId」保留同字段内），验证清除按钮与输入框同行且窄屏不挤压
 - [x] 1.2 settingsMeta.ts 精简 default 文案：含「必填（否则…）」的字段统一为「必填」、可选字段为「可选」短标签（长描述保留在 desc），验证设置页必填标签简洁
 - [ ] 1.3 前端测试补充：必填标签渲染、清除按钮位置结构用例，验证 `vitest` 通过
 

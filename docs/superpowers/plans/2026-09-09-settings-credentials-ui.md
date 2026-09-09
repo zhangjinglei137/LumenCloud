@@ -149,7 +149,7 @@ git commit -m "feat(settings): 精简凭据必填文案并移除废弃配置项�
 - Consumes: `clearCred(key)`、`runQuarkVerify()`、`savingCredKeys`、`quarkVerifyLoading`（均已有，脚本零改动）
 - Produces: `.cred-input-row` 操作行结构；`.cred-actions` 类不再存在于模板与 CSS
 
-- [ ] **Step 1: 结构调整——模板**
+- [x] **Step 1: 结构调整——模板**
 
 `frontend/src/views/SettingsView.vue:577-608`，将：
 
@@ -197,7 +197,7 @@ git commit -m "feat(settings): 精简凭据必填文案并移除废弃配置项�
 </div>
 ```
 
-- [ ] **Step 2: 结构调整——CSS**
+- [x] **Step 2: 结构调整——CSS**
 
 `frontend/src/views/SettingsView.vue:1013-1023`，将：
 
@@ -234,17 +234,17 @@ git commit -m "feat(settings): 精简凭据必填文案并移除废弃配置项�
 
 （`.cred-actions` 类整体删除；窄屏时 `flex-wrap` 允许按钮换行不挤压）
 
-- [ ] **Step 3: 确认无残留引用**
+- [x] **Step 3: 确认无残留引用**
 
 Run: `cd frontend && grep -rn "cred-actions" src/`
 Expected: 无输出（模板与 CSS 均已移除）
 
-- [ ] **Step 4: 构建验证**
+- [x] **Step 4: 构建验证**
 
 Run: `cd frontend && npm run build`
 Expected: vue-tsc 类型检查通过、vite build 成功（产物输出 backend/static）
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add frontend/src/views/SettingsView.vue
