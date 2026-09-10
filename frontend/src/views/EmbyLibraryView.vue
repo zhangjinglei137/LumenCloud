@@ -1,20 +1,38 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import TmdbSearch from '../components/TmdbSearch.vue'
 import { useEmbyStore } from '../stores/emby'
 import { useAuthStore } from '../stores/auth'
-import { createMediaApi, scanMediaApi } from '../api'
-import type { EmbyLibraryItem, EmbySeriesStatus, TmdbSearchResult } from '../types'
+import { createMediaApi, listEmbyLibraryApi, scanMediaApi } from '../api'
+import type {
+  EmbyLibraryFolder,
+  EmbyLibraryItem,
+  EmbyLibraryQuery,
+  EmbySeriesStatus,
+  TmdbSearchResult,
+} from '../types'
 
 const router = useRouter()
 const store = useEmbyStore()
 const auth = useAuthStore()
 
-/** G15：类型筛选组（全部 / 电影 / 剧集 / 动漫；动漫对应后端 anime=true） */
-type TypeFilter = '' | 'movie' | 'series' | 'anime'
-const typeFilter = ref<TypeFilter>('')
+/** 从 axios 错误解析后端约定的 detail.code（store 内实现未导出且 store 禁止改动，故本地副本） */
+function parseEmbyErrorCode(err: unknown): 'not_configured' | 'unavailable' {
+  const detail = (err as { response?: { data?: { detail?: { code?: string } | string } } })?.response?.data?.detail
+  if (detail && typeof detail === 'object') {
+    if (detail.code === 'emby_not_configured') return 'not_configured'
+    if (detail.code === 'emby_unreachable') return 'unavailable'
+  }
+  return 'unavailable'
+}
+
+/** 分类 Tab：全部 / 电影 / 剧集 / 动漫（基于媒体库真实 CollectionType + is_anime） */
+type Category = 'all' | 'movie' | 'series' | 'anime'
+const category = ref<Category>('all')
+/** 下钻：当前分类下选中的具体媒体库 id，null=聚合该分类全部库 */
+const selectedLibraryId = ref<string | null>(null)
 
 /** G15：连载状态筛选组（不限 / 连载中 / 已完结；走后端 status 参数） */
 const statusFilter = ref<'' | EmbySeriesStatus>('')
@@ -25,23 +43,105 @@ const inclusionFilter = ref<'' | 'in' | 'out'>('')
 /** 标题关键字（客户端即时过滤，不额外请求） */
 const keyword = ref('')
 
-onMounted(() => {
+onMounted(async () => {
+  // 先拉媒体库清单（聚合视图依赖库分组），再按当前分类拉条目
+  store.loading = true
+  await store.fetchLibraries()
   fetchCurrent()
 })
 
-/** 前端本地分页（Emby 库接口无分页参数；筛选结果客户端切片展示） */
-const currentPage = ref(1)
-const pageSize = ref(20)
+/** 当前分类对应的库列表（用于下拉下钻） */
+const categoryLibraries = computed<EmbyLibraryFolder[]>(() => store.libraryGroups[category.value])
 
-/** 按当前筛选发请求（类型 + 连载状态；纳入状态为本地过滤，不参请求） */
-function fetchCurrent() {
-  // 重新拉取数据时回到第一页，避免旧页码落在新结果集之外
-  currentPage.value = 1
-  store.fetchLibrary({
-    itemType: typeFilter.value === 'anime' ? undefined : typeFilter.value || undefined,
-    anime: typeFilter.value === 'anime',
-    status: statusFilter.value || undefined,
-  })
+/** 下钻下拉占位文案（如「全部剧集库」；全部分类为「全部库」） */
+const categoryLabel = computed(() => ({ all: '', movie: '电影', series: '剧集', anime: '动漫' })[category.value])
+
+/**
+ * 按当前分类 + 下钻库 + 状态筛选发请求。
+ * 聚合态：逐库请求、按 emby_id 合并去重；逐库独立 catch，失败跳过；
+ * 全部失败置错误态，部分失败保留成功库并提示（全局拦截器已对单次失败 toast）。
+ */
+async function fetchCurrent() {
+  if (store.librariesError === 'not_configured') {
+    store.items = []
+    store.error = 'not_configured'
+    store.loading = false
+    return
+  }
+  if (store.librariesError === 'unavailable') {
+    store.items = []
+    store.error = 'unavailable'
+    store.loading = false
+    return
+  }
+  const libs = categoryLibraries.value
+  if (selectedLibraryId.value) {
+    await fetchSingle(selectedLibraryId.value)
+    return
+  }
+  if (libs.length === 0) {
+    // 该分类没有对应媒体库：清空展示（走「库为空」空态兜底）
+    store.items = []
+    store.error = null
+    store.loading = false
+    return
+  }
+  store.loading = true
+  try {
+    const seen = new Map<string, EmbyLibraryItem>()
+    let failedCount = 0
+    let firstError: unknown = null
+    for (const lib of libs) {
+      try {
+        const res = await listEmbyLibraryApi(buildQuery(lib))
+        for (const item of res.items) {
+          if (!seen.has(item.emby_id)) seen.set(item.emby_id, item)
+        }
+      } catch (err) {
+        failedCount += 1
+        if (firstError === null) firstError = err
+      }
+    }
+    if (seen.size === 0) {
+      // 全部库请求失败：置错误态（解析首个失败的错误码）
+      store.items = []
+      store.error = parseEmbyErrorCode(firstError)
+    } else {
+      store.items = [...seen.values()]
+      store.error = null
+      if (failedCount > 0) ElMessage.warning('部分媒体库加载失败')
+    }
+  } finally {
+    store.loading = false
+  }
+}
+
+/** 单库查询（下钻态）：复用 store.fetchLibrary（含错误态解析） */
+async function fetchSingle(libraryId: string) {
+  const lib = store.libraries.find((l) => l.id === libraryId)
+  if (!lib) return
+  await store.fetchLibrary(buildQuery(lib))
+}
+
+/** 按分类/库类型构造查询参数：movie→itemType=movie；series→itemType=series；anime/all 不传（查全部类型） */
+function buildQuery(lib: EmbyLibraryFolder): EmbyLibraryQuery {
+  const query: EmbyLibraryQuery = { library_id: lib.id }
+  if (category.value === 'movie') query.itemType = 'movie'
+  else if (category.value === 'series') query.itemType = 'series'
+  if (statusFilter.value) query.status = statusFilter.value
+  return query
+}
+
+/** 切换分类：清空下钻、回到聚合态并重新拉取 */
+function onCategoryChange() {
+  selectedLibraryId.value = null
+  fetchCurrent()
+}
+
+/** 下钻选中/清空具体库（清空=回到聚合态） */
+function onLibraryChange(v: string | undefined) {
+  selectedLibraryId.value = v ?? null
+  fetchCurrent()
 }
 
 /** G15：当前生效筛选下的可见条目（关键字 + 纳入状态，本地组合） */
@@ -58,26 +158,6 @@ const filteredItems = computed<EmbyLibraryItem[]>(() => {
 /** D11：当前筛选结果中尚未纳入的条目（批量加入的目标） */
 const pendingItems = computed<EmbyLibraryItem[]>(() =>
   filteredItems.value.filter((it) => !it.in_media),
-)
-
-/** 当前页的切片结果（卡片墙渲染数据源） */
-const pagedItems = computed<EmbyLibraryItem[]>(() => {
-  const start = (currentPage.value - 1) * pageSize.value
-  return filteredItems.value.slice(start, start + pageSize.value)
-})
-
-/** 本地筛选（关键字 / 纳入状态）变化时回到第一页 */
-watch([keyword, inclusionFilter], () => {
-  currentPage.value = 1
-})
-
-/** 订阅操作使条目移出「未纳入」筛选时，当前页越界自动回收 */
-watch(
-  () => filteredItems.value.length,
-  (len) => {
-    const maxPage = Math.max(1, Math.ceil(len / pageSize.value))
-    if (currentPage.value > maxPage) currentPage.value = maxPage
-  },
 )
 
 /** 海报加载失败记录（emby_id → 展示标题占位，避免破图） */
@@ -231,13 +311,30 @@ async function subscribeAll() {
   <div class="lc-page">
     <div class="lc-toolbar emby-toolbar">
       <div class="left filter-groups">
-        <!-- G15：类型筛选 -->
-        <el-radio-group :model-value="typeFilter" size="small" @change="(v: TypeFilter) => { typeFilter = v; fetchCurrent() }">
-          <el-radio-button value="">全部</el-radio-button>
+        <!-- 分类 Tab（按媒体库真实 CollectionType + is_anime 分组；可下钻单库） -->
+        <el-radio-group :model-value="category" size="small" @change="(v: Category) => { category = v; onCategoryChange() }">
+          <el-radio-button value="all">全部</el-radio-button>
           <el-radio-button value="movie">电影</el-radio-button>
           <el-radio-button value="series">剧集</el-radio-button>
           <el-radio-button value="anime">动漫</el-radio-button>
         </el-radio-group>
+        <!-- 下钻：分类下媒体库数 >1 时显示；选中单库查询，清空回聚合 -->
+        <el-select
+          v-if="categoryLibraries.length > 1"
+          :model-value="selectedLibraryId"
+          :placeholder="`全部${categoryLabel}库`"
+          clearable
+          size="small"
+          style="width: 160px"
+          @change="onLibraryChange"
+        >
+          <el-option
+            v-for="lib in categoryLibraries"
+            :key="lib.id"
+            :label="lib.name"
+            :value="lib.id"
+          />
+        </el-select>
         <!-- G15：连载状态筛选（可与类型组合，如 动漫 + 连载中） -->
         <el-radio-group :model-value="statusFilter" size="small" @change="(v: '' | EmbySeriesStatus) => { statusFilter = v; fetchCurrent() }">
           <el-radio-button value="">不限状态</el-radio-button>
@@ -310,10 +407,10 @@ async function subscribeAll() {
       <!-- 已配置但库为空 -->
       <el-empty v-else-if="!store.loading && store.items.length === 0" description="Emby 库中暂无内容" />
 
-      <!-- 卡片墙：复用影视库的 lc-media-grid / lc-poster 视觉 -->
+      <!-- 卡片墙：复用影视库的 lc-media-grid / lc-poster 视觉（全量渲染，无分页） -->
       <div v-else class="lc-media-grid">
         <div
-          v-for="m in pagedItems"
+          v-for="m in filteredItems"
           :key="m.emby_id"
           class="lc-media-card"
           @click="openInEmby(m)"
@@ -407,19 +504,6 @@ async function subscribeAll() {
 
       <!-- 有结果但关键字/筛选过滤后为空 -->
       <el-empty v-if="!store.loading && store.items.length > 0 && filteredItems.length === 0" description="没有匹配的条目" />
-
-      <!-- 前端本地分页（Emby 接口无分页参数；单页时自动隐藏） -->
-      <el-pagination
-        v-if="filteredItems.length > 0"
-        v-model:current-page="currentPage"
-        v-model:page-size="pageSize"
-        class="lc-pagination"
-        background
-        layout="total, sizes, prev, pager, next, jumper"
-        :total="filteredItems.length"
-        :page-sizes="[20, 50, 100]"
-        hide-on-single-page
-      />
     </div>
 
     <!-- G17：无 tmdb_id 条目的 TMDB 搜索对话框 -->
