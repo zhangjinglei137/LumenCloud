@@ -277,7 +277,7 @@ def test_library_timeout_marks_failed(db, env, monkeypatch):
 
     dq = run(get_dq(db, dq_id))
     assert dq.status == "failed"
-    assert dq.node_error == "入库超时：Emby 未收录，请人工核实刮削配置"
+    assert dq.node_error == "入库超时：Emby 未收录，请人工核实刮削/收录配置"
     # P1-6：超时 failed 后 best-effort 清理夸克中转文件（释放中转空间）
     assert env["alist"].remove_calls == [(["ep.mkv"], "/quark/")]
     assert run(get_media(db, mid)).status == "tracking"  # 终态后 media 回退

@@ -32,10 +32,12 @@ node 维度的职责）。
             get_missing_episodes 抛异常（Emby 故障）→ 本轮跳过不误判（同上）；
           - 电影（media_type == "movie"）→ 无集级概念，find_emby_id 命中即 finalize
             （现状保留）；
-      - 未命中 → 超时判定：node_started_at + timeout（system_config 键
-        library_check_timeout_seconds，默认 600s）< now → status='failed' +
-        node_error='入库超时：Emby 未收录，请人工核实刮削配置'，置 failed 成功后
-        best-effort 清理夸克中转文件（P1-6，删除失败仅告警不阻塞）；未超时 → 继续等下一轮；
+      - 未命中 / 持续在遗漏集 / 缺 tmdb_id → 超时判定：node_started_at + timeout
+        （system_config 键 library_check_timeout_seconds，默认 600s）< now →
+        status='failed' + node_error='入库超时：<原因>，请人工核实刮削/收录配置'
+        （原因区分 Emby 未收录 / 持续在遗漏集 / 缺 tmdb_id），置 failed 成功后
+        best-effort 清理夸克中转文件（P1-6，删除失败仅告警不阻塞）；未超时 →
+        继续等下一轮；
       - find_emby_id 抛异常（Emby 故障）→ 本轮跳过不误判（超时基于 node_started_at，
         跳过不消耗窗口）；
       - media 不存在/已删除 → 直接清理解除（删 download_queue 行 + best-effort 删夸克文件）。
@@ -329,14 +331,22 @@ async def library_check() -> None:
             await _cleanup_orphan(dq_id, quark_path)
             continue
 
-        # 2) Emby 收录判定（tmdb_id 缺失或 Emby 故障 → 本轮跳过，不误判、不消耗超时窗口）
+        # 2) Emby 收录判定（tmdb_id 缺失 → 纳入超时窗口：配置缺失长期不修不无限等待；
+        #    Emby 故障 → 本轮跳过，不误判、不消耗超时窗口）
         if media.tmdb_id is None:
-            logger.warning("[library_check] media=%s 缺 tmdb_id，本轮跳过等待", media_id)
+            await _mark_timeout_if_expired(
+                dq_id, media_id, episode, quark_path, started_at,
+                timeout_seconds, now,
+                cause="media 缺 tmdb_id（配置缺失）",
+            )
             continue
         try:
             emby_id = await emby.find_emby_id(media.tmdb_id, media.title)
         except Exception as exc:  # noqa: BLE001  含 EmbyUnavailable（Emby 故障）
-            logger.warning("[library_check] media=%s Emby 查询失败（本轮跳过，不误判）: %s", media_id, exc)
+            logger.warning(
+                "[library_check] media=%s %s Emby 收录查询失败（本轮跳过，不消耗超时）: %s",
+                media_id, episode, exc,
+            )
             continue
 
         if emby_id:
@@ -348,7 +358,7 @@ async def library_check() -> None:
                     missing = await emby.get_missing_episodes(emby_id)
                 except Exception as exc:  # noqa: BLE001  含 EmbyUnavailable（Emby 故障）
                     logger.warning(
-                        "[library_check] media=%s Emby 遗漏集查询失败（本轮跳过，不误判）: %s",
+                        "[library_check] media=%s Emby 遗漏集查询失败（本轮跳过，不误判，不消耗超时）: %s",
                         media_id, exc,
                     )
                     continue
@@ -356,9 +366,12 @@ async def library_check() -> None:
                     str(ep.get("code")) for ep in missing if ep.get("code")
                 }
                 if _episode_in_missing(episode, missing_codes):
-                    logger.info(
-                        "[library_check] media=%s %s 仍在 Emby 遗漏集（尚未收录），本轮保持等待",
-                        media_id, episode,
+                    # 卡死修复：遗漏集路径同样受超时窗口约束 —— 追更新集长期在遗漏集
+                    # （Emby 刮削一直不收录）不再无限等待，超时走 failed 并记录原因。
+                    await _mark_timeout_if_expired(
+                        dq_id, media_id, episode, quark_path, started_at,
+                        timeout_seconds, now,
+                        cause="持续在 Emby 遗漏集（Emby 收录超时）",
                     )
                     continue
             await _finalize_done(dq_id, media_id, episode, file_name, quark_path, transfer_mod)
@@ -498,8 +511,8 @@ async def _finalize_done(dq_id, media_id, episode, file_name, quark_path, transf
 
 
 async def _mark_timeout_if_expired(dq_id, media_id, episode, quark_path, started_at,
-                                   timeout_seconds, now) -> None:
-    """Emby 未收录 → 超时判定；node_started_at 缺失（旧数据）保守不判定，继续等待。
+                                   timeout_seconds, now, cause: str = "Emby 未收录") -> None:
+    """入库 / 遗漏集 / 配置缺失统一超时判定；node_started_at 缺失（旧数据）保守不判定。
 
     P1-6：置 failed 成功后 best-effort 清理夸克中转文件（释放中转空间）；删除失败
     仅告警不阻塞（残留由人工核实/清理兜底）。清理放事务提交后（网络 IO 不进事务）。
@@ -508,7 +521,7 @@ async def _mark_timeout_if_expired(dq_id, media_id, episode, quark_path, started
         return
     if started_at + timedelta(seconds=timeout_seconds) >= now:
         return  # 未超时，下一轮再查
-    err = "入库超时：Emby 未收录，请人工核实刮削配置"
+    err = f"入库超时：{cause}，请人工核实刮削/收录配置"
     from app.tasks import transfer as transfer_mod  # 函数内延迟：防循环导入
 
     async with async_session() as s:
