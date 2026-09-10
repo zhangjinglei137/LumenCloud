@@ -623,7 +623,7 @@ git commit -m "feat(frontend): Emby 契约更新 library_id/is_anime 并同步�
 - Consumes: Task 4 产出的 `EmbyLibraryQuery`、`EmbyLibraryFolder`、`listEmbyLibrariesApi`
 - Produces: `useEmbyStore` 新增 state `libraries: EmbyLibraryFolder[]`；actions `fetchLibrary(params)`、`fetchLibraries()`；computed 分类分组 `libraryGroups`
 
-- [ ] **Step 1: 更新 store**
+- [x] **Step 1: 更新 store**
 
 `frontend/src/stores/emby.ts`：
 
@@ -685,12 +685,12 @@ export const useEmbyStore = defineStore('emby', {
 })
 ```
 
-- [ ] **Step 2: 类型检查**
+- [x] **Step 2: 类型检查**
 
 Run: `cd frontend && npm run build`
 Expected: 通过（EmbyLibraryView 若引用 `store.fetchLibrary` 旧签名，Task 6 修复；本步可临时保留旧调用，若 vue-tsc 因必选 library_id 报错，属预期，Task 6 一并处理）
 
-- [ ] **Step 3: 提交**
+- [x] **Step 3: 提交**
 
 ```bash
 git add frontend/src/stores/emby.ts
