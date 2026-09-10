@@ -685,28 +685,56 @@ def _enqueue_payload(info: dict, f: dict) -> dict:
 # 搜索关键词 / 加分匹配（P5 保留）
 # ---------------------------------------------------------------------------
 
+# 单次巡检搜索关键词总量上限（季词 + 纯标题兜底 + 别名词）
+_MAX_SEARCH_KEYWORDS = 5
+
+
 def _season_of_key(key: str) -> int:
     m = re.match(r"[Ss](\d{1,2})", key or "")
     return int(m.group(1)) if m else 1
 
 
-def _build_keywords(media, missing_keys: set[str]) -> list[str]:
+def _build_keywords(media, missing_keys: set[str], aliases: list[str] | None = None) -> list[str]:
     """搜索关键词：movie 用标题；tv 按缺失集所在季聚合（P4：一次巡检每个关键词只搜一次）。
 
     季词后追加纯标题兜底词（未匹配10 案例根因修复）：按季聚合的「标题 Sxx」召回不到
     标题不含 Sxx 的资源——如「凡人修仙传 (2020) 4K [更新190集]」这类按集连载动画，
     网盘资源多以年份/更新集数标识；纯标题词保证召回完整，再交由排序加权选择正确版本。
+
+    aliases（可选）：tmdb 别名（见 tmdb.get_by_tmdb_id 的 aliases 键），归一化
+    （小写、去空格，对齐 _normalize_aliases 口径）后作为独立关键词，插在季词之后、
+    纯标题兜底词之前；movie 不加别名词。纯函数不读 media 模型属性（ORM 无 aliases 列），
+    保持可测——aliases 由调用方传入（_build_keywords_async 负责从 tmdb 拉取）。
+    总量裁剪到 _MAX_SEARCH_KEYWORDS。
     """
     title = (media.title or "").strip()
     if not title:
         return []
+    aliases = [a for a in (aliases or []) if isinstance(a, str) and a.strip()]
     if media.media_type == "movie":
         return [title]
     seasons = sorted({_season_of_key(k) for k in missing_keys})
     kws = [f"{title} S{se:02d}" for se in seasons] if seasons else []
     if title not in kws:
         kws.append(title)  # 纯标题兜底词（排在季词之后）
-    return kws
+    # 别名词（≤2 个，插到纯标题兜底词前）；总量裁剪到上限
+    for a in aliases[:2]:
+        a_norm = a.strip().lower().replace(" ", "")
+        if a_norm not in kws:
+            kws.insert(-1, a_norm)
+    return kws[:_MAX_SEARCH_KEYWORDS]
+
+
+async def _build_keywords_async(media, missing_keys: set[str]) -> list[str]:
+    """取别名后构造关键词；tmdb 不可用/失败降级为仅主标题词，绝不阻断搜索。"""
+    aliases: list[str] = []
+    if media.tmdb_id:
+        try:
+            meta = await tmdb.get_by_tmdb_id(media.tmdb_id, media.media_type or "tv")
+            aliases = meta.get("aliases") or []
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[scan] media=%s 别名获取失败（降级主标题）: %s", media.id, exc)
+    return _build_keywords(media, missing_keys, aliases=aliases)
 
 
 def _title_words(title: str) -> list[str]:

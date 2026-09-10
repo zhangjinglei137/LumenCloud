@@ -70,6 +70,49 @@ def test_build_keywords_movie_uses_title_only():
     assert kws == ["凡人修仙传"]
 
 
+def test_build_keywords_includes_aliases_and_caps():
+    """tv：主标题季词 + 主标题 + 别名词，总量 ≤5。"""
+    media = _media(title="斗罗大陆")  # SimpleNamespace: title/媒体类型/tmdb_id
+    kws = scan_mod._build_keywords(media, {"S01E157"}, aliases=["soul land", "douluo dalu"])
+    assert "斗罗大陆 S01" in kws
+    assert "soulland" in kws  # 别名归一化后入词
+    assert len(kws) <= 5
+
+
+def test_build_keywords_movie_ignores_aliases():
+    """movie：不加别名词（仅主标题）。"""
+    kws = scan_mod._build_keywords(
+        _media(title="斗罗大陆", media_type="movie"), {"S01E01"}, aliases=["soul land"]
+    )
+    assert kws == ["斗罗大陆"]
+
+
+def test_build_keywords_aliases_inserted_before_title_word():
+    """tv：别名词插在季词之后、纯标题兜底词之前。"""
+    kws = scan_mod._build_keywords(_media(title="斗罗大陆"), {"S01E01"}, aliases=["soul land"])
+    assert kws == ["斗罗大陆 S01", "soulland", "斗罗大陆"]
+
+
+def test_build_keywords_async_uses_tmdb_aliases(monkeypatch):
+    """async 封装：从 tmdb.get_by_tmdb_id 拉取 aliases 参与构造。"""
+    monkeypatch.setattr(
+        scan_mod.tmdb, "get_by_tmdb_id",
+        AsyncMock(return_value={"aliases": ["soul land"]}),
+    )
+    kws = run(scan_mod._build_keywords_async(_media(title="斗罗大陆"), {"S01E157"}))
+    assert "soulland" in kws
+
+
+def test_build_keywords_async_falls_back_when_tmdb_fails(monkeypatch):
+    """async 封装：tmdb 拉取失败 → 降级仅主标题词，不阻断搜索。"""
+    monkeypatch.setattr(
+        scan_mod.tmdb, "get_by_tmdb_id",
+        AsyncMock(side_effect=RuntimeError("tmdb down")),
+    )
+    kws = run(scan_mod._build_keywords_async(_media(title="斗罗大陆"), {"S01E157"}))
+    assert kws == ["斗罗大陆 S01", "斗罗大陆"]
+
+
 # ---------------------------------------------------------------------------
 # _rank_candidates：TMDB 年份加权
 # ---------------------------------------------------------------------------
