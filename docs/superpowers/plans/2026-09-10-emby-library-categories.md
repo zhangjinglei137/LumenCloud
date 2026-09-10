@@ -256,7 +256,7 @@ git commit -m "feat(emby): 媒体库列表改用 MediaFolders 并附加 is_anime
 - Consumes: `list_library_folders` 产出的 `id`（作为 ParentId）、Task 1 已删除 `_find_anime_library_item_id`
 - Produces: `list_library(library_id: str, item_type: Optional[str] = None, status: Optional[str] = None) -> list[dict]`；router `/library` 接受 `library_id` 必选 + `item_type`/`status` 可选
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `backend/tests/test_emby_library_folders.py` 追加：
 
@@ -322,12 +322,12 @@ def test_list_library_maps_status_to_series_status(monkeypatch, _db_maker):
     assert "Series" in captured["params"]["IncludeItemTypes"]
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cd backend && python -m pytest tests/test_emby_library_folders.py -v`
 Expected: 新 2 用例 FAIL（TypeError: 缺 library_id 或 ParentId 断言失败）
 
-- [ ] **Step 3: 改造 `list_library`**
+- [x] **Step 3: 改造 `list_library`**
 
 `backend/app/services/emby.py` `list_library`（约 L528-630）签名与主体改造：
 
@@ -383,12 +383,12 @@ async def list_library(
 
 删除内容：anime 分支（`parent_id` 定位逻辑）、Q2 白名单逐库合并循环（`lib_ids` 相关）、`_find_anime_library_item_id` 引用。`_fetch_items` 保留不动。
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `cd backend && python -m pytest tests/test_emby_library_folders.py tests/test_emby_server_id.py -v`
 Expected: 全部 PASS（注意 test_emby_server_id.py 中 `list_library()` 无参调用需改为 `list_library("m1")` 等）
 
-- [ ] **Step 5: 更新 router `/library`**
+- [x] **Step 5: 更新 router `/library`**
 
 `backend/app/routers/emby.py`：
 
@@ -413,12 +413,12 @@ async def library(
     }
 ```
 
-- [ ] **Step 6: 更新既有引用旧签名的测试**
+- [x] **Step 6: 更新既有引用旧签名的测试**
 
 Run: `cd backend && python -m pytest tests/test_emby_server_id.py tests/test_emby_series_status.py tests/test_emby_aired.py -v`
 Expected: 若失败，将无参/含 anime 参数的 `list_library(...)` 调用改为 `list_library(<library_id>)`，补齐 ParentId 相关的 mock 断言。全部 PASS。
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```bash
 git add backend/app/services/emby.py backend/app/routers/emby.py backend/tests/test_emby_library_folders.py

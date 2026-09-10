@@ -7,8 +7,8 @@
 
 ## 2. 后端：按媒体库查询库内条目
 
-- [ ] 2.1 services/emby.py 改造 `list_library(library_id, item_type, status)`：以 library_id 为 ParentId 调用 `/Items`，IncludeItemTypes 映射（movie→Movie / series→Series），status 映射 SeriesStatus=Continuing|Ended，移除 anime 全局关键词路径，验证参数映射与 /Items 调用正确
-- [ ] 2.2 routers/emby.py 更新 `GET /api/emby/library`：新增必选 `library_id` 参数，移除 `anime` 旧参数（保留 `item_type`/`status`，前端同步），验证接口契约更新
+- [x] 2.1 services/emby.py 改造 `list_library(library_id, item_type, status)`：以 library_id 为 ParentId 调用 `/Items`，IncludeItemTypes 映射（movie→Movie / series→Series），status 映射 SeriesStatus=Continuing|Ended，移除 anime 全局关键词路径，验证参数映射与 /Items 调用正确
+- [x] 2.2 routers/emby.py 更新 `GET /api/emby/library`：新增必选 `library_id` 参数，移除 `anime` 旧参数（保留 `item_type`/`status`，前端同步），验证接口契约更新
 - [ ] 2.3 补充后端测试：MediaFolders 解析、IncludeItemTypes/SeriesStatus 映射、错误归一（未配置/不可达），验证 `pytest` 通过
 
 ## 3. 前端：分类重构与去分页
