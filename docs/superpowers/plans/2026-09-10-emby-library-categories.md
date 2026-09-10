@@ -708,7 +708,7 @@ git commit -m "feat(frontend): emby store 新增媒体库列表与分类派生"
 - Consumes: Task 5 store 的 `libraryGroups`/`fetchLibraries`/`fetchLibrary`
 - Produces: 4 分类 Tab UI + 媒体库下钻下拉 + 聚合视图 + 无分页全量渲染
 
-- [ ] **Step 1: 改造 script 部分**
+- [x] **Step 1: 改造 script 部分**
 
 替换 `frontend/src/views/EmbyLibraryView.vue` 中类型筛选相关逻辑：
 
@@ -787,7 +787,7 @@ function onCategoryChange() {
 
 注意：`fetchCurrent` 原为同步函数，改造后为 async；模板中的 `@click="fetchCurrent"` 与「刷新」按钮仍兼容。
 
-- [ ] **Step 2: 改造 template**
+- [x] **Step 2: 改造 template**
 
 - 类型筛选 radio-group 替换为分类 Tab + 下钻下拉：
 
@@ -820,12 +820,12 @@ function onCategoryChange() {
 - **删除** `el-pagination` 块（L418-432）
 - 「已配置但库为空」空态条件 `store.items.length === 0` 保留
 
-- [ ] **Step 3: 类型检查与构建**
+- [x] **Step 3: 类型检查与构建**
 
 Run: `cd frontend && npm run build`
 Expected: `vue-tsc --noEmit` 与 `vite build` 通过
 
-- [ ] **Step 4: 提交**
+- [x] **Step 4: 提交**
 
 ```bash
 git add frontend/src/views/EmbyLibraryView.vue
