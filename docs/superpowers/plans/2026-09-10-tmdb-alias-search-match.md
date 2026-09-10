@@ -483,7 +483,7 @@ git commit -m "feat(scan): 候选季号硬校验（无季号降级放行）"
 - Consumes: 任务 5/6 的 aliases 提取与季号逻辑
 - Produces: `_rank_candidates(media, items, year=None, aliases=None, target_seasons=None)`：主标题精确 +10 保留；别名/原名精确命中 +8；季号与目标一致 +3；词命中/年份保留
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 7.1: 写失败测试**
 
 `backend/tests/test_scan_search_keywords.py` 追加：
 
@@ -499,12 +499,12 @@ def test_rank_candidates_alias_and_season_weights():
     assert ranked[0]["share_code"] == "R"
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 7.2: 运行测试确认失败**
 
 Run: `pytest backend/tests/test_scan_search_keywords.py::test_rank_candidates_alias_and_season_weights -v`
 Expected: FAIL（wrong 因含主标题子串得分更高排前）
 
-- [ ] **Step 3: 实现**
+- [x] **Step 7.3: 实现**
 
 在 `_rank_candidates` 循环内追加（保留原有权重行）：
 
@@ -520,12 +520,12 @@ Expected: FAIL（wrong 因含主标题子串得分更高排前）
 
 签名改为 `_rank_candidates(media, items, year=None, aliases=None, target_seasons=None)`，`alias_norms = [a.replace(" ", "").lower() for a in (aliases or [])]`；`_search_and_rank` 调用处传入 aliases 与 target_seasons。
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 7.4: 运行测试确认通过**
 
 Run: `pytest backend/tests/test_scan_search_keywords.py backend/tests/test_scan_async.py -v`
 Expected: PASS（既有排序用例保持）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 7.5: 提交**
 
 ```bash
 git add backend/app/tasks/scan.py backend/tests/test_scan_search_keywords.py
