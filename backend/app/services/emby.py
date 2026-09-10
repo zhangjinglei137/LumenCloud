@@ -45,8 +45,9 @@ REFRESH_TIMEOUT = httpx.Timeout(60.0)
 # 动漫库名称关键词（大小写不敏感）：Emby 没有 CollectionType=anime，
 # 动漫库只能靠 VirtualFolderInfo.Name 匹配或库白名单判定（des-3 增强 C）
 ANIME_LIBRARY_KEYWORDS = ("动漫", "动画", "anime")
-# VirtualFolderInfo.CollectionType 白名单：仅保留影视类媒体库（movies/tvshows 或 null）
-LIBRARY_COLLECTION_TYPES = ("movies", "tvshows")
+# VirtualFolderInfo.CollectionType 白名单：仅保留影视类媒体库（movies/tvshows/mixed 或 null；
+# null 由过滤逻辑的 is not None 分支放行），music/homevideos/book 等非影视库不进入列表
+LIBRARY_COLLECTION_TYPES = ("movies", "tvshows", "mixed")
 
 # 连载判定 TMDB 优先：get_by_tmdb_id 返回的 tv status 原值 → 库页 series_status
 # 小写约定（与 Emby SeriesStatus 归一化口径一致）。
@@ -385,6 +386,9 @@ async def list_library_folders() -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for folder in folders:
         collection_type = folder.get("CollectionType")
+        # 仅保留影视类媒体库（movies/tvshows/mixed 或 null）；music/homevideos/book 等不进入
+        if collection_type is not None and collection_type not in LIBRARY_COLLECTION_TYPES:
+            continue
         folder_id = folder.get("Id")
         name = folder.get("Name") or ""
         is_anime = False

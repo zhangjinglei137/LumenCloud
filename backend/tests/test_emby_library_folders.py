@@ -64,6 +64,8 @@ def test_mediafolders_parsed_with_is_anime(monkeypatch, _db_maker):
             _folder("t1", "剧集", "tvshows"),
             _folder("t2", "动漫番组", "tvshows"),
             _folder("x1", "混合", "mixed"),
+            _folder("mu", "音乐", "music"),
+            _folder("hv", "家庭视频", "homevideos"),
         ]}
 
     _install_get(monkeypatch, _handler)
@@ -75,6 +77,8 @@ def test_mediafolders_parsed_with_is_anime(monkeypatch, _db_maker):
         {"id": "t2", "name": "动漫番组", "collection_type": "tvshows", "is_anime": True},
         {"id": "x1", "name": "混合", "collection_type": "mixed", "is_anime": False},
     ]
+    # 非影视库（music/homevideos/book 等）不进入列表，mixed 保留
+    assert {lib["id"] for lib in result} == {"m1", "t1", "t2", "x1"}
 
 
 def test_mediafolders_whitelist_filters_tvshows(monkeypatch, _db_maker):
