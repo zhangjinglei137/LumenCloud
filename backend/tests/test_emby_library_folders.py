@@ -188,3 +188,52 @@ def test_list_library_maps_status_to_series_status(monkeypatch, _db_maker):
     assert captured["params"]["ParentId"] == "t1"
     assert captured["params"]["SeriesStatus"] == "continuing"
     assert "Series" in captured["params"]["IncludeItemTypes"]
+
+
+# ---------------------------------------------------------------------------
+# 错误归一与缺省映射
+# ---------------------------------------------------------------------------
+
+
+def test_mediafolders_network_failure_returns_empty(monkeypatch, _db_maker):
+    """网络故障降级为空列表（不阻断分类展示）。"""
+    _use_test_db(monkeypatch, _db_maker)
+
+    async def _boom(path, params):
+        raise EmbyUnavailable("Emby 请求失败: connection refused")
+
+    _install_get(monkeypatch, _boom)
+    assert run(list_library_folders()) == []
+
+
+def test_list_library_unconfigured_raises(monkeypatch, _db_maker):
+    _use_test_db(monkeypatch, _db_maker)
+
+    async def _boom(path, params):
+        raise EmbyUnavailable("Emby 未配置")
+
+    _install_get(monkeypatch, _boom)
+    with pytest.raises(EmbyUnavailable):
+        run(list_library("m1"))
+
+
+def test_list_library_default_item_types(monkeypatch, _db_maker):
+    """缺省 item_type → IncludeItemTypes=Movie,Series。"""
+    _use_test_db(monkeypatch, _db_maker)
+    # 走真实管线：list_library 内 _base_url() 不经 _get mock，需注入缓存防
+    # 全量套件 lifespan 残留的 emby_base_url="" 误判未配置（同文件既有约定）。
+    _set_cache(monkeypatch)
+    captured: dict[str, Any] = {}
+
+    def _handler(path, params):
+        if path == "/System/Info/Public":
+            return {"Id": "srv1"}
+        if path == "/Items":
+            captured["params"] = params
+            return {"Items": []}
+        raise AssertionError(f"unexpected path: {path}")
+
+    _install_get(monkeypatch, _handler)
+    run(list_library("x1"))
+    assert captured["params"]["IncludeItemTypes"] == "Movie,Series"
+    assert captured["params"]["ParentId"] == "x1"
