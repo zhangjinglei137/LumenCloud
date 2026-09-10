@@ -6,11 +6,11 @@ Emby 防重基线 / 遗漏集 / 已有集 / 影视库展示服务。
 - get_missing_episodes：查剧集遗漏集（/emby/Shows/Missing），作为防重基线
 - list_episodes     ：查已有集（/Shows/{id}/Episodes），供防重基线
 - list_library      ：查 Emby 影视库（/Items 按 library_id 单库 Recursive 查询），供 des-3
-                      展示页；library_id 必选（MediaFolders Id → ParentId），支持
+                      展示页；library_id 必选（Views ViewId → ParentId），支持
                       item_type / status（SeriesStatus 在更/完结）；series 条目连载判定
                       TMDB 优先（有 tmdb_id → /3/tv/{id} status 字段，无 → Emby
                       SeriesStatus 兜底，见 _attach_tmdb_series_status）
-- list_library_folders ：查 Emby 媒体库列表（/Library/MediaFolders），返回
+- list_library_folders ：查 Emby 媒体库列表（/Users/{UserId}/Views），返回
                        [{id, name, collection_type, is_anime}]，供媒体库分类 Tab
 - refresh_library   ：触发 Emby 全库扫描（POST /Library/Refresh），NasTools 转移/刮削
                       完成后调用，加速新文件入库（library_check 轮询兜底确认）
@@ -158,6 +158,37 @@ async def _get_server_id() -> Optional[str]:
         logger.warning("[emby] 获取 serverId 失败，详情链接降级为 None: %s", exc)
         _SERVER_ID = None
     return _SERVER_ID
+
+
+# 生产回归修复：媒体库列表数据源从 /Library/MediaFolders 改为 /Users/{UserId}/Views。
+# MediaFolders 项的 Id 不是 /Items 接受的 ParentId（ViewId）；Views 项的 Id ==
+# VirtualFolders ItemId == ViewId，才是 list_library 作为 ParentId 的合法来源。
+# UserId 恒定不变，模块级惰性缓存（获取一次全局复用，失败降级 None）。
+_USER_ID: Optional[str] = None
+_USER_ID_LOADED = False
+
+
+async def _get_user_id() -> Optional[str]:
+    """惰性获取 Emby UserId（/Users 首个用户的 Id）。
+
+    系统 api_key 具备管理员权限，/Users 返回用户数组（或 dict 包装的 Items）；
+    取首个用户的 Id 作为 /Users/{UserId}/Views 查询目标。成功/失败均只尝试
+    一次并缓存结果（恒定值）；失败或响应无 Id → None（调用方降级为空列表）。
+    """
+    global _USER_ID, _USER_ID_LOADED
+    if _USER_ID_LOADED:
+        return _USER_ID
+    _USER_ID_LOADED = True
+    try:
+        payload = await _get("/Users", {})
+        raw: Any = payload if isinstance(payload, list) else payload.get("Items")
+        users: list[Any] = raw or []
+        first = users[0] if users else {}
+        _USER_ID = first.get("Id") or None
+    except EmbyUnavailable as exc:
+        logger.warning("[emby] 获取 UserId 失败，媒体库列表降级为空: %s", exc)
+        _USER_ID = None
+    return _USER_ID
 
 
 async def refresh_library() -> None:
@@ -362,22 +393,29 @@ def _normalize_library_item(
 
 
 async def list_library_folders() -> list[dict[str, Any]]:
-    """查媒体库列表（/Library/MediaFolders），返回 [{id, name, collection_type, is_anime}]。
+    """查媒体库列表（/Users/{UserId}/Views），返回 [{id, name, collection_type, is_anime}]。
 
-    每个媒体库返回 MediaFolders 的 Id（可直接作为 /Items 的 ParentId）。
+    数据源说明（生产回归修复）：/Library/MediaFolders 项的 Id 不是 /Items 接受的
+    ParentId，以其作为 library_id 会导致 Emby 4xx；/Users/{UserId}/Views 项的 Id
+    即 ViewId（== VirtualFolders ItemId），可直接作为 /Items 的 ParentId，故改用
+    该端点（UserId 经 _get_user_id 惰性获取，失败降级空列表）。
     is_anime：仅对 tvshows 库按 Name 含 ANIME_LIBRARY_KEYWORDS 判定（大小写不敏感）。
-    emby_series_library_ids 白名单非空时，仅过滤 tvshows 库（其他类型不受影响）。
-    MediaFolders 调用失败时记 warn 返回空列表，不阻断主流程；配置缺失仍抛
-    EmbyUnavailable（保持前端「未配置空态」）。
+    emby_series_library_ids 白名单非空时，仅过滤 tvshows 库（其他类型不受影响）；
+    白名单值为原 VirtualFolders ItemId，与 Views 的 Id 相同（无需迁移）。
+    Views 调用失败时记 warn 返回空列表，不阻断主流程；配置缺失（「未配置」）仍抛
+    EmbyUnavailable（保持前端「未配置空态」）；UserId 获取失败降级空列表。
     """
+    user_id = await _get_user_id()
+    if user_id is None:
+        return []
     try:
-        payload = await _get("/Library/MediaFolders", {})
+        payload = await _get(f"/Users/{user_id}/Views", {})
     except EmbyUnavailable as exc:
         if "未配置" in str(exc):
             raise
         logger.warning("Emby 媒体库列表获取失败（分类降级为空）: %s", exc)
         return []
-    # MediaFolders 返回 dict 包装（Items 键）；防御性兼容裸数组
+    # Views 返回 dict 包装（Items 键）；防御性兼容裸数组
     raw_folders: Any = payload if isinstance(payload, list) else payload.get("Items")
     folders: list[Any] = raw_folders or []
     # 白名单：仅影响 tvshows 库
@@ -538,7 +576,7 @@ async def list_library(
     """查 Emby 影视库（des-3 Emby 展示页 / GET /api/emby/library）。
 
     参数:
-        library_id: 必选，目标媒体库 Id（/Library/MediaFolders 的 Id），作为 /Items 的 ParentId
+        library_id: 必选，目标媒体库 Id（/Users/{UserId}/Views 的 ViewId），作为 /Items 的 ParentId
         item_type:  "movie" 电影 / "series" 剧集 / None 全部（Movie,Series）
         status:     "continuing" 仅在更 / "ended" 已完结；非空时加 SeriesStatus 并确保 IncludeItemTypes 含 Series
     返回:

@@ -1,4 +1,9 @@
-"""list_library_folders（/Library/MediaFolders）测试。"""
+"""list_library_folders（/Users/{UserId}/Views）测试。
+
+数据源说明：MediaFolders 项的 Id 不是 /Items 接受的 ParentId（ViewId）；
+合法 ParentId 来源是 /Users/{UserId}/Views（其 Id == VirtualFolders ItemId），
+故先经 /Users 取首用户 Id，再查 Views 构建媒体库列表。
+"""
 import asyncio
 from typing import Any, Callable, Optional
 
@@ -54,21 +59,37 @@ def _folder(fid: str, name: str, ct: Optional[str]) -> dict[str, Any]:
     return {"Id": fid, "Name": name, "CollectionType": ct}
 
 
+def _reset_user_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """重置模块级惰性缓存（UserId），防跨用例串缓存（对齐 _reset_server_id 约定）。"""
+    monkeypatch.setattr(emby_mod, "_USER_ID", None)
+    monkeypatch.setattr(emby_mod, "_USER_ID_LOADED", False)
+
+
+def _views_handler(items_payload: dict[str, Any] | list[dict[str, Any]]) -> Callable:
+    """按新数据源分发的桩：/Users → 首用户；/Users/user1/Views → 库列表 payload。
+
+    断言 Views 路径携带取到的 UserId（合法 ParentId 来源契约）。
+    """
+    def _handler(path, params):
+        if path == "/Users":
+            return [{"Id": "user1", "Name": "admin"}]
+        assert path == "/Users/user1/Views", f"unexpected path: {path}"
+        return items_payload
+    return _handler
+
+
 def test_mediafolders_parsed_with_is_anime(monkeypatch, _db_maker):
     _use_test_db(monkeypatch, _db_maker)
+    _reset_user_id(monkeypatch)
 
-    def _handler(path, params):
-        assert path == "/Library/MediaFolders"
-        return {"Items": [
-            _folder("m1", "电影", "movies"),
-            _folder("t1", "剧集", "tvshows"),
-            _folder("t2", "动漫番组", "tvshows"),
-            _folder("x1", "混合", "mixed"),
-            _folder("mu", "音乐", "music"),
-            _folder("hv", "家庭视频", "homevideos"),
-        ]}
-
-    _install_get(monkeypatch, _handler)
+    _install_get(monkeypatch, _views_handler({"Items": [
+        _folder("m1", "电影", "movies"),
+        _folder("t1", "剧集", "tvshows"),
+        _folder("t2", "动漫番组", "tvshows"),
+        _folder("x1", "混合", "mixed"),
+        _folder("mu", "音乐", "music"),
+        _folder("hv", "家庭视频", "homevideos"),
+    ]}))
     result = run(list_library_folders())
 
     assert result == [
@@ -83,28 +104,33 @@ def test_mediafolders_parsed_with_is_anime(monkeypatch, _db_maker):
 
 def test_mediafolders_whitelist_filters_tvshows(monkeypatch, _db_maker):
     _use_test_db(monkeypatch, _db_maker)
+    _reset_user_id(monkeypatch)
     monkeypatch.setattr(
         emby_mod.config_store, "get",
         lambda key, default=None: "t1" if key == "emby_series_library_ids" else default,
     )
 
-    def _handler(path, params):
-        return {"Items": [
-            _folder("m1", "电影", "movies"),
-            _folder("t1", "剧集", "tvshows"),
-            _folder("t2", "另一个剧集", "tvshows"),
-        ]}
-
-    _install_get(monkeypatch, _handler)
+    _install_get(monkeypatch, _views_handler({"Items": [
+        _folder("m1", "电影", "movies"),
+        _folder("t1", "剧集", "tvshows"),
+        _folder("t2", "另一个剧集", "tvshows"),
+    ]}))
     result = run(list_library_folders())
 
     assert [lib["id"] for lib in result] == ["m1", "t1"]
 
 
 def test_mediafolders_not_configured_raises(monkeypatch, _db_maker):
+    """配置缺失（Views 请求抛「未配置」）→ 仍抛 EmbyUnavailable（前端「未配置空态」）。
+
+    UserId 获取阶段已确认可用（/Users 成功），未配置错误在 Views 请求面暴露。
+    """
     _use_test_db(monkeypatch, _db_maker)
+    _reset_user_id(monkeypatch)
 
     async def _boom(path, params):
+        if path == "/Users":
+            return [{"Id": "user1", "Name": "admin"}]
         raise EmbyUnavailable("Emby 未配置")
 
     _install_get(monkeypatch, _boom)
@@ -198,12 +224,42 @@ def test_list_library_maps_status_to_series_status(monkeypatch, _db_maker):
 def test_mediafolders_network_failure_returns_empty(monkeypatch, _db_maker):
     """网络故障降级为空列表（不阻断分类展示）。"""
     _use_test_db(monkeypatch, _db_maker)
+    _reset_user_id(monkeypatch)
 
     async def _boom(path, params):
         raise EmbyUnavailable("Emby 请求失败: connection refused")
 
     _install_get(monkeypatch, _boom)
     assert run(list_library_folders()) == []
+
+
+def test_views_user_id_fetch_failure_returns_empty(monkeypatch, _db_maker):
+    """/Users 获取失败（无法取得 UserId）→ 降级空列表（不阻断分类展示）。"""
+    _use_test_db(monkeypatch, _db_maker)
+    _reset_user_id(monkeypatch)
+
+    async def _boom(path, params):
+        raise EmbyUnavailable("Emby 请求失败: connection refused")
+
+    _install_get(monkeypatch, _boom)
+    assert run(list_library_folders()) == []
+
+
+def test_views_bare_array_payload_parsed(monkeypatch, _db_maker):
+    """Views 返回裸数组（防御性兼容，非 dict 包装）同样解析。"""
+    _use_test_db(monkeypatch, _db_maker)
+    _reset_user_id(monkeypatch)
+
+    _install_get(monkeypatch, _views_handler([
+        _folder("m1", "电影", "movies"),
+        _folder("t2", "动漫番组", "tvshows"),
+    ]))
+    result = run(list_library_folders())
+
+    assert result == [
+        {"id": "m1", "name": "电影", "collection_type": "movies", "is_anime": False},
+        {"id": "t2", "name": "动漫番组", "collection_type": "tvshows", "is_anime": True},
+    ]
 
 
 def test_list_library_unconfigured_raises(monkeypatch, _db_maker):
