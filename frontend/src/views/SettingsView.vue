@@ -646,9 +646,9 @@ function serviceLabel(key: string): string {
                   >
                     <el-option
                       v-for="lib in embyLibraries"
-                      :key="lib.item_id"
+                      :key="lib.id"
                       :label="`${lib.name} (${lib.collection_type ?? 'unknown'})`"
-                      :value="lib.item_id"
+                      :value="lib.id"
                     />
                   </el-select>
                   <div

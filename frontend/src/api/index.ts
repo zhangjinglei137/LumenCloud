@@ -265,32 +265,29 @@ export function deleteUserApi(id: number) {
 
 // ---------- Emby 影视库 ----------
 /**
- * 拉取 Emby 媒体库列表。
+ * 拉取指定 Emby 媒体库的条目列表。
  * 契约：GET /api/emby/library
+ *   library_id=<MediaFolders Id>（必选）
  *   item_type=movie|series（缺省 = 全部）
  *   status=continuing|ended（在更/完结，后端用 SeriesStatus 参数，仅对剧集生效）
- *   anime=true（限定动漫库，后端按 Name 关键词匹配，忽略 item_type）
  *   200 → EmbyLibraryResponse
  *   503 → {"detail": {"msg": "...", "code": "emby_not_configured" | "emby_unreachable"}}
  *         （code 由前端区分「未配置空态」与「不可达错误态」）
  */
-export function listEmbyLibraryApi(params?: EmbyLibraryQuery) {
-  const { itemType, status, anime } = params ?? {}
-  const query: Record<string, string | boolean> = {}
+export function listEmbyLibraryApi(params: EmbyLibraryQuery) {
+  const { library_id, itemType, status } = params
+  const query: Record<string, string> = { library_id }
   if (itemType) query.item_type = itemType
   if (status) query.status = status
-  if (anime) query.anime = anime
   return http
-    .get<EmbyLibraryResponse>('/emby/library', {
-      params: Object.keys(query).length ? query : undefined,
-    })
+    .get<EmbyLibraryResponse>('/emby/library', { params: query })
     .then((r) => r.data)
 }
 
 /**
  * 获取 Emby 媒体库列表（设置页「剧集页可见的 Emby 媒体库」多选下拉选项来源）。
  * 契约：GET /api/emby/libraries
- *   200 → EmbyLibrariesResponse（libraries: EmbyLibraryFolder[]，含 item_id/name/collection_type）
+ *   200 → EmbyLibrariesResponse（libraries: EmbyLibraryFolder[]，含 id/name/collection_type/is_anime）
  *   503 → 后端 emby 未配置/不可达时由 http 拦截器统一提示
  */
 export async function listEmbyLibrariesApi(): Promise<EmbyLibrariesResponse> {

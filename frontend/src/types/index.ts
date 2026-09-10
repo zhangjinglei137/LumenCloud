@@ -394,14 +394,14 @@ export type EmbyItemType = 'movie' | 'series'
 /** 剧集在更状态筛选：continuing=仅在更，ended=已完结（仅对剧集/动漫 Tab 生效） */
 export type EmbySeriesStatus = 'continuing' | 'ended'
 
-/** Emby 库查询参数（GET /api/emby/library） */
+/** Emby 库查询参数（GET /api/emby/library，library_id 必选） */
 export interface EmbyLibraryQuery {
+  /** 目标媒体库 Id（/Library/MediaFolders 的 Id），必选 */
+  library_id: string
   /** 类型筛选：movie/series，缺省全部 */
   itemType?: EmbyItemType
   /** 剧集状态筛选：continuing 仅在更 / ended 已完结（后端用 SeriesStatus 参数） */
   status?: EmbySeriesStatus
-  /** 限定动漫库（后端按 Name 关键词匹配 VirtualFolder，忽略 itemType 过滤） */
-  anime?: boolean
 }
 
 /** Emby 库单条媒体（GET /api/emby/library 的元素，字段由后端 DTO 保证） */
@@ -435,11 +435,14 @@ export interface EmbyLibraryResponse {
   item_type: EmbyItemType | null
 }
 
-/** Emby 媒体库（VirtualFolder）信息：设置页多选下拉的选项 */
+/** Emby 媒体库（/Library/MediaFolders，含 CollectionType/is_anime）：影视库分类与设置页多选选项 */
 export interface EmbyLibraryFolder {
-  item_id: string
+  /** MediaFolders 库 Id（可作 /Items 的 ParentId） */
+  id: string
   name: string
   collection_type: string | null
+  /** 动漫库标记：tvshows 库且库名含动漫关键词（后端判定） */
+  is_anime: boolean
 }
 
 /** GET /api/emby/libraries 响应 */
