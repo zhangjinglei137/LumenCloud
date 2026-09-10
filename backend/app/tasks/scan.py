@@ -896,6 +896,9 @@ def _full_mode_accept(media, file_name: str, total_episodes: int | None) -> bool
 async def _search_and_rank(media, missing_keys: set[str]) -> list[dict]:
     """cloudSaver 搜索 → 展开分享码 → A1 分享标题过滤 → 加分匹配（TMDB 年份加权）→ 限数。
 
+    - 多关键词并行（_build_keywords_async 取别名 → asyncio.gather 并发搜索），
+      结果合并后由 _expand_share_codes 按 share_code 去重（保留首现）——多个关键词
+      召回同一失效分享码只占一个候选位，不浪费逐码验证配额。
     - 单关键词失败：记录 warning 并继续（一个词失败、其余成功 → 不中断整轮，
       保持既有降级语义）。
     - A1 分享标题过滤（少帅式搜索误匹配修复）：剧名完全无关的分享候选在排序前直接
@@ -905,15 +908,23 @@ async def _search_and_rank(media, missing_keys: set[str]) -> list[dict]:
       调用方（_scan_one）将 search 阶段标 error，区分「搜索故障」与「搜索成功但无候选」
       （后者返回 []，message 走缺集人话文案，不再误报「无候选命中」）。
     """
-    keywords = _build_keywords(media, missing_keys)
+    keywords = await _build_keywords_async(media, missing_keys)
     raw: list[dict] = []
-    ok = 0  # 成功关键词计数
-    for kw in keywords:
+    ok = 0  # 成功关键词计数（调用无异常即计，空结果不算失败——区分「搜索成功但无候选」）
+
+    async def _search_one(kw: str) -> tuple[str, list[dict] | None]:
+        """单关键词搜索；成功返回 (kw, results)，失败返回 (kw, None) 并 warning。"""
         try:
-            raw.extend(await cloudsaver.search(kw))
-            ok += 1
+            return kw, await cloudsaver.search(kw)
         except Exception as exc:
             logger.warning("[scan] cloudSaver 搜索 %s 失败: %s", kw, exc)
+            return kw, None
+
+    results = await asyncio.gather(*(_search_one(kw) for kw in keywords))
+    for _kw, res in results:
+        if res is not None:
+            ok += 1
+            raw.extend(res)
     if ok == 0 and keywords:
         # 所有搜索关键词都失败 → 搜索服务整体故障（静默降级会让 _scan_one 误以为
         # 「无缺集/无候选」），上抛由 _scan_one 记录 error + 阶段定位

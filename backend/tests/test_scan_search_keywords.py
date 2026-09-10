@@ -178,3 +178,50 @@ def test_search_and_rank_tmdb_year_failure_still_searches(monkeypatch):
     )
     results = run(scan_mod._search_and_rank(_media(), {"S01E190"}))
     assert results and results[0]["share_code"] == "codeA"
+
+
+def test_search_and_rank_parallel_merges_dedup(monkeypatch):
+    """多关键词并行搜索：合并多词结果、share_code 去重、单词失败不中断。"""
+    calls = []
+
+    async def fake_search(kw):
+        calls.append(kw)
+        if kw == "凡人修仙传 S01":
+            raise RuntimeError("cloudSaver 搜索超时")  # 单词失败 → 降级继续
+        if kw == "soulland":  # tmdb 别名词
+            return [
+                _cs_result("凡人修仙传 动画版 全集", "AAA"),
+                _cs_result("凡人修仙传 4K 高清", "BBB"),
+            ]
+        if kw == "凡人修仙传":
+            return [_cs_result("凡人修仙传 S01E157 1080p", "AAA")]
+        return []
+
+    monkeypatch.setattr(scan_mod.cloudsaver, "search", fake_search)
+    monkeypatch.setattr(
+        scan_mod.tmdb, "get_by_tmdb_id",
+        AsyncMock(return_value={"aliases": ["soulland"], "year": 2020}),
+    )
+
+    media = _media()
+    items = run(scan_mod._search_and_rank(media, {"S01E157"}))
+    codes = [i["share_code"] for i in items]
+    # AAA 被「soulland」与「凡人修仙传」两个词同时命中 → 展开后按 share_code 去重保留一条
+    assert codes.count("AAA") == 1
+    assert "BBB" in codes
+    assert "soulland" in calls  # 别名词也被并行搜索
+    assert len(calls) >= 3  # 季词 + 别名词 + 纯标题
+
+
+def test_search_and_rank_all_keywords_fail_raises(monkeypatch):
+    """全部关键词调用失败 → 抛 ScanSearchUnavailable（search 阶段故障语义，回归保护）。"""
+    async def fake_search(kw):
+        raise RuntimeError("cloudSaver 不可用")
+
+    monkeypatch.setattr(scan_mod.cloudsaver, "search", fake_search)
+    monkeypatch.setattr(
+        scan_mod.tmdb, "get_by_tmdb_id",
+        AsyncMock(return_value={"aliases": ["soulland"], "year": 2020}),
+    )
+    with pytest.raises(scan_mod.ScanSearchUnavailable):
+        run(scan_mod._search_and_rank(_media(), {"S01E157"}))
