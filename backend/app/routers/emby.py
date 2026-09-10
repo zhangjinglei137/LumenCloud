@@ -1,7 +1,7 @@
 """Emby 影视库 API（des-3 Emby 展示页），登录用户可调。
 
-- GET /api/emby/library?item_type=movie|series&status=continuing|ended&anime=true
-  → Emby 库条目列表（item_type 类型筛选 / status 在更完结 / anime 动漫库）
+- GET /api/emby/library?library_id=<MediaFolders Id>&item_type=movie|series&status=continuing|ended
+  → Emby 库条目列表（library_id 必选：目标媒体库；item_type 类型筛选 / status 在更完结）
   200 → {"items": [...], "total": n, "item_type": "movie"|"series"|null}
 - GET /api/emby/libraries → Emby 媒体库列表（/Library/MediaFolders，含
   CollectionType/is_anime，供分类 Tab 与设置页多选）
@@ -34,16 +34,15 @@ def _to_http_exc(exc: EmbyUnavailable) -> HTTPException:
 
 @router.get("/library")
 async def library(
+    library_id: str = Query(...),
     item_type: Literal["movie", "series"] | None = Query(default=None),
     status: Literal["continuing", "ended"] | None = Query(default=None),
-    anime: bool = False,
     user: User = Depends(get_current_user),  # 登录用户可调（非 admin 限定）
 ) -> dict:
-    """Emby 影视库展示：item_type=movie/series；status=continuing 在更 / ended 完结
-    （仅对剧集生效，后端保证 IncludeItemTypes 含 Series）；anime=true 限定动漫库
-    （按 Name 关键词匹配，忽略 item_type 过滤）。"""
+    """Emby 影视库展示：library_id 必选（目标媒体库）；item_type=movie/series；
+    status=continuing 在更 / ended 完结（仅对剧集生效）。"""
     try:
-        items = await list_library(item_type, status, anime)
+        items = await list_library(library_id, item_type, status)
     except EmbyUnavailable as exc:
         raise _to_http_exc(exc) from exc
     return {

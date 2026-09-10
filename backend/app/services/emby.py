@@ -5,10 +5,11 @@ Emby 防重基线 / 遗漏集 / 已有集 / 影视库展示服务。
                       未命中时做 P11 二次模糊查询兜底（需传入 title）
 - get_missing_episodes：查剧集遗漏集（/emby/Shows/Missing），作为防重基线
 - list_episodes     ：查已有集（/Shows/{id}/Episodes），供防重基线
-- list_library      ：查 Emby 影视库（/Items Recursive 全量），供 des-3 展示页；
-                      支持 item_type / status（SeriesStatus 在更/完结）/ anime（动漫库）；
-                      series 条目连载判定 TMDB 优先（有 tmdb_id → /3/tv/{id}
-                      status 字段，无 → Emby SeriesStatus 兜底，见 _attach_tmdb_series_status）
+- list_library      ：查 Emby 影视库（/Items 按 library_id 单库 Recursive 查询），供 des-3
+                      展示页；library_id 必选（MediaFolders Id → ParentId），支持
+                      item_type / status（SeriesStatus 在更/完结）；series 条目连载判定
+                      TMDB 优先（有 tmdb_id → /3/tv/{id} status 字段，无 → Emby
+                      SeriesStatus 兜底，见 _attach_tmdb_series_status）
 - list_library_folders ：查 Emby 媒体库列表（/Library/MediaFolders），返回
                        [{id, name, collection_type, is_anime}]，供媒体库分类 Tab
 - refresh_library   ：触发 Emby 全库扫描（POST /Library/Refresh），NasTools 转移/刮削
@@ -530,43 +531,21 @@ async def _fetch_items(params: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 async def list_library(
+    library_id: str,
     item_type: Optional[str] = None,
     status: Optional[str] = None,
-    anime: bool = False,
 ) -> list[dict[str, Any]]:
     """查 Emby 影视库（des-3 Emby 展示页 / GET /api/emby/library）。
 
     参数:
-        item_type: "movie" 电影 / "series" 剧集 / None 全部（Movie,Series）
-        status:    "continuing" 仅在更 / "ended" 已完结；非空时 Items 请求加
-                   SeriesStatus（注意是 SeriesStatus 而非 Status，Status 需 Fields 才返回），
-                   并确保 IncludeItemTypes 含 Series
-        anime:     True 时限定动漫库（按 Name 关键词匹配 VirtualFolder，取 ItemId 作
-                   ParentId）；忽略 item_type 过滤（动漫库通常为剧集，亦有剧场版电影）；
-                   找不到动漫库则返回空列表（前端显示空态，不算错误）
-        emby_series_library_ids: 仅当 anime=False 且 item_type="series" 且该配置非空时
-                   生效：按逗号分隔的 Emby VirtualFolder ItemId 白名单逐库（ParentId）
-                   拉取 /Items 并合并去重；其余场景（item_type 为空/movie、anime=True、
-                   配置为空）不受影响，保持原行为（向后兼容）
+        library_id: 必选，目标媒体库 Id（/Library/MediaFolders 的 Id），作为 /Items 的 ParentId
+        item_type:  "movie" 电影 / "series" 剧集 / None 全部（Movie,Series）
+        status:     "continuing" 仅在更 / "ended" 已完结；非空时加 SeriesStatus 并确保 IncludeItemTypes 含 Series
     返回:
-        归一化条目列表，每项含 emby_id/title/type/year/poster_url/
-        community_rating/tmdb_id/emby_web_url、series_status（连载判定 TMDB 优先：
-        /3/tv/{id} status 映射 "continuing"/"ended"；无 tmdb_id 或 TMDB 查询失败时
-        回退 Emby SeriesStatus 原值 "continuing"/"ended"/None），及增强 B 的
-        in_media/media_id；
-        emby_web_url 在 serverId 获取失败/无 Id 时为 None（前端隐藏「在 Emby 中打开」）
+        归一化条目列表（同现有字段，含 series_status/in_media/media_id/emby_web_url）
     异常:
         EmbyUnavailable: 配置缺失 / 请求失败
     """
-    # 动漫模式：定位动漫库（Name 关键词匹配），找不到直接返回空列表
-    parent_id: Optional[str] = None
-    if anime:
-        parent_id = await _find_anime_library_item_id()
-        if not parent_id:
-            logger.info("Emby 未找到动漫库（Name 含 动漫/动画/anime），返回空列表")
-            return []
-        item_type = None  # 动漫模式忽略 item_type 过滤（动漫库通常为剧集，亦有剧场版电影）
-
     # IncludeItemTypes：按 item_type 选择；status 非空时须含 Series（SeriesStatus 只对剧集生效）
     include_item_types = {"movie": "Movie", "series": "Series"}.get(item_type or "", "Movie,Series")
     if status and "Series" not in include_item_types:
@@ -577,38 +556,12 @@ async def list_library(
         "IncludeItemTypes": include_item_types,
         "Fields": "ProviderIds,CommunityRating,ProductionYear,SeriesStatus",
         "Limit": str(_LIST_PAGE_SIZE),
+        "ParentId": library_id,
     }
-    if parent_id:
-        params["ParentId"] = parent_id
     if status:
         params["SeriesStatus"] = status
 
-    # Q2 媒体库白名单：仅「剧集」Tab 且非动漫模式且配置非空时，按 Emby VirtualFolder
-    # ItemId 白名单逐库拉取合并（基础 params 复用，仅追加 ParentId）；其余场景走原有
-    # 全量分页拉取，行为不变（向后兼容）。
-    lib_ids: list[str] = []
-    if not anime and item_type == "series":
-        raw = (config_store.get("emby_series_library_ids") or "").strip()
-        lib_ids = [x.strip() for x in raw.split(",") if x.strip()]
-
-    items: list[dict[str, Any]] = []
-    if lib_ids:
-        # P2-8 分页逻辑见 _fetch_items：逐库 ParentId 查询后合并去重，仅做一次后续处理
-        seen: set[str] = set()
-        for lib_id in lib_ids:
-            page_params = dict(params)
-            page_params["ParentId"] = lib_id
-            for item in await _fetch_items(page_params):
-                item_id = item.get("Id")
-                if item_id is None or item_id in seen:
-                    continue
-                seen.add(item_id)
-                items.append(item)
-    else:
-        # P2-8：分页拉取全部（Emby /Items 支持 StartIndex+Limit）——原硬编码 Limit=500 会
-        # 截断大库（>500 条）导致筛选/展示与遗漏判定不完整。模式对齐 alist.list_dir：当前
-        # 页满单页就 StartIndex 翻页，直到少于单页（含 0 条）或达到页数上限防御。
-        items = await _fetch_items(params)
+    items = await _fetch_items(params)
 
     base = _base_url()
     api_key = config_store.get("emby_api_key", settings.EMBY_API_KEY)
@@ -628,7 +581,7 @@ async def list_library(
     await _attach_in_media_flag(result)
 
     logger.info(
-        "Emby 影视库（item_type=%s, status=%s, anime=%s）: %d 条",
-        item_type, status, anime, len(result),
+        "Emby 影视库（library_id=%s, item_type=%s, status=%s）: %d 条",
+        library_id, item_type, status, len(result),
     )
     return result

@@ -8,7 +8,7 @@ from sqlalchemy.pool import StaticPool
 
 import app.services.emby as emby_mod
 from app.database import Base
-from app.services.emby import EmbyUnavailable, list_library_folders
+from app.services.emby import EmbyUnavailable, list_library, list_library_folders
 
 
 def run(coro):
@@ -110,3 +110,81 @@ def test_mediafolders_not_configured_raises(monkeypatch, _db_maker):
     _install_get(monkeypatch, _boom)
     with pytest.raises(EmbyUnavailable):
         run(list_library_folders())
+
+
+# ---------------------------------------------------------------------------
+# list_library（library_id 必选单库查询 / SeriesStatus 映射）
+# ---------------------------------------------------------------------------
+
+
+def _library_item(name, kind="Series", tmdb=1001):
+    return {
+        "Id": f"id-{name}",
+        "Name": name,
+        "Type": kind,
+        "ProductionYear": 2024,
+        "ProviderIds": {"Tmdb": str(tmdb)},
+        "ImageTags": {"Primary": "x"},
+        "SeriesStatus": None,
+    }
+
+
+def _set_cache(monkeypatch):
+    """注入 config_store._cache（emby_base_url/emby_api_key）双保险，防意外路径。
+
+    全量套件中前序测试可能触发 lifespan load_from_db 把 temp-DB 的
+    emby_base_url="" 灌入模块级 _cache 并全局残留，_base_url() 会误判未配置；
+    与 test_emby_server_id / test_emby_series_status 的约定一致。
+    """
+    monkeypatch.setattr(emby_mod.config_store, "_cache", {
+        "emby_base_url": "http://emby.test",
+        "emby_api_key": "test-key",
+    })
+
+
+def test_list_library_passes_library_id_as_parent(monkeypatch, _db_maker):
+    _use_test_db(monkeypatch, _db_maker)
+    _set_cache(monkeypatch)
+
+    captured: dict[str, Any] = {}
+
+    def _handler(path, params):
+        if path == "/System/Info/Public":
+            return {"Id": "srv1"}
+        if path == "/Items":
+            captured["path"] = path
+            captured["params"] = params
+            return {"Items": [_library_item("A", kind="Movie", tmdb=11)]}
+        raise AssertionError(f"unexpected path: {path}")
+
+    _install_get(monkeypatch, _handler)
+
+    result = run(list_library("m1", "movie", None))
+
+    assert captured["path"] == "/Items"
+    assert captured["params"]["ParentId"] == "m1"
+    assert "Movie" in captured["params"]["IncludeItemTypes"]
+    assert result[0]["emby_id"] == "id-A"
+
+
+def test_list_library_maps_status_to_series_status(monkeypatch, _db_maker):
+    _use_test_db(monkeypatch, _db_maker)
+    _set_cache(monkeypatch)
+
+    captured: dict[str, Any] = {}
+
+    def _handler(path, params):
+        if path == "/System/Info/Public":
+            return {"Id": "srv1"}
+        if path == "/Items":
+            captured["params"] = params
+            return {"Items": [_library_item("S1")]}
+        raise AssertionError(f"unexpected path: {path}")
+
+    _install_get(monkeypatch, _handler)
+
+    run(list_library("t1", "series", "continuing"))
+
+    assert captured["params"]["ParentId"] == "t1"
+    assert captured["params"]["SeriesStatus"] == "continuing"
+    assert "Series" in captured["params"]["IncludeItemTypes"]

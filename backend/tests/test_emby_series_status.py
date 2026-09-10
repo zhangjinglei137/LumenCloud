@@ -95,7 +95,7 @@ def test_series_status_transparent(library_get, _db_maker, monkeypatch):
         _library_item("M1-movie", kind="Movie", series_status=_MISSING, tmdb=104),
     ]}
 
-    result = run(emby_mod.list_library())
+    result = run(emby_mod.list_library("m1"))
 
     assert [it["series_status"] for it in result] == ["continuing", "ended", None, None]
     assert [it["type"] for it in result] == ["series", "series", "series", "movie"]
@@ -108,7 +108,7 @@ def test_request_includes_series_status_field(library_get, _db_maker, monkeypatc
     _use_test_db(monkeypatch, _db_maker)
     library_get.return_value = {"Items": [_library_item("S1", series_status="continuing")]}
 
-    run(emby_mod.list_library())
+    run(emby_mod.list_library("m1"))
 
     path, params = library_get.await_args.args[:2]
     assert path == "/Items"
@@ -120,7 +120,7 @@ def test_status_filter_passed_through(library_get, _db_maker, monkeypatch):
     _use_test_db(monkeypatch, _db_maker)
     library_get.return_value = {"Items": []}
 
-    run(emby_mod.list_library(status="continuing"))
+    run(emby_mod.list_library("m1", status="continuing"))
 
     path, params = library_get.await_args.args[:2]
     assert path == "/Items"
@@ -155,7 +155,7 @@ def test_tmdb_priority_overrides_emby_status(library_get, _db_maker, monkeypatch
 
     monkeypatch.setattr(emby_mod, "get_by_tmdb_id", _fake_get)
 
-    result = run(emby_mod.list_library())
+    result = run(emby_mod.list_library("m1"))
 
     # Returning Series→continuing（覆盖）、Ended→ended（补充）、ended 信任 Emby、movie 不判
     assert [it["series_status"] for it in result] == ["continuing", "ended", "ended", None]
@@ -175,7 +175,7 @@ def test_tmdb_status_failure_falls_back_to_emby(library_get, _db_maker, monkeypa
 
     monkeypatch.setattr(emby_mod, "get_by_tmdb_id", _boom)
 
-    result = run(emby_mod.list_library())  # 不应抛异常
+    result = run(emby_mod.list_library("m1"))  # 不应抛异常
     assert [it["series_status"] for it in result] == ["continuing", None]
 
 
@@ -193,7 +193,7 @@ def test_tmdb_priority_canceled_pilot_and_no_tmdb_id(library_get, _db_maker, mon
 
     monkeypatch.setattr(emby_mod, "get_by_tmdb_id", _fake_get)
 
-    result = run(emby_mod.list_library())
+    result = run(emby_mod.list_library("m1"))
     assert [it["series_status"] for it in result] == ["ended", "continuing", "continuing"]
 
 

@@ -96,7 +96,7 @@ def test_emby_web_url_includes_server_id(monkeypatch, _db_maker):
 
     _install_get(monkeypatch, _handler)
 
-    result = run(emby_mod.list_library())
+    result = run(emby_mod.list_library("m1"))
 
     assert len(result) == 1
     assert result[0]["emby_web_url"] == (
@@ -121,7 +121,7 @@ def test_server_id_failure_degrades_web_url_none(monkeypatch, _db_maker):
 
     _install_get(monkeypatch, _handler)
 
-    result = run(emby_mod.list_library())
+    result = run(emby_mod.list_library("m1"))
 
     assert len(result) == 1
     assert result[0]["emby_web_url"] is None

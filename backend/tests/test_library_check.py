@@ -572,7 +572,7 @@ def test_list_library_paginates_all_items(db, monkeypatch):
         "emby_api_key": "test-key",
     })
 
-    result = run(emby_mod.list_library())
+    result = run(emby_mod.list_library("m1"))
 
     assert item_starts == [0, 500, 1000]  # 满页翻页 → 空尾页停止
     assert len(result) == 1000  # 全量返回，不被 Limit=500 截断
