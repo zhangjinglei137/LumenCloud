@@ -78,7 +78,7 @@ def _views_handler(items_payload: dict[str, Any] | list[dict[str, Any]]) -> Call
     return _handler
 
 
-def test_mediafolders_parsed_with_is_anime(monkeypatch, _db_maker):
+def test_views_parsed_with_is_anime(monkeypatch, _db_maker):
     _use_test_db(monkeypatch, _db_maker)
     _reset_user_id(monkeypatch)
 
@@ -102,7 +102,7 @@ def test_mediafolders_parsed_with_is_anime(monkeypatch, _db_maker):
     assert {lib["id"] for lib in result} == {"m1", "t1", "t2", "x1"}
 
 
-def test_mediafolders_whitelist_filters_tvshows(monkeypatch, _db_maker):
+def test_views_whitelist_filters_tvshows(monkeypatch, _db_maker):
     _use_test_db(monkeypatch, _db_maker)
     _reset_user_id(monkeypatch)
     monkeypatch.setattr(
@@ -120,10 +120,11 @@ def test_mediafolders_whitelist_filters_tvshows(monkeypatch, _db_maker):
     assert [lib["id"] for lib in result] == ["m1", "t1"]
 
 
-def test_mediafolders_not_configured_raises(monkeypatch, _db_maker):
+def test_views_not_configured_raises(monkeypatch, _db_maker):
     """配置缺失（Views 请求抛「未配置」）→ 仍抛 EmbyUnavailable（前端「未配置空态」）。
 
-    UserId 获取阶段已确认可用（/Users 成功），未配置错误在 Views 请求面暴露。
+    UserId 获取阶段已确认可用（/Users 成功），未配置错误在 Views 请求面暴露
+    （list_library_folders 的防御性 re-raise 分支）。
     """
     _use_test_db(monkeypatch, _db_maker)
     _reset_user_id(monkeypatch)
@@ -132,6 +133,23 @@ def test_mediafolders_not_configured_raises(monkeypatch, _db_maker):
         if path == "/Users":
             return [{"Id": "user1", "Name": "admin"}]
         raise EmbyUnavailable("Emby 未配置")
+
+    _install_get(monkeypatch, _boom)
+    with pytest.raises(EmbyUnavailable):
+        run(list_library_folders())
+
+
+def test_views_user_id_not_configured_raises(monkeypatch, _db_maker):
+    """纯未配置场景：/Users 请求即抛「未配置」→ list_library_folders 原样 re-raise。
+
+    Finding-1 修复主路径：配置缺失时恢复 503 emby_not_configured（前端「未配置
+    空态」），而非降级为空列表。
+    """
+    _use_test_db(monkeypatch, _db_maker)
+    _reset_user_id(monkeypatch)
+
+    async def _boom(path, params):
+        raise EmbyUnavailable("EMBY_API_KEY 未配置")
 
     _install_get(monkeypatch, _boom)
     with pytest.raises(EmbyUnavailable):
@@ -221,12 +239,17 @@ def test_list_library_maps_status_to_series_status(monkeypatch, _db_maker):
 # ---------------------------------------------------------------------------
 
 
-def test_mediafolders_network_failure_returns_empty(monkeypatch, _db_maker):
-    """网络故障降级为空列表（不阻断分类展示）。"""
+def test_views_request_failure_returns_empty(monkeypatch, _db_maker):
+    """Views 请求网络故障 → 降级为空列表（不阻断分类展示）。
+
+    UserId 已获取成功，故障发生在 Views 请求面（非「未配置」）。
+    """
     _use_test_db(monkeypatch, _db_maker)
     _reset_user_id(monkeypatch)
 
     async def _boom(path, params):
+        if path == "/Users":
+            return [{"Id": "user1", "Name": "admin"}]
         raise EmbyUnavailable("Emby 请求失败: connection refused")
 
     _install_get(monkeypatch, _boom)
@@ -234,7 +257,7 @@ def test_mediafolders_network_failure_returns_empty(monkeypatch, _db_maker):
 
 
 def test_views_user_id_fetch_failure_returns_empty(monkeypatch, _db_maker):
-    """/Users 获取失败（无法取得 UserId）→ 降级空列表（不阻断分类展示）。"""
+    """/Users 获取失败（无法取得 UserId，非「未配置」错误）→ 降级空列表。"""
     _use_test_db(monkeypatch, _db_maker)
     _reset_user_id(monkeypatch)
 
@@ -243,6 +266,41 @@ def test_views_user_id_fetch_failure_returns_empty(monkeypatch, _db_maker):
 
     _install_get(monkeypatch, _boom)
     assert run(list_library_folders()) == []
+
+
+def test_get_user_id_not_configured_reraises(monkeypatch):
+    """/Users 抛「未配置」→ _get_user_id 原样 re-raise（非返回 None）。"""
+    _reset_user_id(monkeypatch)
+
+    async def _boom(path, params):
+        raise EmbyUnavailable("EMBY_BASE_URL 未配置")
+
+    _install_get(monkeypatch, _boom)
+    with pytest.raises(EmbyUnavailable):
+        run(emby_mod._get_user_id())
+
+
+def test_get_user_id_retries_after_not_configured(monkeypatch):
+    """「未配置」re-raise 后不固化缓存：配置修复后再次调用可重试成功。
+
+    若 re-raise 时保留 _USER_ID_LOADED=True，用户补配置后本进程内将永久
+    返回 None（无法自愈），故未配置失败必须重置缓存标记。
+    """
+    _reset_user_id(monkeypatch)
+    state = {"configured": False}
+
+    async def _handler(path, params):
+        if not state["configured"]:
+            raise EmbyUnavailable("EMBY_API_KEY 未配置")
+        return [{"Id": "user1", "Name": "admin"}]
+
+    _install_get(monkeypatch, _handler)
+
+    with pytest.raises(EmbyUnavailable):
+        run(emby_mod._get_user_id())
+    # 配置修复后（同一进程内）应能重试成功，而非命中固化缓存返回 None
+    state["configured"] = True
+    assert run(emby_mod._get_user_id()) == "user1"
 
 
 def test_views_bare_array_payload_parsed(monkeypatch, _db_maker):

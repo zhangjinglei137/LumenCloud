@@ -172,8 +172,10 @@ async def _get_user_id() -> Optional[str]:
     """惰性获取 Emby UserId（/Users 首个用户的 Id）。
 
     系统 api_key 具备管理员权限，/Users 返回用户数组（或 dict 包装的 Items）；
-    取首个用户的 Id 作为 /Users/{UserId}/Views 查询目标。成功/失败均只尝试
-    一次并缓存结果（恒定值）；失败或响应无 Id → None（调用方降级为空列表）。
+    取首个用户的 Id 作为 /Users/{UserId}/Views 查询目标。成功/非配置类失败均只
+    尝试一次并缓存结果（恒定值）；「未配置」错误（EMBY_BASE_URL/EMBY_API_KEY
+    缺失）原样 re-raise（保持前端「未配置空态」），并重置缓存标记允许配置修复
+    后重试；其他失败或响应无 Id → None（调用方降级为空列表）。
     """
     global _USER_ID, _USER_ID_LOADED
     if _USER_ID_LOADED:
@@ -186,6 +188,10 @@ async def _get_user_id() -> Optional[str]:
         first = users[0] if users else {}
         _USER_ID = first.get("Id") or None
     except EmbyUnavailable as exc:
+        if "未配置" in str(exc):
+            # 配置缺失可恢复：不固化缓存，配置修复后允许重试（Finding-1 修复）
+            _USER_ID_LOADED = False
+            raise
         logger.warning("[emby] 获取 UserId 失败，媒体库列表降级为空: %s", exc)
         _USER_ID = None
     return _USER_ID
