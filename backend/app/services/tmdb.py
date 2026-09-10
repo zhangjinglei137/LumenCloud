@@ -13,7 +13,9 @@ TMDB 元数据搜索服务。
   不阻断搜索/回源主流程
 - 全部使用 httpx.AsyncClient（每请求创建，不阻塞事件循环）
 """
+import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -79,6 +81,26 @@ def _extract_year(item: dict[str, Any]) -> str | None:
     return None
 
 
+def _normalize_aliases(raw: list | None, original_title: str | None) -> list[str]:
+    """别名归一化：小写、去空格、去括号版本后缀、去重；上限 20 防膨胀。
+
+    - 首个候选为 original_title（movie 的 original_title / tv 的 original_name，
+      详情响应的权威主名），其后拼接 also_known_as 原始数组；
+    - 每项 strip + lower + 去空格（如 "Soul Land" → "soulland"）+ 去除
+      "(YYYY)" 括号版本后缀（如 "Soul Land (2020)" → "soulland"）；
+    - 非 str / 空值跳过；去重保序；上限 20 条（TMDB 别名可能很长，防膨胀）。
+    """
+    out: list[str] = []
+    for name in [original_title, *(raw or [])]:
+        if not name or not isinstance(name, str):
+            continue
+        s = name.strip().lower().replace(" ", "")
+        s = re.sub(r"\(\d{4}\)", "", s).strip()
+        if s and s not in out:
+            out.append(s)
+    return out[:20]
+
+
 def _client_kwargs() -> dict[str, Any]:
     """构造 httpx.AsyncClient 关键字参数（P2-2 出口代理双模式）。
 
@@ -124,6 +146,14 @@ async def _read_cache(tmdb_id: str | int, media_type: str) -> dict[str, Any] | N
         if (now - row.updated_at).total_seconds() >= _CACHE_TTL_DAYS * 86400:
             return None  # 超 7 天 → 视为未命中，回源刷新
         year = str(row.year) if row.year is not None else None
+        aliases: list[str] = []
+        if row.aliases:
+            try:
+                parsed = json.loads(row.aliases)
+                if isinstance(parsed, list):
+                    aliases = [str(a) for a in parsed]
+            except (TypeError, ValueError):
+                aliases = []  # 落库数据异常（手改/旧脏数据）→ 降级空列表
         return {
             "tmdb_id": str(row.tmdb_id),
             "title": row.title or "",
@@ -136,6 +166,8 @@ async def _read_cache(tmdb_id: str | int, media_type: str) -> dict[str, Any] | N
             # TV 总集数（/3/tv/{id} 的 number_of_episodes；movie/缺失 → None）。
             # 全量模式集号范围校验（scan A3）数据基础。
             "number_of_episodes": row.number_of_episodes,
+            # 别名集合（JSON 数组字符串列反序列化；无 → 空列表）
+            "aliases": aliases,
         }
     except Exception as exc:  # noqa: BLE001 缓存不可用降级回源
         logger.warning("tmdb_cache 读取失败（降级回源）: %s", exc)
@@ -150,6 +182,7 @@ async def _upsert_cache(
     year: str | None,
     tv_status: str | None = None,
     number_of_episodes: int | None = None,
+    aliases: list[str] | None = None,
 ) -> None:
     """tmdb_cache 幂等 upsert（命中更新 / 未命中新增，updated_at=now）。
 
@@ -161,6 +194,9 @@ async def _upsert_cache(
       已落库的状态，防误清）；
     - number_of_episodes（tv 总集数，movie/无 → None）：仅非 None 时覆盖，
       语义与 tv_status 一致（search_multi 等无来源的调用不覆盖已落库值）；
+    - aliases（别名集合，JSON 数组字符串落库）：仅非 None 时覆盖——详情回源
+      （get_by_tmdb_id）传归一化结果（空列表也覆盖，详情是权威来源），
+      search_multi 等 search 响应无该字段的调用不传（None）不覆盖已落库别名；
     - 缓存层纯优化：失败仅告警（表未建 / DB 不可用等），不阻断调用方。
     """
     try:
@@ -191,6 +227,8 @@ async def _upsert_cache(
                 row.tv_status = tv_status
             if number_of_episodes is not None:
                 row.number_of_episodes = number_of_episodes
+            if aliases is not None:
+                row.aliases = json.dumps(aliases, ensure_ascii=False)
             row.updated_at = now
             await session.commit()
     except Exception as exc:  # noqa: BLE001 缓存落盘失败降级（不阻断返回）
@@ -213,13 +251,16 @@ async def get_by_tmdb_id(tmdb_id: str | int, media_type: str, force_refresh: boo
     字段），缓存命中会拿到 None 导致集号范围校验失效；强制回源补全并刷新缓存）。
 
     返回 dict：{tmdb_id, title, media_type, poster_path, year, status, tv_status,
-    number_of_episodes}。
+    number_of_episodes, aliases}。
     status / tv_status 同值：TMDB movie/tv 详情响应的 status 字段原值
     （movie: Released/In Production/Post Production/Rumored/Planned/Canceled；
     tv: Returning Series/Ended/Canceled/Pilot）；无该字段 → None。
     tv_status 键保留，兼容 emby.py _attach_tmdb_series_status 的读取。
     number_of_episodes：仅 tv 详情响应有（movie 响应无该字段 → None）；全量模式
     集号范围校验（scan A3）的数据基础。
+    aliases：别名集合（original_name/original_title + also_known_as 归一化
+    小写、去重、上限 20）；无别名来源 → 空列表。详情回源是权威来源，落库时
+    空列表也会覆盖旧值；缓存命中时从 tmdb_cache.aliases 列反序列化返回。
 
     异常:
         TMDBUnavailable: 未配置 key / 请求失败 / 响应异常
@@ -269,9 +310,14 @@ async def get_by_tmdb_id(tmdb_id: str | int, media_type: str, force_refresh: boo
     status = payload.get("status")
     # TV 总集数（仅 tv 详情响应有；movie 响应无该字段 → None）
     number_of_episodes = payload.get("number_of_episodes")
+    # 别名集合：tv 详情用 original_name、movie 用 original_title；+ also_known_as。
+    # search 响应无这些字段（search_multi 传 None 不覆盖），仅详情回源落库。
+    orig = payload.get("original_name") or payload.get("original_title")
+    aliases = _normalize_aliases(payload.get("also_known_as") or [], orig)
     await _upsert_cache(
         tmdb_id, media_type, title, poster_path, year,
         tv_status=status, number_of_episodes=number_of_episodes,
+        aliases=aliases,
     )
 
     return {
@@ -283,6 +329,7 @@ async def get_by_tmdb_id(tmdb_id: str | int, media_type: str, force_refresh: boo
         "status": status,
         "tv_status": status,  # 兼容 emby.py _attach_tmdb_series_status 读取
         "number_of_episodes": number_of_episodes,
+        "aliases": aliases,
     }
 
 

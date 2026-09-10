@@ -7,6 +7,7 @@
   代码正确性由最终统一验证兜底）。
 """
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -103,7 +104,7 @@ def _fake_sessionmaker(row_factory):
 
 def _cache_row(tmdb_id="42", media_type="movie", title="缓存标题",
                poster_path="/cached.jpg", year=2023, tv_status=None,
-               number_of_episodes=None, updated_at=None):
+               number_of_episodes=None, aliases=None, updated_at=None):
     """构造 tmdb_cache 命中行（SimpleNamespace 模拟 ORM 行）。"""
     return SimpleNamespace(
         tmdb_id=tmdb_id,
@@ -113,6 +114,7 @@ def _cache_row(tmdb_id="42", media_type="movie", title="缓存标题",
         year=year,
         tv_status=tv_status,
         number_of_episodes=number_of_episodes,
+        aliases=aliases,
         updated_at=updated_at or _now(),
     )
 
@@ -178,6 +180,7 @@ def test_get_by_tmdb_id_cache_hit_no_refetch(monkeypatch):
         "tv_status": None,
         "status": None,
         "number_of_episodes": None,
+        "aliases": [],  # 缓存行无别名 → 空列表
     }
     session.commit.assert_not_called()
 
@@ -208,6 +211,7 @@ def test_get_by_tmdb_id_stale_refetch_and_refresh(monkeypatch):
         "tv_status": None,  # movie 响应无 status 字段 → None
         "status": None,  # 同 tv_status：movie 无 status → None
         "number_of_episodes": None,  # movie 响应无该字段 → None
+        "aliases": [],  # 响应无 original_title/also_known_as → 空列表
     }
     assert len(http_calls) == 1 and "/3/movie/42" in http_calls[0]  # 确实回源
     session.commit.assert_called()  # upsert 落盘
@@ -614,3 +618,101 @@ def test_tmdb_cache_aliases_column(db):
 
     cols = run(_cols())
     assert "aliases" in cols
+
+
+# ---------------------------------------------------------------------------
+# aliases 归一化与落库（tmdb-alias-search-match：get_by_tmdb_id 详情回源解析）
+# ---------------------------------------------------------------------------
+
+def test_normalize_aliases_lowercase_strips_and_dedups():
+    """归一化：original_title 前置、小写、去空格、去括号版本后缀、去重。"""
+    raw = ["Soul Land", "  Dou Luo Da Lu  ", "Soul Land", "斗罗大陆 (2020)", "", None]
+    out = tmdb_mod._normalize_aliases(raw, "  Soul Land (2018) ")
+    assert out == ["soulland", "douluodalu", "斗罗大陆"]  # 重复项跳过，括号年份去除
+
+
+def test_normalize_aliases_caps_at_20():
+    """上限 20 条防膨胀：超量别名时截断。"""
+    raw = [f"alias-{i}" for i in range(30)]
+    out = tmdb_mod._normalize_aliases(raw, "origin")
+    assert len(out) == 20
+
+
+def test_get_by_tmdb_id_parses_aliases_and_caches(monkeypatch):
+    """tv 详情回源时 original_name + also_known_as 归一化落库（JSON 数组字符串）并随返回带出。"""
+    monkeypatch.setattr(settings, "TMDB_API_KEY", "test-key")
+    monkeypatch.setattr(config_store, "_cache", {})
+    maker, session = _fake_sessionmaker(lambda: None)  # 缓存未命中 → 回源新增
+    monkeypatch.setattr(tmdb_mod, "async_session", maker)
+
+    factory, _ = _make_http_factory({
+        "id": 123, "name": "斗罗大陆", "original_name": "Soul Land",
+        "also_known_as": ["Soul Land", "Douluo Dalu", "斗罗大陆", "Soul Land (2020)"],
+        "first_air_date": "2018-01-20", "status": "Returning Series",
+        "number_of_episodes": 263,
+    })
+    monkeypatch.setattr("app.services.tmdb.httpx.AsyncClient", factory)
+
+    result = run(tmdb_mod.get_by_tmdb_id(123, "tv"))
+    assert "soulland" in result["aliases"]
+    assert "douluodalu" in result["aliases"]
+    assert "斗罗大陆" in result["aliases"]
+    assert result["aliases"].count("soulland") == 1  # original_title + raw 同值去重
+    assert not any("(2020)" in a for a in result["aliases"])  # 括号版本后缀已去除
+
+    new_row = session.add.call_args.args[0]
+    assert json.loads(new_row.aliases) == result["aliases"]  # JSON 数组字符串落库
+
+
+def test_get_by_tmdb_id_movie_aliases_from_original_title(monkeypatch):
+    """movie 详情回源用 original_title 作为别名来源（tv 才用 original_name）。"""
+    monkeypatch.setattr(settings, "TMDB_API_KEY", "test-key")
+    monkeypatch.setattr(config_store, "_cache", {})
+    maker, session = _fake_sessionmaker(lambda: None)
+    monkeypatch.setattr(tmdb_mod, "async_session", maker)
+
+    factory, _ = _make_http_factory({
+        "id": 456, "title": "流浪地球", "original_title": "The Wandering Earth",
+        "also_known_as": ["Wandering Earth"], "release_date": "2019-02-05",
+    })
+    monkeypatch.setattr("app.services.tmdb.httpx.AsyncClient", factory)
+
+    result = run(tmdb_mod.get_by_tmdb_id("456", "movie"))
+    assert result["aliases"][0] == "thewanderingearth"  # original_title 前置且归一化
+    assert "wanderingearth" in result["aliases"]
+
+
+def test_get_by_tmdb_id_no_alias_sources_returns_empty(monkeypatch):
+    """响应无 original_*/also_known_as → aliases 空列表（不报错、空列表落库）。"""
+    monkeypatch.setattr(settings, "TMDB_API_KEY", "test-key")
+    monkeypatch.setattr(config_store, "_cache", {})
+    maker, session = _fake_sessionmaker(lambda: None)
+    monkeypatch.setattr(tmdb_mod, "async_session", maker)
+
+    factory, _ = _make_http_factory({
+        "id": 7, "name": "剧集G", "first_air_date": "2021-01-01",
+    })
+    monkeypatch.setattr("app.services.tmdb.httpx.AsyncClient", factory)
+
+    result = run(tmdb_mod.get_by_tmdb_id("7", "tv"))
+    assert result["aliases"] == []
+    new_row = session.add.call_args.args[0]
+    assert new_row.aliases == "[]"  # 详情回源是权威来源，空也对（覆盖旧值）
+
+
+def test_search_multi_does_not_overwrite_aliases(monkeypatch):
+    """search_multi upsert 传 aliases=None → 不覆盖已落库的别名（回退保护）。"""
+    monkeypatch.setattr(settings, "TMDB_API_KEY", "test-key")
+    monkeypatch.setattr(config_store, "_cache", {})
+    existing = _cache_row(tmdb_id="42", media_type="tv", aliases='["soulland"]')
+    maker, session = _fake_sessionmaker(lambda: existing)
+    monkeypatch.setattr(tmdb_mod, "async_session", maker)
+
+    payload = {"results": [{"id": 42, "name": "剧集B", "media_type": "tv",
+                            "first_air_date": "2021-01-01", "poster_path": "/p2.jpg"}]}
+    factory, _ = _make_http_factory(payload)
+    monkeypatch.setattr("app.services.tmdb.httpx.AsyncClient", factory)
+
+    run(tmdb_mod.search_multi("测试"))
+    assert existing.aliases == '["soulland"]'  # 别名保持已落库值
+    assert session.commit.called
