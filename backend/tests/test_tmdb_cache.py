@@ -527,6 +527,7 @@ def db():
         connect_args={"check_same_thread": False},
     )
     maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    maker.engine = engine  # 供列结构检查（inspect）访问实际建表引擎
 
     async def _create():
         async with engine.begin() as conn:
@@ -591,3 +592,25 @@ def test_refresh_episode_info_empty_preserves_old(db, monkeypatch):
         async with db() as s:
             return len((await s.execute(select(EpisodeInfoCache).where(EpisodeInfoCache.tmdb_id == 11))).scalars().all())
     assert run(_count()) == 1
+
+
+# ---------------------------------------------------------------------------
+# aliases 列（tmdb-alias-search-match：别名持久化数据基础）
+# ---------------------------------------------------------------------------
+
+def test_tmdb_cache_aliases_column(db):
+    """TmdbCache 含可空 aliases 列（迁移后）。
+
+    inspect 作用于 db.engine（async_sessionmaker 本身不可被 inspect，
+    由 db fixture 挂载的 engine 属性提供实际建表引擎）。
+    """
+    from sqlalchemy import inspect
+
+    async def _cols():
+        async with db.engine.connect() as conn:
+            return await conn.run_sync(
+                lambda sc: {c["name"] for c in inspect(sc).get_columns("tmdb_cache")}
+            )
+
+    cols = run(_cols())
+    assert "aliases" in cols

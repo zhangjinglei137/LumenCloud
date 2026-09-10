@@ -403,6 +403,10 @@ class TmdbCache(Base):
     # 供 scan 全量模式集号范围校验（少帅式搜索误匹配修复 A3）：同名短剧/无关资源
     # 文件名集号超过总数即拒绝入队。迁移见 alembic/versions/0014_tmdb_cache_episode_count.py。
     number_of_episodes = mapped_column(Integer, nullable=True)
+    # TV 别名集合（JSON 数组字符串：original_title + also_known_as 归一化小写）。
+    # 由 get_by_tmdb_id 详情回源时落库；search_multi 不写（search 响应无该字段）。
+    # 迁移见 alembic/versions/0016_tmdb_cache_aliases.py。
+    aliases = mapped_column(Text, nullable=True)
     updated_at = mapped_column(
         DateTime,
         server_default=text("CURRENT_TIMESTAMP"),
