@@ -4,7 +4,9 @@
 Tang.Clan.S01E29」（标题含「斗罗大陆」子串被旧 A1 子串宽松放行 + 季号 S01）
 被误收，而正确英文名资源「Soul.Land.S02E167」因不含中文关键词被剔除。修复：
 A1 从「精确/前缀/子串」宽松放行改为「[主标题] ∪ [别名集合] 成员匹配 +
-后续字符边界检查」（后随分隔符/串尾放行，紧贴中文字符/罗马数字拒绝）。
+后续字符边界检查」。边界语义（裁定收敛）：命中处紧贴罗马数字续作标记
+（如「斗罗大陆Ⅱ」）拒绝；紧贴中文字符/分隔符/年份/季号等均放行（回归裁定：
+「少帅全集」等合法打包资源不得误杀）。
 """
 import asyncio
 import json
@@ -44,7 +46,7 @@ def test_title_member_match_ok():
 
 
 def test_chinese_suffix_adjacent_rejected():
-    """「斗罗大陆Ⅱ绝世唐门」中「斗罗大陆」后紧贴「Ⅱ」（罗马数字）→ 拒绝。"""
+    """「斗罗大陆Ⅱ绝世唐门」中「斗罗大陆」后紧贴「Ⅱ」（罗马数字续作标记）→ 拒绝。"""
     assert not scan_mod._share_title_relevant(
         "斗罗大陆", "斗罗大陆Ⅱ绝世唐门.The.Peerless.Tang.Clan.S01E29", None
     )
@@ -67,9 +69,11 @@ def test_empty_candidate_degrades_open():
     assert scan_mod._share_title_relevant("凡人修仙传", "", ["soulland"]) is True
 
 
-def test_adjacent_chinese_rejected():
-    """「少帅将我宠上天…」对「少帅」：紧贴中文字符 → 拒绝（子串宽松放行移除）。"""
-    assert not scan_mod._share_title_relevant("少帅", "少帅将我宠上天 1080p", None)
+def test_adjacent_chinese_allowed():
+    """「少帅将我宠上天 1080p」「少帅全集」对「少帅」：紧贴中文字符 → 放行
+    （回归裁定：CJK 紧贴视为合法打包资源，边界仅拒绝罗马数字续作标记）。"""
+    assert scan_mod._share_title_relevant("少帅", "少帅将我宠上天 1080p", None) is True
+    assert scan_mod._share_title_relevant("少帅", "少帅全集", None) is True
 
 
 def test_season_suffix_adjacent_ok():

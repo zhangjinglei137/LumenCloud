@@ -840,7 +840,12 @@ _A1_TITLE_SEP_SKIP = f"[{re.escape(_A1_TITLE_SEP)}]?"  # 词间可选分隔符�
 
 
 def _is_cjk_char(c: str) -> bool:
-    """CJK 统一表意文字（含扩展 A）——标题命中处紧贴中文字符视为另一中文词。"""
+    """CJK 统一表意文字（含扩展 A）判定。
+
+    曾用于 A1 边界拒绝（紧贴中文拒绝）；裁定收敛后 _title_member_hit 仅拒绝
+    罗马数字续作标记（CJK 紧贴视为合法打包资源，近旧子串语义）。保留定义
+    以防后续复用，勿删除。
+    """
     o = ord(c)
     return 0x3400 <= o <= 0x4DBF or 0x4E00 <= o <= 0x9FFF
 
@@ -853,11 +858,13 @@ def _is_roman_numeral_char(c: str) -> bool:
 
 def _title_member_hit(cand_norm: str, member: str) -> bool:
     """成员命中 + 后续字符边界：member 在 cand 中出现（词间可跳过分隔符）且命中
-    末尾后一字符非「中文字符/罗马数字」→ True（串尾/分隔符/标点/年份/季号均放行）。
+    末尾后一字符非罗马数字 → True（串尾/分隔符/标点/年份/季号/紧贴中文均放行）。
 
     如别名 "soulland" 命中候选 "soul.land.s02e167.2160p.mkv"（"soul" 与 "land"
     间跳过点）；"斗罗大陆" 命中 "斗罗大陆Ⅱ绝世唐门…" 后随「Ⅱ」（罗马数字）→
-    拒绝；"斗罗大陆" 命中 "斗罗大陆S01E157…" 后随 "S"（季号标记）→ 放行。
+    拒绝（续作标记）；"斗罗大陆" 命中 "斗罗大陆S01E157…" 后随 "S"（季号标记）
+    或 "少帅全集" 后随「全」→ 放行。边界仅拒绝罗马数字——CJK 紧贴视为合法
+    打包资源（回归裁定：「少帅全集」「凡人修仙传动画版全集」须放行）。
     """
     if not member:
         return False
@@ -866,19 +873,18 @@ def _title_member_hit(cand_norm: str, member: str) -> bool:
         after = cand_norm[m.end():]
         if not after:
             return True  # 命中处为串尾
-        if _is_cjk_char(after[0]) or _is_roman_numeral_char(after[0]):
-            continue  # 紧贴中文字符/罗马数字 → 本处命中拒绝，继续找下一处
-        return True  # 分隔符/标点/年份/季号/英文/数字 → 放行
+        if _is_roman_numeral_char(after[0]):
+            continue  # 紧贴罗马数字（续作标记）→ 本处命中拒绝，继续找下一处
+        return True  # 分隔符/标点/年份/季号/英文/数字/中文 → 放行
     return False
 
 
 def _share_title_relevant(media_title: str, cand_title: str, aliases: list[str] | None = None) -> bool:
     """A1 分享标题相关性：剧名为空 → True（兜底不阻断）；否则归一化（去空格、lower）
     后与 [主标题] ∪ [别名集合] 做成员匹配（_title_member_hit，命中处后续字符边界：
-    后随分隔符/串尾放行，紧贴中文字符/罗马数字拒绝）。
+    后随罗马数字续作标记（如「斗罗大陆Ⅱ」）拒绝，其余含紧贴中文均放行）。
 
-    全部不中（如「斗罗大陆Ⅱ绝世唐门…」对主标题「斗罗大陆」——「Ⅱ」紧贴拒绝；
-    「少帅将我宠上天…」对「少帅」——紧贴中文拒绝）→ False，候选在排序前直接
+    全部不中（如「凡人修仙传合集」对 title「少帅」）→ False，候选在排序前直接
     剔除。别名成员匹配允许词间分隔符（"soulland" ↔ "Soul.Land.S02E167" 的点）。
     aliases 可空（None/[] → 仅主标题成员）。同名短剧等标题相关的误匹配由 A2/A3
     文件级校验拦截。
