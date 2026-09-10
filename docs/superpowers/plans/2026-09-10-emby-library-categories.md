@@ -842,7 +842,7 @@ git commit -m "feat(frontend): Emby 影视库分类重构、聚合视图与去�
 **Interfaces:**
 - Consumes: Task 5/6 的 store 分类派生与视图行为
 
-- [ ] **Step 1: 写测试**
+- [x] **Step 1: 写测试**
 
 ```typescript
 import { describe, expect, it } from 'vitest'
@@ -874,12 +874,12 @@ describe('emby store 分类派生', () => {
 
 （若需要组件级测试，可基于 store 层用例 + 视图手工验证覆盖；聚合请求逻辑建议抽为 store action 后单测，当前按 store getter 测试覆盖核心分类。）
 
-- [ ] **Step 2: 运行测试**
+- [x] **Step 2: 运行测试**
 
 Run: `cd frontend && npx vitest run src/views/embyLibraryView.test.ts`
 Expected: PASS
 
-- [ ] **Step 3: 提交**
+- [x] **Step 3: 提交**
 
 ```bash
 git add frontend/src/views/embyLibraryView.test.ts

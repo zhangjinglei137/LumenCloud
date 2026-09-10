@@ -17,7 +17,7 @@
 - [x] 3.2 stores/emby.ts 新增 fetchLibraries（媒体库列表）并调整 fetchLibrary(library_id)，验证 store 状态与错误码处理保留
 - [x] 3.3 EmbyLibraryView 分类重构：顶部「电影/剧集/动漫/全部」基于媒体库 CollectionType 生成，动漫库库级识别（tvshows 内关键词），电影/剧集库可下钻具体库，验证分类与真实媒体库一致
 - [x] 3.4 EmbyLibraryView 移除分页组件，列表全量展示，验证无分页控件且滚动浏览正常
-- [ ] 3.5 前端测试补充：分类生成（多库/混合库/动漫库）、去分页数据流用例，验证 `vitest` 通过
+- [x] 3.5 前端测试补充：分类生成（多库/混合库/动漫库）、去分页数据流用例，验证 `vitest` 通过
 
 ## 4. 验证
 
