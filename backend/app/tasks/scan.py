@@ -741,16 +741,29 @@ def _title_words(title: str) -> list[str]:
     return [w.lower() for w in re.findall(r"[a-zA-Z0-9]+", title or "") if len(w) >= 2]
 
 
-def _rank_candidates(media, items: list[dict], year: str | int | None = None) -> list[dict]:
+def _rank_candidates(
+    media, items: list[dict], year: str | int | None = None,
+    aliases: list[str] | None = None, target_seasons: set[int] | None = None,
+) -> list[dict]:
     """加分匹配排序：标题精确包含高分，部分词命中加分（忽略空格/大小写）。
 
     year（媒体首播年份，可选）：候选标题含该年份（如「凡人修仙传 (2020)」）时
     额外加权——同一剧名存在多版本（2020 动画版 vs 2025 新版）时优先召回与订阅
     一致的版本，避免版本错位导致全量未匹配（未匹配10 案例根因之二）。
+
+    aliases（可选，任务 7 增量）：别名/原名成员命中 +8——资源常以别名/原名
+    标识（如「Soul.Land」对「斗罗大陆」），主标题（中文）未命中的候选靠别名
+    加权排前，避免正确资源被挤出有限验证配额（判定用 _title_member_hit，
+    允许词间分隔符，与 A1 过滤口径一致）。
+
+    target_seasons（可选，任务 7 增量）：候选标题季号与目标缺失集所属季一致
+    +3——错部/错季资源（如 S01 对目标 S02）不加分，正确季号资源优先；空集 /
+    None 自然不加分，与 _candidate_season_ok 空目标季集合降级放行口径对齐。
     """
     title_norm = (media.title or "").replace(" ", "").lower()
     words = _title_words(media.title)
     year_str = str(year) if year is not None else None
+    alias_norms = [a.replace(" ", "").lower() for a in (aliases or [])]
     scored = []
     for it in items:
         name = str(it.get("title") or "").replace(" ", "").lower()
@@ -760,6 +773,14 @@ def _rank_candidates(media, items: list[dict], year: str | int | None = None) ->
         score += sum(2 for w in words if w in name)
         if year_str and year_str in name:
             score += 5
+        # 别名/原名命中 +8（成员匹配，非子串；_title_member_hit 内部拒空串）；
+        # 季号与目标一致 +3（空 target_seasons 不做加法）
+        alias_hit = any(_title_member_hit(name, m) for m in (alias_norms or []) if m)
+        if alias_hit:
+            score += 8
+        s = _season_of_title(name)
+        if target_seasons and s is not None and s in target_seasons:
+            score += 3
         scored.append((score, it))
     scored.sort(key=lambda x: -x[0])
     return [it for _, it in scored]
@@ -1075,8 +1096,12 @@ async def _search_and_rank(media, missing_keys: set[str]) -> list[dict]:
     year = await _media_year(media)
     # 候选分享筛选：rank 排序后不再硬截断前 20（诊断：前 20/60 可能全是失效码，
     # 有效分享被挤出）——放行排序后最多 _MAX_RANK_CANDIDATES 个，验证/尝试上限由
-    # _scan_one 按 share-info 成功数控制。
-    return _rank_candidates(media, expanded, year=year)[:_MAX_RANK_CANDIDATES]
+    # _scan_one 按 share-info 成功数控制。排序带上 aliases（_media_aliases 既有来源，
+    # 任务 5 A1 过滤同源）与 target_seasons（即下方季号硬校验用的同一集合）做
+    # 别名/季号增量加权。
+    return _rank_candidates(
+        media, expanded, year=year, aliases=aliases, target_seasons=target_seasons,
+    )[:_MAX_RANK_CANDIDATES]
 
 
 # ---------------------------------------------------------------------------

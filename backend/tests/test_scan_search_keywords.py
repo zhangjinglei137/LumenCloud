@@ -139,6 +139,17 @@ def test_rank_candidates_without_year_keeps_stable_order():
     assert ranked[0]["share_code"] == "code2025"
 
 
+def test_rank_candidates_alias_and_season_weights():
+    """别名命中与正确季号加权优先。"""
+    wrong = _candidate("斗罗大陆Ⅱ绝世唐门.The.Peerless.Tang.Clan.S01E29", "W")
+    right = _candidate("Soul.Land.S02E167.2160p.mkv", "R")
+    ranked = scan_mod._rank_candidates(
+        _media(), [wrong, right], year=2023,
+        aliases=["soulland", "douluodalu"], target_seasons={2},
+    )
+    assert ranked[0]["share_code"] == "R"
+
+
 # ---------------------------------------------------------------------------
 # _search_and_rank：季词 + 纯标题召回 + 年份加权（集成）
 # ---------------------------------------------------------------------------
