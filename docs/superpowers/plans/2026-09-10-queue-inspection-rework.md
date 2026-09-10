@@ -335,7 +335,7 @@ git commit -m "feat(queue)：size_estimated 落库与 aria2 真实大小回填
 - Consumes: `_mark_timeout_if_expired(dq_id, media_id, episode, quark_path, started_at, timeout_seconds, now)`（现有函数，复用）
 - Produces: 遗漏集命中 & tmdb_id 缺失两条 continue 路径纳入超时；各 continue 分支日志含明确原因
 
-- [ ] **Step 1: 写失败测试**（新建 `backend/tests/test_library_check_timeout.py`）
+- [x] **Step 1: 写失败测试**（新建 `backend/tests/test_library_check_timeout.py`）
 
 ```python
 """入库确认卡死修复：遗漏集/缺 tmdb_id 路径纳入超时窗口。"""
@@ -347,12 +347,12 @@ git commit -m "feat(queue)：size_estimated 落库与 aria2 真实大小回填
 # 5. _finalize_done 正常路径不回归（Emby 收录 → done）
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `cd backend && pytest tests/test_library_check_timeout.py -v`
 Expected: FAIL（遗漏集路径当前不超时，断言超时置 failed 失败）
 
-- [ ] **Step 3: 修复实现**
+- [x] **Step 3: 修复实现**
 
 `library_check.py` 主循环（342-370）重构：
 
@@ -413,12 +413,12 @@ async def _mark_timeout_if_expired(dq_id, media_id, episode, quark_path, started
 其余 continue 分支日志补 media_id/episode/原因（保持「本轮跳过不消耗超时」语义，但日志明确）：
 - `find_emby_id` 异常分支（338-340）：`"[library_check] media=%s %s Emby 收录查询失败（本轮跳过，不消耗超时）: %s"`
 
-- [ ] **Step 4: 运行通过 + 全量回归**
+- [x] **Step 4: 运行通过 + 全量回归**
 
 Run: `cd backend && pytest tests/test_library_check_timeout.py tests/test_council_fixes.py -v`
 Expected: PASS，无回归
 
-- [ ] **Step 5: 勾选并提交**
+- [x] **Step 5: 勾选并提交**
 
 ```
 勾选 tasks.md 3.1 / 3.2 / 3.3
