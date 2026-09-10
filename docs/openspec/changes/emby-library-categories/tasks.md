@@ -2,7 +2,7 @@
 
 ## 1. 后端：媒体库列表接口（含 CollectionType）
 
-- [x] 1.1 services/emby.py 新增 `list_library_folders()`：调用 `GET /Library/MediaFolders` 返回 [{id, name, collection_type}]（复用 _get/_check_config/错误归一），验证 MediaFolders 返回解析正确且未配置/不可达抛 EmbyUnavailable
+- [x] 1.1 services/emby.py 新增 `list_library_folders()`：先取用户 Id（GET /Users）再调用 `GET /Users/{UserId}/Views` 返回 [{id, name, collection_type, is_anime}]（复用 _get/_check_config/错误归一），验证 Views 返回解析正确且未配置/不可达抛 EmbyUnavailable
 - [x] 1.2 routers/emby.py 改造 `GET /api/emby/libraries`：返回 `{libraries: [{id, name, collection_type}], total}`，验证响应契约与前端类型一致
 
 ## 2. 后端：按媒体库查询库内条目

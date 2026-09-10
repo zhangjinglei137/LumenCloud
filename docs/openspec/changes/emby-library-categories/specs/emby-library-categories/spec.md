@@ -6,7 +6,7 @@
 
 ### Requirement: 获取媒体库列表含类型
 
-系统 SHALL 通过 Emby 官方接口（`GET /Library/MediaFolders`）获取媒体库列表，返回每个媒体库的名称、Id、CollectionType（movies/tvshows/mixed 等）与动漫标记 is_anime；tvshows 媒体库的 is_anime SHALL 由后端按库级关键词识别（库名含动漫关键词）；Emby 服务不可用时返回约定的 503 错误码（emby_not_configured / emby_unreachable）。
+系统 SHALL 通过 Emby 官方接口（`GET /Users/{UserId}/Views`，UserId 由 `GET /Users` 获取）获取媒体库列表，返回每个媒体库的名称、Id（ViewId，可直接作为 /Items 的 ParentId）、CollectionType（movies/tvshows/mixed 等）与动漫标记 is_anime；tvshows 媒体库的 is_anime SHALL 由后端按库级关键词识别（库名含动漫关键词）；Emby 服务不可用时返回约定的 503 错误码（emby_not_configured / emby_unreachable）。
 
 #### Scenario: 成功获取媒体库列表
 - **WHEN** 用户打开 Emby 影视库且 Emby 服务可用

@@ -22,7 +22,7 @@ Emby 影视库当前用固定 Tab（电影/剧集/动漫）配合后端 `item_ty
 
 | 参数 | 类型 | 必选 | 说明 |
 |------|------|------|------|
-| `library_id` | str | **是** | 目标媒体库 Id（MediaFolders 的 Id），作为 `/Items` 的 ParentId |
+| `library_id` | str | **是** | 目标媒体库 Id（`/Users/{UserId}/Views` 返回的 Id，即 ViewId），作为 `/Items` 的 ParentId |
 | `item_type` | `movie`/`series` | 否 | 映射 IncludeItemTypes：movie→Movie，series→Series；缺省 Movie,Series |
 | `status` | `continuing`/`ended` | 否 | 映射 SeriesStatus；非空时保证 IncludeItemTypes 含 Series |
 
@@ -32,7 +32,7 @@ Emby 影视库当前用固定 Tab（电影/剧集/动漫）配合后端 `item_ty
 
 ### 2.2 `GET /api/emby/libraries`（改造）
 
-数据源：`/Library/MediaFolders`（用户视图，含 Id/CollectionType/Name）。
+数据源：`GET /Users/{UserId}/Views`（用户视图，含 Id/CollectionType/Name；返回的 Id 即 ViewId，可直接作为 `/Items` 的 ParentId）。UserId 通过 `GET /Users`（系统 api_key 管理员权限）获取并缓存。
 
 响应：
 
@@ -40,7 +40,7 @@ Emby 影视库当前用固定 Tab（电影/剧集/动漫）配合后端 `item_ty
 {
   "libraries": [
     {
-      "id": "3b2f...",              // MediaFolders.Id（新语义）
+      "id": "3b2f...",              // Views.Id（ViewId，与 VirtualFolders.ItemId 等价）
       "name": "电影",
       "collection_type": "movies",  // movies/tvshows/mixed/null 等
       "is_anime": false             // 后端判定：tvshows 且库名含动漫关键词
@@ -60,15 +60,16 @@ Emby 影视库当前用固定 Tab（电影/剧集/动漫）配合后端 `item_ty
 
 ```python
 async def list_library_folders() -> list[dict[str, Any]]:
-    """查媒体库列表（/Library/MediaFolders），返回 [{id, name, collection_type, is_anime}]。
+    """查媒体库列表（/Users/{UserId}/Views），返回 [{id, name, collection_type, is_anime}]。
     tvshows 库附加 is_anime 判定；白名单非空时过滤 tvshows 库。"""
 ```
 
-- 调用 `_get("/Library/MediaFolders", {})`（复用鉴权/错误归一；未配置抛 EmbyUnavailable）
-- MediaFolders 返回 dict 包装（`Items` 键），防御性兼容裸数组（与现有 VirtualFolders 分支同模式）
+- 先获取用户 Id：`GET /Users`（系统 api_key 管理员权限）返回用户数组，取首个用户的 `Id`（惰性缓存，复用 `_get_server_id` 模式）
+- 调用 `_get("/Users/{user_id}/Views", {})`（复用鉴权/错误归一；未配置抛 EmbyUnavailable）；UserId 获取失败降级返回空列表并 warn
+- Views 返回 dict 包装（`Items` 键），防御性兼容裸数组；每条 `Id` 即 ViewId（与 VirtualFolders.ItemId 等价，可直接作 `/Items` 的 ParentId）
 - 过滤 `collection_type` 不在 `LIBRARY_COLLECTION_TYPES` 且非 null 的库
 - is_anime 判定：`collection_type == "tvshows"` 时对 `Name` 做 `ANIME_LIBRARY_KEYWORDS` 大小写不敏感子串匹配
-- 白名单过滤：读 `config_store.get("emby_series_library_ids")`，非空时 tvshows 库仅保留 `id in whitelist`
+- 白名单过滤：读 `config_store.get("emby_series_library_ids")`，非空时 tvshows 库仅保留 `id in whitelist`（ViewId 与旧 VirtualFolders ItemId 等价 → 存量配置直接兼容）
 - 记录日志 `Emby 媒体库列表: %d 个（影视类）`
 
 ### 3.2 `list_library(library_id, item_type, status)`（services/emby.py 改造）
@@ -112,7 +113,7 @@ export interface EmbyLibraryQuery {
 }
 
 export interface EmbyLibraryFolder {
-  id: string                  // 原 item_id → id（MediaFolders.Id 语义）
+  id: string                  // 原 item_id → id（/Users/{UserId}/Views 的 Id，即 ViewId）
   name: string
   collection_type: string | null
   is_anime: boolean           // 新增：后端判定
@@ -165,7 +166,7 @@ export interface EmbyLibrariesResponse {
 ## 6. 测试策略
 
 ### 后端（pytest）
-- `list_library_folders`：MediaFolders 解析（dict 包装/裸数组）、Id/CollectionType/is_anime 判定（tvshows 关键词命中/非 tvshows 不判）、白名单过滤（空/非空）、未配置/不可达抛 EmbyUnavailable
+- `list_library_folders`：Views 解析（dict 包装/裸数组）、UserId 获取、Id（ViewId）/CollectionType/is_anime 判定（tvshows 关键词命中/非 tvshows 不判）、白名单过滤（空/非空）、未配置/不可达抛 EmbyUnavailable
 - `list_library`：library_id 作为 ParentId 透传、IncludeItemTypes 映射（movie/series/缺省/status 补 Series）、SeriesStatus 映射、anime 参数已移除（router 层验证）
 - router：新参数契约（library_id 必选、item_type/status 可选）
 
