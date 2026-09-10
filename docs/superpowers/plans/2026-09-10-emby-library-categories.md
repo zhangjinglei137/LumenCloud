@@ -893,12 +893,12 @@ git commit -m "test(frontend): 补充 Emby 分类派生测试"
 **Files:**
 - 无代码文件；真实 Emby 环境验证 + 构建/启动检查
 
-- [ ] **Step 1: 后端构建与测试全量**
+- [x] **Step 1: 后端构建与测试全量**
 
 Run: `cd backend && python -m pytest -v`
 Expected: 全部 PASS（含既有用例回归）
 
-- [ ] **Step 2: 前端构建**
+- [x] **Step 2: 前端构建**
 
 Run: `cd frontend && npm run build`
 Expected: 通过
