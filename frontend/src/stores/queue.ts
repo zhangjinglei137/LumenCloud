@@ -30,12 +30,15 @@ export const useQueueStore = defineStore('queue', {
     capacity: null as Capacity | null,
     loading: false,
     page: 1,
-    pageSize: 20,
-    hasMore: false,
+    pageSize: 50,
+    /** 任务队列总条数（后端分页契约 total；el-pagination 用） */
+    total: 0,
     // ---------- 下载队列 Tab（扁平列表，§8.1） ----------
     downloadItems: [] as DownloadQueueItem[],
     downloadLoading: false,
-    downloadHasMore: false,
+    downloadPage: 1,
+    /** 下载队列总条数（后端分页契约 total；el-pagination 用） */
+    downloadTotal: 0,
     // ---------- 全局暂停 / 实时进度 ----------
     pauseState: { paused: false, in_flight: null } as PauseState,
     /** downloading 行实时进度：key = download_queue.id */
@@ -69,16 +72,15 @@ export const useQueueStore = defineStore('queue', {
     },
   },
   actions: {
-    async fetchPage(append = false): Promise<void> {
+    async fetchPage(goPage?: number): Promise<void> {
+      // TS 限制：options store 方法参数默认值无法引用 this，故在函数体内取当前页
+      const target = goPage ?? this.page
       this.loading = true
       try {
-        // 覆盖刷新（手动刷新 / 15s 慢刷）保持已加载条数：一次取回同等数量的最新数据，
-        // 避免已加载的后续页被截断、用户浏览位置丢失（§8.1 体验修正）
-        const limit = append ? this.pageSize : Math.max(this.items.length, this.pageSize)
-        const offset = append ? this.items.length : 0
-        const data = await listQueueApi(limit, offset)
-        this.items = append ? [...this.items, ...data] : data
-        this.hasMore = data.length >= limit
+        const res = await listQueueApi(this.pageSize, (target - 1) * this.pageSize)
+        this.items = res.items
+        this.total = res.total
+        this.page = target
       } finally {
         this.loading = false
       }
@@ -98,18 +100,16 @@ export const useQueueStore = defineStore('queue', {
     // ---------- 下载队列 Tab ----------
 
     /** 拉取下载队列扁平列表；失败保留旧数据，拦截器已提示，不抛错 */
-    async fetchDownloadPage(append = false): Promise<void> {
+    async fetchDownloadPage(goPage?: number): Promise<void> {
+      const target = goPage ?? this.downloadPage
       this.downloadLoading = true
       try {
-        // 覆盖刷新保持已加载条数（同 fetchPage），避免轮询截断列表
-        const limit = append ? this.pageSize : Math.max(this.downloadItems.length, this.pageSize)
-        const offset = append ? this.downloadItems.length : 0
-        const data = await listDownloadQueueApi(limit, offset)
-        this.downloadItems = append ? [...this.downloadItems, ...data] : data
-        this.downloadHasMore = data.length >= limit
+        const res = await listDownloadQueueApi(this.pageSize, (target - 1) * this.pageSize)
+        this.downloadItems = res.items
+        this.downloadTotal = res.total
+        this.downloadPage = target
       } catch {
         // 失败（网络/500 等）：保留旧数据，拦截器已提示
-        if (!append && !this.downloadItems.length) this.downloadItems = []
       } finally {
         this.downloadLoading = false
       }

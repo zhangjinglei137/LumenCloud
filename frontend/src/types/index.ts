@@ -144,6 +144,10 @@ export interface QueueTaskItem {
   file_size: number | null
   updated_at: string | null
   enqueued_at: string | null
+  /** 明文分享码（仅 admin 返回；guest 为 null） */
+  share_code?: string | null
+  /** file_size 是否为均摊估算值（展示「约」前缀） */
+  size_estimated?: boolean
   [key: string]: unknown
 }
 
@@ -199,6 +203,10 @@ export interface DownloadQueueItem {
   file_size?: number | null
   /** 分享码（12 位）；缩略展示由前端处理 */
   share_code?: string | null
+  /** 夸克分享地址（admin 可见；无分享码为 null） */
+  share_url?: string | null
+  /** file_size 是否为均摊估算值 */
+  size_estimated?: boolean
   status?: DownloadQueueStatus | null
   node_attempt?: number | null
   node_error?: string | null

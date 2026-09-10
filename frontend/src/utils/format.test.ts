@@ -100,3 +100,21 @@ describe('集数名称回退（media-detail-ui）', () => {
     expect(episodeDisplayName({})).toBe('—')
   })
 })
+
+import { formatFileSize } from './format'
+
+describe('文件大小约标注（formatFileSize，queue-inspection-rework）', () => {
+  it('null / undefined → —', () => {
+    expect(formatFileSize(null)).toBe('—')
+    expect(formatFileSize(undefined)).toBe('—')
+  })
+  it('非估算值原样输出（1 GB → "1.00 GB"）', () => {
+    expect(formatFileSize(1024 ** 3, false)).toBe('1.00 GB')
+  })
+  it('估算值加「约 」前缀', () => {
+    expect(formatFileSize(1024 ** 3, true)).toBe('约 1.00 GB')
+  })
+  it('十进制 1e9 按 formatBytes 1024 进制换算为 MB', () => {
+    expect(formatFileSize(1e9, false)).toBe('953.7 MB')
+  })
+})

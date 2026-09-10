@@ -11,10 +11,10 @@ import {
   downloadQueueStatusLabel,
   downloadQueueStatusType,
   formatBytes,
+  formatFileSize,
   formatGb,
   formatSpeed,
   formatTime,
-  shareCodeShort,
   taskQueueStatusColor,
   taskQueueStatusLabel,
   taskQueueStatusType,
@@ -231,11 +231,11 @@ async function onRetry(id: number) {
 let slowTimer: ReturnType<typeof setInterval> | undefined
 let progressTimer: ReturnType<typeof setInterval> | undefined
 
-/** 切换到下载 Tab 时懒加载一次 */
+/** 切换到下载 Tab 时懒加载一次（首页从第 1 页开始） */
 function onTabChange(name: string | number) {
   if (name === 'download' && !downloadLoaded.value) {
     downloadLoaded.value = true
-    store.fetchDownloadPage()
+    store.fetchDownloadPage(1)
     store.fetchCapacity()
     store.fetchPauseState()
   }
@@ -243,12 +243,12 @@ function onTabChange(name: string | number) {
 
 onMounted(async () => {
   await Promise.all([store.fetchPage(), store.fetchCapacity(), store.fetchPauseState()])
-  // 列表/容量/暂停状态 15 秒慢刷
+  // 列表/容量/暂停状态 15 秒慢刷（保持当前页，不跳回第 1 页）
   slowTimer = setInterval(() => {
-    store.fetchPage()
+    store.fetchPage(store.page)
     store.fetchCapacity()
     store.fetchPauseState()
-    if (activeTab.value === 'download') store.fetchDownloadPage()
+    if (activeTab.value === 'download') store.fetchDownloadPage(store.downloadPage)
   }, 15000)
   // downloading 行 2.5 秒局部轮询实时进度（仅在下载 Tab 且有下载中行时发起）
   progressTimer = setInterval(() => {
@@ -262,11 +262,6 @@ onUnmounted(() => {
   if (slowTimer) clearInterval(slowTimer)
   if (progressTimer) clearInterval(progressTimer)
 })
-
-async function loadMore() {
-  if (activeTab.value === 'download') await store.fetchDownloadPage(true)
-  else await store.fetchPage(true)
-}
 
 /** 手动刷新容量：带 force 语义（后端暂忽略，拿到的是最近一次统计），按钮 loading + 诚实提示缓存语义 */
 async function onRefreshCapacity() {
@@ -303,7 +298,7 @@ async function onPauseToggle(next: boolean) {
     <!-- 顶栏：全局暂停开关高调呈现（§8.1：暂停=不取新+在途继续） -->
     <div class="lc-panel qv-topbar">
       <div class="qv-topbar-row">
-        <h3 class="lc-panel-title" style="margin: 0">任务队列</h3>
+        <h3 class="lc-panel-title" style="margin: 0">巡检队列</h3>
         <div class="qv-pause-switch">
           <el-switch
             :model-value="store.pauseState.paused"
@@ -333,8 +328,8 @@ async function onPauseToggle(next: boolean) {
     </div>
 
     <el-tabs v-model="activeTab" class="qv-tabs" @tab-change="onTabChange">
-      <!-- ============ 任务队列 Tab：扁平列表 ============ -->
-      <el-tab-pane label="任务队列" name="task">
+      <!-- ============ 巡检队列 Tab：扁平列表 ============ -->
+      <el-tab-pane label="巡检队列" name="task">
         <div class="lc-panel">
           <div class="lc-toolbar" style="margin-bottom: 14px">
             <span class="lc-muted" style="font-size: 12px">按最新更新时间倒序的活跃任务</span>
@@ -380,12 +375,18 @@ async function onPauseToggle(next: boolean) {
               </el-table-column>
               <el-table-column label="大小" width="160">
                 <template #default="{ row }: { row: QueueTaskItem }">
-                  <span style="font-size: 13px">{{ formatBytes(row.file_size) }}</span>
+                  <span style="font-size: 13px">{{ formatFileSize(row.file_size, row.size_estimated) }}</span>
                 </template>
               </el-table-column>
               <el-table-column label="更新时间" width="150">
                 <template #default="{ row }: { row: QueueTaskItem }">
                   {{ formatTime(row.updated_at) }}
+                </template>
+              </el-table-column>
+              <!-- 分享码列：明文分享码仅 admin 可见（guest 后端返回 null，列隐藏） -->
+              <el-table-column v-if="auth.isAdmin" prop="share_code" label="分享码" width="140">
+                <template #default="{ row }: { row: QueueTaskItem }">
+                  <span class="qv-share-code" style="font-size: 13px">{{ row.share_code || '—' }}</span>
                 </template>
               </el-table-column>
               <el-table-column label="操作" width="230" align="right" fixed="right">
@@ -474,9 +475,15 @@ async function onPauseToggle(next: boolean) {
               </el-table-column>
             </el-table>
 
-            <div v-if="store.hasMore" style="text-align: center; margin-top: 16px">
-              <el-button :loading="store.loading" @click="loadMore">加载更多</el-button>
-            </div>
+            <el-pagination
+              v-if="store.total > store.pageSize"
+              :current-page="store.page"
+              :page-size="store.pageSize"
+              :total="store.total"
+              layout="prev, pager, next"
+              style="justify-content: center; margin-top: 16px"
+              @current-change="(p: number) => store.fetchPage(p)"
+            />
           </template>
         </div>
       </el-tab-pane>
@@ -607,12 +614,17 @@ async function onPauseToggle(next: boolean) {
                   <span v-else style="font-size: 13px">{{ formatBytes(row.file_size) }}</span>
                 </template>
               </el-table-column>
-              <el-table-column label="分享码" width="120">
+              <el-table-column prop="share_code" label="分享码" width="150">
                 <template #default="{ row }">
-                  <span v-if="shareCodeShort(row.share_code)" class="lc-muted qv-share-code">
-                    {{ shareCodeShort(row.share_code) }}
-                  </span>
-                  <span v-else class="lc-muted">—</span>
+                  <a
+                    v-if="row.share_url && row.share_code"
+                    :href="row.share_url"
+                    target="_blank"
+                    rel="noopener"
+                    class="qv-share-link"
+                  >{{ row.share_code }}</a>
+                  <span v-else-if="row.share_code">{{ row.share_code }}</span>
+                  <span v-else>—</span>
                 </template>
               </el-table-column>
               <el-table-column label="备注" min-width="170">
@@ -684,9 +696,15 @@ async function onPauseToggle(next: boolean) {
               </el-table-column>
             </el-table>
 
-            <div v-if="store.downloadHasMore" style="text-align: center; margin-top: 16px">
-              <el-button :loading="store.downloadLoading" @click="loadMore">加载更多</el-button>
-            </div>
+            <el-pagination
+              v-if="store.downloadTotal > store.pageSize"
+              :current-page="store.downloadPage"
+              :page-size="store.pageSize"
+              :total="store.downloadTotal"
+              layout="prev, pager, next"
+              style="justify-content: center; margin-top: 16px"
+              @current-change="(p: number) => store.fetchDownloadPage(p)"
+            />
           </template>
         </div>
       </el-tab-pane>
@@ -739,6 +757,12 @@ async function onPauseToggle(next: boolean) {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
   margin-top: 2px;
+}
+
+.qv-share-link {
+  color: var(--el-color-primary);
+  text-decoration: underline;
+  word-break: break-all;
 }
 
 /* ---------- 容量三段堆叠条（已用/预留中/可用） ---------- */

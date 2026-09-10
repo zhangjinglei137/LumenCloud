@@ -94,15 +94,23 @@ export function searchTmdbApi(q: string) {
 }
 
 // ---------- 队列与容量 ----------
+/** 队列分页响应契约：{items, total}（后端 Task 1-3 已落地） */
+export interface QueueListResponse<T> {
+  items: T[]
+  total: number
+}
+
 /**
  * 任务队列。
- * 新契约：GET /api/queue → QueueTaskItem[]（TaskQueue 活跃行 ∪ DownloadQueue 活跃行），
- * 每行为 {id, media_id, title, episode, status, node, file_name, file_size, updated_at, enqueued_at}；
+ * 契约：GET /api/queue?limit&offset → {items, total}；items 为
+ * TaskQueue 活跃行 ∪ DownloadQueue 活跃行，
+ * 每行含 {id, media_id, title, episode, status, node, file_name, file_size,
+ * share_code, share_url, size_estimated, updated_at, enqueued_at}；
  * 终态（done/failed/skipped）已被后端剔除。
  */
 export function listQueueApi(limit = 50, offset = 0) {
   return http
-    .get<QueueTaskItem[]>('/queue', { params: { limit, offset } })
+    .get<QueueListResponse<QueueTaskItem>>('/queue', { params: { limit, offset } })
     .then((r) => r.data)
 }
 
@@ -114,11 +122,11 @@ export function retryQueueItemApi(id: number) {
 
 /**
  * 下载队列扁平列表（下载队列 Tab）。
- * 契约：GET /api/queue?type=download&limit&offset → DownloadQueueItem[]
+ * 契约：GET /api/queue?type=download&limit&offset → {items, total}；仅返回活跃态。
  */
 export function listDownloadQueueApi(limit = 50, offset = 0) {
   return http
-    .get<DownloadQueueItem[]>('/queue', { params: { type: 'download', limit, offset } })
+    .get<QueueListResponse<DownloadQueueItem>>('/queue', { params: { type: 'download', limit, offset } })
     .then((r) => r.data)
 }
 

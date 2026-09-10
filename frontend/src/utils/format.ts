@@ -22,6 +22,13 @@ export function formatBytes(bytes: number | null | undefined): string {
   return `${bytes} B`
 }
 
+/** 文件大小展示：估算值加「约 」前缀，无值显示 — */
+export function formatFileSize(fileSize: number | null | undefined, estimated?: boolean): string {
+  if (fileSize == null) return '—'
+  const s = formatBytes(fileSize)
+  return estimated ? `约 ${s}` : s
+}
+
 /** 无时区后缀的 ISO 按 UTC 解释（补 Z）；带后缀按绝对时刻解析 */
 function parseTime(iso: string): Date {
   const hasZone = /(?:Z|[+-]\d{2}:?\d{2})$/.test(iso)
