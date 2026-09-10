@@ -416,7 +416,7 @@ git commit -m "fix(scan): A1 标题过滤改成员匹配与边界检查"
 - Consumes: `_RE_SXXEXX`（scan.py:60）、`_season_of_key`（scan.py:688）
 - Produces: `_season_of_title(text: str) -> int | None`（候选标题季号：SxxExx 的 Sxx；`第N季`→N；无 → None）；`_candidate_season_ok(cand_title, target_seasons: set[int]) -> bool`（季号解析成功且不在集合 → False；无季号 → True 降级）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 6.1: 写失败测试**
 
 `backend/tests/test_scan_title_match.py` 追加：
 
@@ -432,12 +432,12 @@ def test_candidate_season_ok():
     assert scan_mod._candidate_season_ok("凡人修仙传 (2020) 4K", {2})               # 无季号降级放行
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 6.2: 运行测试确认失败**
 
 Run: `pytest backend/tests/test_scan_title_match.py -v`
 Expected: FAIL（函数不存在）
 
-- [ ] **Step 3: 实现**
+- [x] **Step 6.3: 实现**
 
 ```python
 def _season_of_title(text: str) -> int | None:
@@ -460,12 +460,12 @@ def _candidate_season_ok(cand_title: str, target_seasons: set[int]) -> bool:
 
 `_search_and_rank` 的 A1 过滤后追加季号校验：`target_seasons = {_season_of_key(k) for k in missing_keys}`，`if not _candidate_season_ok(title, target_seasons): continue`（记录 debug 日志）。
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 6.4: 运行测试确认通过**
 
 Run: `pytest backend/tests/test_scan_title_match.py backend/tests/test_scan_full_mode_filter.py -v`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 6.5: 提交**
 
 ```bash
 git add backend/app/tasks/scan.py backend/tests/test_scan_title_match.py
