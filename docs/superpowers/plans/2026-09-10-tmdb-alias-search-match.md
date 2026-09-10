@@ -38,7 +38,7 @@ base-ref: a6a187053d27b76375b886bda1fcc072441eda57
 - Consumes: 现有 TmdbCache 模型结构
 - Produces: `TmdbCache.aliases`（Text, nullable；存 JSON 数组字符串，如 `["soul land","dou luo da lu"]`）
 
-- [ ] **Step 1: 写失败测试（模型字段）**
+- [x] **Step 1: 写失败测试（模型字段）**
 
 在 `backend/tests/test_tmdb_cache.py` 末尾新增：
 
@@ -50,12 +50,12 @@ def test_tmdb_cache_aliases_column(db):
     assert "aliases" in cols
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `pytest backend/tests/test_tmdb_cache.py::test_tmdb_cache_aliases_column -v`
 Expected: FAIL（tmdb_cache 无 aliases 列）
 
-- [ ] **Step 3: 写迁移与模型字段**
+- [x] **Step 3: 写迁移与模型字段**
 
 `backend/app/models/__init__.py` TmdbCache 增加：
 
@@ -68,12 +68,12 @@ Expected: FAIL（tmdb_cache 无 aliases 列）
 
 参照 `0014_tmdb_cache_episode_count.py` 风格创建 `backend/alembic/versions/0016_tmdb_cache_aliases.py`（add_column tmdb_cache.aliases Text nullable，down_revision 指向 0015）。
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `pytest backend/tests/test_tmdb_cache.py -v`
 Expected: PASS（含新用例与既有用例）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add backend/alembic/versions/0016_tmdb_cache_aliases.py backend/app/models/__init__.py backend/tests/test_tmdb_cache.py
