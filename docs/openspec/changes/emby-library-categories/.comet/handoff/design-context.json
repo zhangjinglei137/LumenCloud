@@ -1,0 +1,14 @@
+{
+  "change": "emby-library-categories",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "33b04f27404cfeff6b8904a246047653302a1e14da808dc0b646bf4ff98396f7",
+  "files": [
+    { "path": "docs/openspec/changes/emby-library-categories/proposal.md", "sha256": "ff28550c919db10caf92d4b85b88c0efcb2227e46e269928a046347004c0fb66" },
+    { "path": "docs/openspec/changes/emby-library-categories/design.md", "sha256": "c86747816d4636782636974a938221f712b61a3d3ebb510facf168e2031a55cd" },
+    { "path": "docs/openspec/changes/emby-library-categories/tasks.md", "sha256": "b5edda2cda92065eb956daf5d67031d3a087f9fedef91062934f1f74fdaeda2d" },
+    { "path": "docs/openspec/changes/emby-library-categories/specs/emby-library-categories/spec.md", "sha256": "6a2c6d260b74d15bd792da2e0ef0f5b22d4d73b4e0942886f0e5cedffe9cc4ef" }
+  ]
+}
