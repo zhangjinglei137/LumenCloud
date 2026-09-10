@@ -609,22 +609,22 @@ git commit -m "feat(queue)：巡检队列改名、字段补全、el-pagination �
 **Files:**
 - Test: 前端构建 `npm run build`；后端启动/测试全量
 
-- [ ] **Step 1: 全量测试**
+- [x] **Step 1: 全量测试**
 
 Run: `cd backend && pytest` 与 `cd frontend && npm run test`
 Expected: 全部通过
 
-- [ ] **Step 2: 前端构建**
+- [x] **Step 2: 前端构建**
 
 Run: `cd frontend && npm run build`
 Expected: 构建成功无报错
 
-- [ ] **Step 3: 后端迁移冒烟**
+- [x] **Step 3: 后端迁移冒烟**
 
 Run: `cd backend && alembic upgrade head`（或说明依赖服务在启动期自动执行 init_db；不主动启服务，若需验证请用户在可验证环境执行）
 Expected: 迁移 0016 成功到 head
 
-- [ ] **Step 4: 勾选并提交**
+- [x] **Step 4: 勾选并提交**
 
 ```
 勾选 tasks.md 5.1
