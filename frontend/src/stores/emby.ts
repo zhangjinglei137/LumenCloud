@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
-import { listEmbyLibraryApi } from '../api'
-import type { EmbyLibraryItem, EmbyLibraryQuery } from '../types'
+import { listEmbyLibrariesApi, listEmbyLibraryApi } from '../api'
+import type { EmbyLibraryFolder, EmbyLibraryItem, EmbyLibraryQuery } from '../types'
 
 /** Emby 库拉取失败分类：与后端 503 detail.code 对应 */
 export type EmbyErrorCode = 'not_configured' | 'unavailable' | null
@@ -24,13 +24,38 @@ export const useEmbyStore = defineStore('emby', {
     items: [] as EmbyLibraryItem[],
     loading: false,
     error: null as EmbyErrorCode,
+    libraries: [] as EmbyLibraryFolder[],
+    librariesLoading: false,
+    librariesError: null as EmbyErrorCode,
   }),
+  getters: {
+    /** 分类 → 媒体库列表（电影/剧集/动漫/全部） */
+    libraryGroups(state): Record<'movie' | 'series' | 'anime' | 'all', EmbyLibraryFolder[]> {
+      const groups = { movie: [], series: [], anime: [], all: [] } as Record<string, EmbyLibraryFolder[]>
+      for (const lib of state.libraries) {
+        if (lib.collection_type === 'movies') groups.movie.push(lib)
+        else if (lib.collection_type === 'tvshows' && lib.is_anime) groups.anime.push(lib)
+        else if (lib.collection_type === 'tvshows') groups.series.push(lib)
+        else groups.all.push(lib) // mixed / null
+      }
+      return groups as Record<'movie' | 'series' | 'anime' | 'all', EmbyLibraryFolder[]>
+    },
+  },
   actions: {
-    /**
-     * 拉取 Emby 库。
-     * @param params itemType 类型筛选 / status 在更完结 / anime 动漫库（详见 EmbyLibraryQuery）
-     */
-    async fetchLibrary(params?: EmbyLibraryQuery): Promise<void> {
+    async fetchLibraries(): Promise<void> {
+      this.librariesLoading = true
+      try {
+        const res = await listEmbyLibrariesApi()
+        this.libraries = res.libraries ?? []
+        this.librariesError = null
+      } catch (err) {
+        this.libraries = []
+        this.librariesError = parseEmbyErrorCode(err)
+      } finally {
+        this.librariesLoading = false
+      }
+    },
+    async fetchLibrary(params: EmbyLibraryQuery): Promise<void> {
       this.loading = true
       try {
         const res = await listEmbyLibraryApi(params)
