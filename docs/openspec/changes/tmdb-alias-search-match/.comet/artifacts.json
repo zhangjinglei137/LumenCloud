@@ -1,0 +1,8 @@
+{
+  "openspec_proposal": "docs/openspec/changes/tmdb-alias-search-match/proposal.md",
+  "openspec_design": "docs/openspec/changes/tmdb-alias-search-match/design.md",
+  "openspec_tasks": "docs/openspec/changes/tmdb-alias-search-match/tasks.md",
+  "openspec_delta_spec": "docs/openspec/changes/tmdb-alias-search-match/specs/media-pipeline/spec.md",
+  "handoff_context": "docs/openspec/changes/tmdb-alias-search-match/.comet/handoff/design-context.json",
+  "handoff_markdown": "docs/openspec/changes/tmdb-alias-search-match/.comet/handoff/design-context.md"
+}

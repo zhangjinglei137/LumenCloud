@@ -1,0 +1,15 @@
+{
+  "change": "tmdb-alias-search-match",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "ae58116439ad1455ab55fcf33987f35943c3f7d25a6f1154e400c204ab884f0e",
+  "files": [
+    { "path": "docs/openspec/changes/tmdb-alias-search-match/proposal.md", "sha256": "7b34c8b15c3da7a3d078136d4baf76dcf393fb99eace8a71e2437e1410feaa7c" },
+    { "path": "docs/openspec/changes/tmdb-alias-search-match/design.md", "sha256": "edf492340dd3bd175eef916ff96213299b7965c5f758e22c539ec35ff4cfca58" },
+    { "path": "docs/openspec/changes/tmdb-alias-search-match/tasks.md", "sha256": "49e001eca1df7fed0af16c7e7a6519d15c77b03aedad8734e2351a9a5ed7d0a8" },
+    { "path": "docs/openspec/changes/tmdb-alias-search-match/specs/media-pipeline/spec.md", "sha256": "0e13f4aa6f3a263fdf0fa323a2b3c2f0d1185301a344ea011858a2b36d0f88f1" },
+    { "path": "docs/openspec/changes/tmdb-alias-search-match/specs/title-alias-search/spec.md", "sha256": "73557f047bd67f16fa8d0a7851cdfc8fbd9febcbbd51514e74e5fb3a3f7bf015" }
+  ]
+}
