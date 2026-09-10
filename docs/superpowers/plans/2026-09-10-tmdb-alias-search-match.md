@@ -339,7 +339,7 @@ git commit -m "feat(scan): 云盘搜索改多关键词并行并去重合并"
 - Consumes: media.title + aliases（task 3 属性契约）
 - Produces: `_share_title_relevant(media_title, cand_title, aliases: list[str] | None = None) -> bool`：别名集合成员匹配 + 后续字符边界检查（后随分隔符/空白/括号/数字/季号标记放行；紧贴中文字符/罗马数字拒绝）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 5.1: 写失败测试**
 
 新建 `backend/tests/test_scan_title_match.py`：
 
@@ -361,12 +361,12 @@ def test_empty_title_degrades_open():
     assert scan_mod._share_title_relevant("", "whatever", None) is True
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 5.2: 运行测试确认失败**
 
 Run: `pytest backend/tests/test_scan_title_match.py -v`
 Expected: FAIL（`斗罗大陆Ⅱ...` 现被子串放行返回 True）
 
-- [ ] **Step 3: 实现**
+- [x] **Step 5.3: 实现**
 
 ```python
 def _title_member_hit(cand_norm: str, member: str) -> bool:
@@ -393,12 +393,12 @@ def _share_title_relevant(media_title, cand_title, aliases=None):
 
 `_search_and_rank` 调用处传入 `aliases`（从 media 属性解析，与 task 3 相同 helper 提取；抽公共 `_media_alias_list(media) -> list[str]`）。
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 5.4: 运行测试确认通过**
 
 Run: `pytest backend/tests/test_scan_title_match.py backend/tests/test_scan_search_keywords.py backend/tests/test_scan_silent_filter.py -v`
 Expected: PASS（既有 A1 相关用例不退化）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5.5: 提交**
 
 ```bash
 git add backend/app/tasks/scan.py backend/tests/test_scan_title_match.py
