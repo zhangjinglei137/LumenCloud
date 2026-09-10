@@ -435,7 +435,7 @@ git commit -m "feat(emby): list_library 改为按 library_id 单库查询并移�
 **Interfaces:**
 - Consumes: Task 1/2 产出的 `list_library_folders`、`list_library` 最终签名
 
-- [ ] **Step 1: 写补充测试**
+- [x] **Step 1: 写补充测试**
 
 追加以下用例：
 
@@ -481,12 +481,12 @@ def test_list_library_default_item_types(monkeypatch, _db_maker):
     assert captured["params"]["ParentId"] == "x1"
 ```
 
-- [ ] **Step 2: 运行测试**
+- [x] **Step 2: 运行测试**
 
 Run: `cd backend && python -m pytest tests/test_emby_library_folders.py -v`
 Expected: 全部 PASS
 
-- [ ] **Step 3: 提交**
+- [x] **Step 3: 提交**
 
 ```bash
 git add backend/tests/test_emby_library_folders.py
