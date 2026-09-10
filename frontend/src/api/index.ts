@@ -104,8 +104,9 @@ export interface QueueListResponse<T> {
  * 任务队列。
  * 契约：GET /api/queue?limit&offset → {items, total}；items 为
  * TaskQueue 活跃行 ∪ DownloadQueue 活跃行，
- * 每行含 {id, media_id, title, episode, status, node, file_name, file_size,
- * share_code, share_url, size_estimated, updated_at, enqueued_at}；
+ * 扁平行（巡检 Tab）含 {id, media_id, title, episode, status, node,
+ * file_name, file_size, share_code, size_estimated, updated_at, enqueued_at}
+ * —— share_url 仅 download 视图（?type=download）返回，flat 行不含；
  * 终态（done/failed/skipped）已被后端剔除。
  */
 export function listQueueApi(limit = 50, offset = 0) {

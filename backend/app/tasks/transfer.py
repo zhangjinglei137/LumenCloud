@@ -472,7 +472,9 @@ async def _poll_downloading_tasks() -> None:
         status = (st or {}).get("status")
         if status == "complete":
             # Task 2：用 aria2 totalLength 回填真实 file_size 并清估算标记；
-            # totalLength 缺失/非法 → real_size=None（不回填，保持估算值）。
+            # totalLength 缺失/非法/为 0 → real_size=None（不回填，保持估算值）。
+            # totalLength=0（0 字节文件）视为无真实大小：影视场景几乎不存在，
+            # 且保持估算值比回填 0 更安全（0 字节会误导「空文件」展示）。
             try:
                 real_size = int((st or {}).get("totalLength") or 0) or None
             except (TypeError, ValueError):

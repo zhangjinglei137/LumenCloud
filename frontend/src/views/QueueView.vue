@@ -332,7 +332,7 @@ async function onPauseToggle(next: boolean) {
       <el-tab-pane label="巡检队列" name="task">
         <div class="lc-panel">
           <div class="lc-toolbar" style="margin-bottom: 14px">
-            <span class="lc-muted" style="font-size: 12px">按最新更新时间倒序的活跃任务</span>
+            <span class="lc-muted" style="font-size: 12px">按创建时间升序的活跃任务</span>
             <div style="display: flex; gap: 8px">
               <el-button size="small" :loading="store.loading" @click="store.fetchPage()">
                 <el-icon style="vertical-align: -2px"><Refresh /></el-icon>&nbsp;刷新
@@ -614,7 +614,7 @@ async function onPauseToggle(next: boolean) {
                   <span v-else style="font-size: 13px">{{ formatBytes(row.file_size) }}</span>
                 </template>
               </el-table-column>
-              <el-table-column prop="share_code" label="分享码" width="150">
+              <el-table-column v-if="auth.isAdmin" prop="share_code" label="分享码" width="150">
                 <template #default="{ row }">
                   <a
                     v-if="row.share_url && row.share_code"
