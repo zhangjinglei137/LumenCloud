@@ -91,7 +91,7 @@ git commit -m "feat(tmdb): tmdb_cache 新增 aliases 列（别名持久化基础
 - Consumes: TmdbCache.aliases 列（任务 1）
 - Produces: `_upsert_cache(..., aliases: list[str] | None = None)`；`get_by_tmdb_id` 返回 dict 增加 `aliases: list[str]`；模块级 `_normalize_aliases(raw_aliases, original_title) -> list[str]`（小写、去空格、去版本后缀、去重、限 20 条）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `backend/tests/test_tmdb_cache.py` 新增：
 
@@ -121,12 +121,12 @@ def test_get_by_tmdb_id_parses_aliases_and_caches(monkeypatch):
 
 （沿用该文件既有的 `_FakeClient`/`run()` 辅助；`_FakeClient` 需支持 `__aenter__`/`__aexit__`/`get`）
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `pytest backend/tests/test_tmdb_cache.py::test_get_by_tmdb_id_parses_aliases_and_caches -v`
 Expected: FAIL（aliases 键不存在）
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 ```python
 def _normalize_aliases(raw: list | None, original_title: str | None) -> list[str]:
@@ -144,12 +144,12 @@ def _normalize_aliases(raw: list | None, original_title: str | None) -> list[str
 
 `get_by_tmdb_id` 回源分支：`raw_aliases = payload.get("also_known_as") or []`、`orig = payload.get("original_name") or payload.get("original_title")`，调用 `_upsert_cache(..., aliases=_normalize_aliases(raw_aliases, orig))`，返回 dict 附 `aliases`；`_upsert_cache` 增 `aliases` 参数（仅非 None 时覆盖，search_multi 传 None 不覆盖已落库别名）。
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `pytest backend/tests/test_tmdb_cache.py -v`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add backend/app/services/tmdb.py backend/tests/test_tmdb_cache.py
