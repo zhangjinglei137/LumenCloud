@@ -3,7 +3,8 @@
 - GET /api/emby/library?item_type=movie|series&status=continuing|ended&anime=true
   → Emby 库条目列表（item_type 类型筛选 / status 在更完结 / anime 动漫库）
   200 → {"items": [...], "total": n, "item_type": "movie"|"series"|null}
-- GET /api/emby/libraries → Emby 媒体库列表（/Library/VirtualFolders，动漫识别用）
+- GET /api/emby/libraries → Emby 媒体库列表（/Library/MediaFolders，含
+  CollectionType/is_anime，供分类 Tab 与设置页多选）
   200 → {"libraries": [...], "total": n}
 - Emby 服务不可用 → 503 {"detail": {"msg": "...", "code": "..."}}
   code 取值与前端 stores/emby.ts parseEmbyErrorCode 对齐：
@@ -16,7 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.models import User
 from app.routers.deps import get_current_user
-from app.services.emby import EmbyUnavailable, list_libraries, list_library
+from app.services.emby import EmbyUnavailable, list_library, list_library_folders
 
 router = APIRouter(prefix="/emby", tags=["emby"])
 
@@ -56,10 +57,10 @@ async def library(
 async def libraries(
     user: User = Depends(get_current_user),  # 登录用户可调（非 admin 限定）
 ) -> dict:
-    """Emby 媒体库列表（/Library/VirtualFolders）：供前端动漫 Tab 初始化/展示可选
-    （当前前端用固定 Tab，后端 Name 匹配动漫库，本端点留作扩展）。"""
+    """Emby 媒体库列表（/Library/MediaFolders，含 CollectionType/is_anime）：
+    供前端影视库分类 Tab 生成与设置页「剧集页可见媒体库」多选。"""
     try:
-        libs = await list_libraries()
+        libs = await list_library_folders()
     except EmbyUnavailable as exc:
         raise _to_http_exc(exc) from exc
     return {

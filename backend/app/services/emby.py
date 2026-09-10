@@ -9,7 +9,8 @@ Emby 防重基线 / 遗漏集 / 已有集 / 影视库展示服务。
                       支持 item_type / status（SeriesStatus 在更/完结）/ anime（动漫库）；
                       series 条目连载判定 TMDB 优先（有 tmdb_id → /3/tv/{id}
                       status 字段，无 → Emby SeriesStatus 兜底，见 _attach_tmdb_series_status）
-- list_libraries    ：查 Emby 媒体库列表（/Library/VirtualFolders），供动漫库识别
+- list_library_folders ：查 Emby 媒体库列表（/Library/MediaFolders），返回
+                       [{id, name, collection_type, is_anime}]，供媒体库分类 Tab
 - refresh_library   ：触发 Emby 全库扫描（POST /Library/Refresh），NasTools 转移/刮削
                       完成后调用，加速新文件入库（library_check 轮询兜底确认）
 
@@ -358,49 +359,48 @@ def _normalize_library_item(
     }
 
 
-async def list_libraries() -> list[dict[str, Any]]:
-    """查 Emby 媒体库列表（/Library/VirtualFolders），供动漫库识别（可选增强 C）。
+async def list_library_folders() -> list[dict[str, Any]]:
+    """查媒体库列表（/Library/MediaFolders），返回 [{id, name, collection_type, is_anime}]。
 
-    归一化每条 {item_id, name, collection_type}，仅保留 CollectionType 为
-    movies/tvshows 或 null 的媒体库（Emby 无 CollectionType=anime，动漫库只能靠
-    Name 关键词匹配）。VirtualFolders 调用失败时记 warn 返回空列表，不阻断主流程；
-    但配置缺失仍抛 EmbyUnavailable（保持前端「未配置空态」四态）。
+    每个媒体库返回 MediaFolders 的 Id（可直接作为 /Items 的 ParentId）。
+    is_anime：仅对 tvshows 库按 Name 含 ANIME_LIBRARY_KEYWORDS 判定（大小写不敏感）。
+    emby_series_library_ids 白名单非空时，仅过滤 tvshows 库（其他类型不受影响）。
+    MediaFolders 调用失败时记 warn 返回空列表，不阻断主流程；配置缺失仍抛
+    EmbyUnavailable（保持前端「未配置空态」）。
     """
     try:
-        payload = await _get("/Library/VirtualFolders", {})
+        payload = await _get("/Library/MediaFolders", {})
     except EmbyUnavailable as exc:
         if "未配置" in str(exc):
-            raise  # 配置缺失 → 交由 list_library 主流程按四态处理
-        logger.warning("Emby 媒体库列表获取失败（动漫筛选降级为空）: %s", exc)
+            raise
+        logger.warning("Emby 媒体库列表获取失败（分类降级为空）: %s", exc)
         return []
-    # VirtualFolders 返回裸数组；防御性兼容 dict 包装（Items 键）
+    # MediaFolders 返回 dict 包装（Items 键）；防御性兼容裸数组
     raw_folders: Any = payload if isinstance(payload, list) else payload.get("Items")
     folders: list[Any] = raw_folders or []
+    # 白名单：仅影响 tvshows 库
+    whitelist_raw = (config_store.get("emby_series_library_ids") or "").strip()
+    whitelist = {x.strip() for x in whitelist_raw.split(",") if x.strip()}
+
     result: list[dict[str, Any]] = []
     for folder in folders:
         collection_type = folder.get("CollectionType")
-        if collection_type not in LIBRARY_COLLECTION_TYPES and collection_type is not None:
-            continue
+        folder_id = folder.get("Id")
+        name = folder.get("Name") or ""
+        is_anime = False
+        if collection_type == "tvshows":
+            if whitelist and folder_id not in whitelist:
+                continue  # 白名单过滤剧集库
+            lower_name = name.lower()
+            is_anime = any(keyword in lower_name for keyword in ANIME_LIBRARY_KEYWORDS)
         result.append({
-            "item_id": folder.get("ItemId"),
-            "name": folder.get("Name"),
+            "id": folder_id,
+            "name": name,
             "collection_type": collection_type,
+            "is_anime": is_anime,
         })
     logger.info("Emby 媒体库列表: %d 个（影视类）", len(result))
     return result
-
-
-async def _find_anime_library_item_id() -> Optional[str]:
-    """定位首个动漫库的 ItemId（VirtualFolderInfo.ItemId，作 /Items 的 ParentId）。
-
-    Name 含「动漫」「动画」「anime」即判定为动漫库（大小写不敏感）；
-    找不到返回 None。
-    """
-    for library in await list_libraries():
-        name = (library.get("name") or "").lower()
-        if any(keyword in name for keyword in ANIME_LIBRARY_KEYWORDS):
-            return library.get("item_id")
-    return None
 
 
 async def _attach_in_media_flag(items: list[dict[str, Any]]) -> None:
