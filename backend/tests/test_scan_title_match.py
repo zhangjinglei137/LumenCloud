@@ -166,6 +166,13 @@ def test_candidate_season_ok():
     assert scan_mod._candidate_season_ok("凡人修仙传 (2020) 4K", {2})               # 无季号降级放行
 
 
+def test_candidate_season_ok_empty_target_seasons_degrades_open():
+    """空目标季集合（movie_missing / tv 未收录全量 → missing_keys 为空集）：
+    target_seasons=set() 时带季号候选也整体降级放行，不误杀。对齐任务 7 评分侧
+    `target_seasons and ...` 空集不加权口径（ora-5 裁定守卫）。"""
+    assert scan_mod._candidate_season_ok("Soul.Land.S02E167.mkv", set())  # 带季号 + 空集合 → 降级放行
+
+
 def test_search_and_rank_season_filter(monkeypatch):
     """季号硬校验在 _search_and_rank 内生效（A1 过滤之后）：
     错季候选（S01 vs 目标 S02）被拒；命中季（S02）保留；无季号候选（更新集连载

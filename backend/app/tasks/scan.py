@@ -944,7 +944,15 @@ def _season_of_title(text: str) -> int | None:
 
 def _candidate_season_ok(cand_title: str, target_seasons: set[int]) -> bool:
     """候选季号硬校验：季号解析成功且不在目标季集合 → False（拒绝）；
-    无季号 → True（降级放行，不误杀「凡人修仙传 (2020) 4K」类更新集资源）。"""
+    无季号 → True（降级放行，不误杀「凡人修仙传 (2020) 4K」类更新集资源）。
+
+    空目标季集合（target_seasons 为空：movie_missing / tv 未收录全量路径下
+    missing_keys 为空集）→ 整体降级放行——任何季号 `s in set()` 恒 False 会把
+    带季号候选全拒，违反「不误杀更新集/合集」精神；与任务 7 评分侧
+    `target_seasons and ...` 空集不加权口径对齐。
+    """
+    if not target_seasons:
+        return True
     s = _season_of_title(cand_title)
     if s is None:
         return True
