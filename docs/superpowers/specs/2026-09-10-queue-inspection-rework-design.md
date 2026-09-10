@@ -2,6 +2,8 @@
 comet_change: queue-inspection-rework
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-09-10-queue-inspection-rework
+status: final
 ---
 
 # Design Doc: queue-inspection-rework
