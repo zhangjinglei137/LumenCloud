@@ -919,6 +919,32 @@ def _media_aliases(media) -> list[str]:
     return [str(a) for a in parsed if a]
 
 
+# ---------------------------------------------------------------------------
+# 季号解析与候选硬校验（任务 6）
+# ---------------------------------------------------------------------------
+
+def _season_of_title(text: str) -> int | None:
+    """候选标题季号：`_RE_SXXEXX` 的 Sxx 优先（"Soul.Land.S02E167"→2）；
+    `第N季`→N；都无 → None（无法判季的候选按降级语义放行）。
+    """
+    m = _RE_SXXEXX.search(text or "")
+    if m:
+        return int(m.group(1))
+    m = re.search(r"第\s*(\d{1,2})\s*季", text or "")
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def _candidate_season_ok(cand_title: str, target_seasons: set[int]) -> bool:
+    """候选季号硬校验：季号解析成功且不在目标季集合 → False（拒绝）；
+    无季号 → True（降级放行，不误杀「凡人修仙传 (2020) 4K」类更新集资源）。"""
+    s = _season_of_title(cand_title)
+    if s is None:
+        return True
+    return s in target_seasons
+
+
 def _is_standard_ep_naming(text: str) -> bool:
     """标准集号命名：SxxExx / 第N集/话 任一命中即 True（A2 判定基础）。"""
     return bool(_RE_SXXEXX.search(text) or _RE_CN_EP.search(text))
@@ -971,6 +997,10 @@ async def _search_and_rank(media, missing_keys: set[str]) -> list[dict]:
       命中（或命中处紧贴中文/罗马数字）的分享候选在排序前直接剔除，剧名为空兜底
       放行——减少无关分享被验证/遍历的浪费；同名短剧等标题相关的误匹配由 A2/A3
       文件级校验（_full_mode_accept）拦截。
+    - 季号硬校验（A1 之后）：候选标题季号（SxxExx 的 Sxx / 第N季）不在目标季集合
+      （= {_season_of_key(k) for k in missing_keys}）→ 直接剔除（错部资源「斗罗大陆
+      Ⅱ绝世唐门…S01E29」对目标 S02 场景）；无季号候选（如「凡人修仙传 (2020) 4K
+      [更新190集]」更新集连载资源）降级放行不误杀；被拒候选 debug 级记录。
     - 全部关键词均失败（ok==0 且关键词数 ≥1）→ 抛 ScanSearchUnavailable：
       调用方（_scan_one）将 search 阶段标 error，区分「搜索故障」与「搜索成功但无候选」
       （后者返回 []，message 走缺集人话文案，不再误报「无候选命中」）。
@@ -1011,6 +1041,23 @@ async def _search_and_rank(media, missing_keys: set[str]) -> list[dict]:
                 media.id, (it.get("title") or "")[:60],
             )
     expanded = kept
+    # 季号硬校验（A1 之后）：目标季集合由缺失集 key 解析；候选季号（SxxExx 的
+    # Sxx / 第N季）解析成功且不在目标季集合 → 排序前直接剔除（错部/错季场景，
+    # 如「斗罗大陆Ⅱ绝世唐门…S01E29」对目标 S02）；无季号候选（「凡人修仙传
+    # (2020) 4K [更新190集]」更新集连载资源）降级放行不误杀。被拒候选 debug 级
+    # 记录（量可能大，不刷屏）。
+    target_seasons = {_season_of_key(k) for k in missing_keys}
+    season_kept: list[dict] = []
+    for it in expanded:
+        cand_title = it.get("title") or ""
+        if _candidate_season_ok(cand_title, target_seasons):
+            season_kept.append(it)
+        else:
+            logger.debug(
+                "[scan] media=%s 候选季号不在目标季集合，过滤候选: %s",
+                media.id, cand_title[:60],
+            )
+    expanded = season_kept
     year = await _media_year(media)
     # 候选分享筛选：rank 排序后不再硬截断前 20（诊断：前 20/60 可能全是失效码，
     # 有效分享被挤出）——放行排序后最多 _MAX_RANK_CANDIDATES 个，验证/尝试上限由

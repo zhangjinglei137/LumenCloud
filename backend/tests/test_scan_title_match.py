@@ -115,7 +115,11 @@ def test_media_aliases_none_or_invalid_falls_back_empty():
 
 def test_search_and_rank_a1_filter_uses_media_aliases(monkeypatch):
     """A1 过滤传入 media.aliases：主标题不中但别名词（soulland ↔ Soul.Land）命中
-    的候选保留；主标题/别名全不中的无关候选剔除。"""
+    的候选保留；主标题/别名全不中的无关候选剔除。
+
+    适配：目标缺失集从 S01E01 改为 S02E167——候选 Soul.Land.S02E167 季号 S02，
+    任务 6 季号硬校验要求候选季号与目标季一致（S02 vs 目标 S01 会被正确拒绝），
+    用例意图（A1 别名过滤）与季号无关，故对齐目标季。"""
     async def fake_search(kw: str):
         return [
             _cs_result("Soul.Land.S02E167 2160p", "codeA"),
@@ -129,7 +133,55 @@ def test_search_and_rank_a1_filter_uses_media_aliases(monkeypatch):
     )
 
     media = _media(title="斗罗大陆", tmdb_id=61852, aliases=json.dumps(["soulland", "douluodalu"]))
-    items = run(scan_mod._search_and_rank(media, {"S01E01"}))
+    items = run(scan_mod._search_and_rank(media, {"S02E167"}))
     codes = [i["share_code"] for i in items]
-    assert "codeA" in codes      # 别名词成员命中 → 保留进候选
+    assert "codeA" in codes      # 别名词成员命中 + 季号 S02 命中目标 S02 → 保留进候选
     assert "codeB" not in codes  # 主标题/别名全不中 → A1 过滤剔除
+
+
+# ---------------------------------------------------------------------------
+# 季号解析与候选硬校验（任务 6）
+# ---------------------------------------------------------------------------
+
+def test_season_of_title():
+    """候选标题季号：SxxExx 的 Sxx 优先；无 → None。"""
+    assert scan_mod._season_of_title("Soul.Land.S02E167.mkv") == 2
+    assert scan_mod._season_of_title("The.Peerless.Tang.Clan.S01E29") == 1
+    assert scan_mod._season_of_title("凡人修仙传 (2020) 4K [更新190集]") is None
+
+
+def test_season_of_title_chinese_season_marker():
+    """「第N季」标记 → N（接口契约：第N季→N）。"""
+    assert scan_mod._season_of_title("凡人修仙传 (2020) 第2季") == 2
+
+
+def test_candidate_season_ok():
+    """候选季号硬校验：解析成功且不在目标季集合 → 拒；命中 → 放行；无季号 → 降级放行。"""
+    assert not scan_mod._candidate_season_ok("The.Peerless.Tang.Clan.S01E29", {2})  # S01 vs 目标 S02 → 拒
+    assert scan_mod._candidate_season_ok("Soul.Land.S02E167.mkv", {2})              # S02 命中
+    assert scan_mod._candidate_season_ok("凡人修仙传 (2020) 4K", {2})               # 无季号降级放行
+
+
+def test_search_and_rank_season_filter(monkeypatch):
+    """季号硬校验在 _search_and_rank 内生效（A1 过滤之后）：
+    错季候选（S01 vs 目标 S02）被拒；命中季（S02）保留；无季号候选（更新集连载
+    资源）降级放行。三个候选均通过 A1（主标题/别名词成员命中），仅验证季号层。"""
+    async def fake_search(kw: str):
+        return [
+            _cs_result("Soul.Land.S02E167 2160p", "codeA"),          # 别名词命中 + S02 命中目标 → 保留
+            _cs_result("斗罗大陆S01E29 1080p", "codeB"),             # 主标题命中 + S01 错季 → 拒
+            _cs_result("斗罗大陆 (2020) 4K [更新190集]", "codeC"),   # 主标题命中 + 无季号 → 降级放行
+        ]
+
+    monkeypatch.setattr(scan_mod.cloudsaver, "search", fake_search)
+    monkeypatch.setattr(
+        scan_mod.tmdb, "get_by_tmdb_id",
+        AsyncMock(return_value={"year": 2020}),
+    )
+
+    media = _media(title="斗罗大陆", tmdb_id=61852, aliases=json.dumps(["soulland", "douluodalu"]))
+    items = run(scan_mod._search_and_rank(media, {"S02E167"}))
+    codes = [i["share_code"] for i in items]
+    assert "codeA" in codes      # S02 命中目标季集合 {2} → 保留
+    assert "codeB" not in codes  # S01 ∉ {2} → 季号硬校验拒绝
+    assert "codeC" in codes      # 无季号 → 降级放行（不误杀更新集连载资源）
