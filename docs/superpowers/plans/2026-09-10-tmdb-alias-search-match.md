@@ -542,7 +542,7 @@ git commit -m "feat(scan): 候选排序增加别名与季号加权"
 **Interfaces:**
 - Consumes: `_search_and_rank`（任务 4-7 集成态）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 8.1: 写失败测试**
 
 ```python
 """斗罗大陆中英文混搜回归：错部/错季被拒，正确英文名入选。"""
@@ -579,21 +579,21 @@ def test_douluo_end_to_end(monkeypatch):
     assert "BBB" not in codes  # 错季 S01 vs 目标 S02 → 拒绝
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 8.2: 运行测试确认失败**
 
 Run: `pytest backend/tests/test_scan_douluo_regression.py -v`
 Expected: FAIL（BBB 当前被收录）
 
-- [ ] **Step 3: 实现**
+- [x] **Step 8.3: 实现**
 
 本任务无新实现——依赖任务 4-7 已落地；若失败则回到对应任务修复（按 systematic-debugging 走根因）。
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 8.4: 运行测试确认通过**
 
 Run: `pytest backend/tests/test_scan_douluo_regression.py backend/tests/test_scan_search_keywords.py backend/tests/test_scan_silent_filter.py backend/tests/test_scan_full_mode_filter.py -v`
 Expected: PASS（斗罗大陆用例 + 既有搜索用例全部通过）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 8.5: 提交**
 
 ```bash
 git add backend/tests/test_scan_douluo_regression.py
