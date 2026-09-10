@@ -441,7 +441,7 @@ git commit -m "fix(queue)：入库确认卡死修复——遗漏集/缺 tmdb_id 
 - Consumes: 后端 `{items,total}` 契约；`QueueTaskItem.share_code/size_estimated`；`DownloadQueueItem.share_url/size_estimated`
 - Produces: `store.fetchPage/fetchDownloadPage` 读 total 分页；`store.total/downloadTotal` 状态；`format.ts` 新增 `formatFileSize(size, estimated)`（约前缀）
 
-- [ ] **Step 1: types 与 api 契约同步**（`frontend/src/types/index.ts` / `frontend/src/api/index.ts`）
+- [x] **Step 1: types 与 api 契约同步**（`frontend/src/types/index.ts` / `frontend/src/api/index.ts`）
 
 `QueueTaskItem`（132-148）补：
 
@@ -482,7 +482,7 @@ export function listDownloadQueueApi(limit = 50, offset = 0) {
 }
 ```
 
-- [ ] **Step 2: store 分页重写**（`frontend/src/stores/queue.ts`）
+- [x] **Step 2: store 分页重写**（`frontend/src/stores/queue.ts`）
 
 state 调整：`page: 1`、`pageSize: 20`、`total: 0`、`downloadPage: 1`、`downloadTotal: 0`；删除 `hasMore`/`downloadHasMore`。
 
@@ -518,7 +518,7 @@ state 调整：`page: 1`、`pageSize: 20`、`total: 0`、`downloadPage: 1`、`do
 
 （`pageSize` 保持 20 或改 50 与后端默认对齐——取 50，减少翻页频次；两种 Tab 各自维护页码，切 Tab 回第 1 页由调用方 `goPage=1`。）
 
-- [ ] **Step 3: format.ts 约标注 helper**
+- [x] **Step 3: format.ts 约标注 helper**
 
 ```typescript
 /** 文件大小展示：估算值加「约 」前缀，无值显示 — */
@@ -529,7 +529,7 @@ export function formatFileSize(fileSize: number | null | undefined, estimated?: 
 }
 ```
 
-- [ ] **Step 4: QueueView.vue 改造**
+- [x] **Step 4: QueueView.vue 改造**
 
 a) **Tab 改名**：`:306` `<h3>任务队列</h3>` → `巡检队列`；`:337` `label="任务队列"` → `label="巡检队列"`（`name="task"` 不变）。
 
@@ -574,7 +574,7 @@ d) **el-pagination 替代 loadMore**：删除 `loadMore()`（266-269）与两个
 
 e) **慢刷调整**（247-252）：15s 慢刷保留，但只刷当前页（`store.fetchPage(store.page)` 保持当前页不跳回第 1 页）。
 
-- [ ] **Step 5: 前端测试**（新建 `frontend/src/views/QueueView.test.ts`，参照 `MediaDetailView.test.ts` 的 vitest+mount 基建）
+- [x] **Step 5: 前端测试**（新建 `frontend/src/views/QueueView.test.ts`，参照 `MediaDetailView.test.ts` 的 vitest+mount 基建）
 
 ```typescript
 // 用例：
@@ -590,7 +590,7 @@ e) **慢刷调整**（247-252）：15s 慢刷保留，但只刷当前页（`stor
 Run: `cd frontend && npm run test`
 Expected: 新用例 PASS，全量 vitest 通过
 
-- [ ] **Step 6: 勾选并提交**
+- [x] **Step 6: 勾选并提交**
 
 ```
 勾选 tasks.md 4.1 / 4.2 / 4.3 / 4.4 / 4.5 / 4.6

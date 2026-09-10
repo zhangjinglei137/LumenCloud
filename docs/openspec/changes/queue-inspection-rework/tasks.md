@@ -22,12 +22,12 @@
 
 ## 4. 前端：巡检队列改名与展示
 
-- [ ] 4.1 QueueView 原「任务队列」Tab 改名为「巡检队列」，验证页面 Tab 命名更新
-- [ ] 4.2 巡检队列行展示 影视名称 / SxxExx / 分享码明文（admin）/ 状态 / 真实大小 / 更新时间，验证字段齐全
-- [ ] 4.3 下载队列分享码明文展示且可点击跳转 share_url（无地址则不可点击），验证点击行为
-- [ ] 4.4 巡检/下载队列改 el-pagination 标准分页（page/pageSize/total），移除 loadMore「展开更多」交互，默认加载第一页全量展示，验证翻页正常且无展开更多按钮
-- [ ] 4.5 stores/queue.ts 与 api/types 契约同步（total/page 字段、share_url、media_title），验证类型一致
-- [ ] 4.6 前端测试补充：队列行字段渲染、分享码链接、分页数据流用例，验证 `vitest` 通过
+- [x] 4.1 QueueView 原「任务队列」Tab 改名为「巡检队列」，验证页面 Tab 命名更新
+- [x] 4.2 巡检队列行展示 影视名称 / SxxExx / 分享码明文（admin）/ 状态 / 真实大小 / 更新时间，验证字段齐全
+- [x] 4.3 下载队列分享码明文展示且可点击跳转 share_url（无地址则不可点击），验证点击行为
+- [x] 4.4 巡检/下载队列改 el-pagination 标准分页（page/pageSize/total），移除 loadMore「展开更多」交互，默认加载第一页全量展示，验证翻页正常且无展开更多按钮
+- [x] 4.5 stores/queue.ts 与 api/types 契约同步（total/page 字段、share_url、media_title），验证类型一致
+- [x] 4.6 前端测试补充：队列行字段渲染、分享码链接、分页数据流用例，验证 `vitest` 通过
 
 ## 5. 验证
 
