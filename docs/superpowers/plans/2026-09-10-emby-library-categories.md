@@ -507,7 +507,7 @@ git commit -m "test(emby): 补充 MediaFolders 解析、映射与错误归一用
 - Produces: `EmbyLibraryQuery {library_id: string; itemType?: EmbyItemType; status?: EmbySeriesStatus}`；`EmbyLibraryFolder {id: string; name: string; collection_type: string | null; is_anime: boolean}`；`EmbyLibrariesResponse {libraries: EmbyLibraryFolder[]; total: number}`
 - Consumes: 现有 `EmbyItemType`/`EmbySeriesStatus`/`EmbyLibraryResponse`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 新建 `frontend/src/api/emby.test.ts`：
 
@@ -549,12 +549,12 @@ describe('Emby API 契约', () => {
 
 （若 `http` 模块导入路径不同，按项目实际调整 mock 目标；vitest 配置支持默认 globals，参考既有测试。）
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cd frontend && npx vitest run src/api/emby.test.ts`
 Expected: FAIL（TypeScript 编译或断言失败，因 api 仍传 itemType/anime）
 
-- [ ] **Step 3: 更新 types/index.ts**
+- [x] **Step 3: 更新 types/index.ts**
 
 ```typescript
 /** Emby 库查询参数（GET /api/emby/library，library_id 必选） */
@@ -578,7 +578,7 @@ export interface EmbyLibraryFolder {
 }
 ```
 
-- [ ] **Step 4: 更新 api/index.ts**
+- [x] **Step 4: 更新 api/index.ts**
 
 ```typescript
 export function listEmbyLibraryApi(params: EmbyLibraryQuery) {
@@ -596,16 +596,16 @@ export async function listEmbyLibrariesApi(): Promise<EmbyLibrariesResponse> {
 }
 ```
 
-- [ ] **Step 5: 更新 SettingsView.vue 引用**
+- [x] **Step 5: 更新 SettingsView.vue 引用**
 
 `frontend/src/views/SettingsView.vue` L649/651：`:key="lib.item_id"` → `:key="lib.id"`；`:value="lib.item_id"` → `:value="lib.id"`。
 
-- [ ] **Step 6: 运行测试与类型检查**
+- [x] **Step 6: 运行测试与类型检查**
 
 Run: `cd frontend && npx vitest run src/api/emby.test.ts && npm run build`
 Expected: 测试 PASS；`vue-tsc --noEmit` 通过（SettingsView 等已同步）
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```bash
 git add frontend/src/types/index.ts frontend/src/api/index.ts frontend/src/views/SettingsView.vue frontend/src/api/emby.test.ts
