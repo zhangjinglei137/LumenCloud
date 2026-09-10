@@ -252,7 +252,7 @@ git commit -m "feat(scan): 巡检关键词扩展别名词并限制上限"
 - Consumes: `_build_keywords_async`（任务 3）、`cloudsaver.search`
 - Produces: `_search_and_rank` 并行语义：`asyncio.gather` 并发搜索多词，结果合并去重（share_code 维度），单词失败降级语义保留
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 4.1: 写失败测试**
 
 `backend/tests/test_scan_search_keywords.py` 新增：
 
@@ -284,12 +284,12 @@ def test_search_and_rank_parallel_merges_dedup(monkeypatch):
 
 （沿用文件头部 `_cs_result`/`run()`/`_media()` 辅助；若 `_search_and_rank` 改为内部 `_build_keywords_async`，media 直接带 aliases 属性避免额外 mock tmdb）
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 4.2: 运行测试确认失败**
 
 Run: `pytest backend/tests/test_scan_search_keywords.py::test_search_and_rank_parallel_merges_dedup -v`
 Expected: FAIL（当前串行只搜主标题/季词，无别名词）
 
-- [ ] **Step 3: 实现**
+- [x] **Step 4.3: 实现**
 
 `_search_and_rank` 开头改为：
 
@@ -316,12 +316,12 @@ Expected: FAIL（当前串行只搜主标题/季词，无别名词）
 
 后续 `_expand_share_codes` 处增加 share 去重（按 share_code，保留首现），其余保持。
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4.4: 运行测试确认通过**
 
 Run: `pytest backend/tests/test_scan_search_keywords.py backend/tests/test_scan_async.py -v`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 4.5: 提交**
 
 ```bash
 git add backend/app/tasks/scan.py backend/tests/test_scan_search_keywords.py
