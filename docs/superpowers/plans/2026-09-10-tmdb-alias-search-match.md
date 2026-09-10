@@ -167,7 +167,7 @@ git commit -m "feat(tmdb): 详情回源时解析并落库别名集合"
 - Consumes: `media.title`、`media.tmdb_id`；`tmdb.get_by_tmdb_id` 返回 dict 的 `aliases` 键（任务 2）
 - Produces: `_build_keywords(media, missing_keys) -> list[str]` 支持别名词；`_MAX_SEARCH_KEYWORDS = 5` 常量；异步封装 `_build_keywords_async(media, missing_keys) -> list[str]`（内部调 tmdb.get_by_tmdb_id 拉 aliases，失败降级只返回主标题词）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `backend/tests/test_scan_search_keywords.py` 新增：
 
@@ -181,12 +181,12 @@ def test_build_keywords_includes_aliases_and_caps():
     assert len(kws) <= 5
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `pytest backend/tests/test_scan_search_keywords.py::test_build_keywords_includes_aliases_and_caps -v`
 Expected: FAIL（无别名词）
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 ```python
 _MAX_SEARCH_KEYWORDS = 5
@@ -229,12 +229,12 @@ async def _build_keywords_async(media, missing_keys: set[str]) -> list[str]:
     return _build_keywords(media, missing_keys, aliases=aliases)
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `pytest backend/tests/test_scan_search_keywords.py -v`
 Expected: PASS（既有用例保持：季词 + 纯标题兜底不变）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add backend/app/tasks/scan.py backend/tests/test_scan_search_keywords.py
