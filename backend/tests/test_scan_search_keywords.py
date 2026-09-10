@@ -190,7 +190,7 @@ def test_search_and_rank_parallel_merges_dedup(monkeypatch):
             raise RuntimeError("cloudSaver 搜索超时")  # 单词失败 → 降级继续
         if kw == "soulland":  # tmdb 别名词
             return [
-                _cs_result("凡人修仙传 动画版 全集", "AAA"),
+                _cs_result("凡人修仙传2020 动画全集", "AAA"),
                 _cs_result("凡人修仙传 4K 高清", "BBB"),
             ]
         if kw == "凡人修仙传":

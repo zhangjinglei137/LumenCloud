@@ -832,25 +832,91 @@ def _parse_episode_number(text: str) -> int | None:
     return None
 
 
-def _share_title_relevant(media_title: str, cand_title: str) -> bool:
-    """A1 分享标题相关性：剧名为空 → True（兜底不阻断）；否则归一化（去空格、lower）
-    后精确相等 / cand 以 title 开头（前缀）/ title 是 cand 的子串，任一命中 → True。
+# A1 标题成员匹配：成员词间允许跳过的候选分隔符（点/空格/括号/横线/下划线/全角
+# 标点等）——英文资源常以点分词命名（"Soul.Land.S02E167"），归一化后别名
+# "soulland" 需命中点分隔候选。
+_A1_TITLE_SEP = " .()[]-—_【】"
+_A1_TITLE_SEP_SKIP = f"[{re.escape(_A1_TITLE_SEP)}]?"  # 词间可选分隔符（成员匹配用）
 
-    全部不中（如「凡人修仙传合集」对 title「少帅」）→ False，候选在排序前直接剔除。
-    注意 title 是子串即放行（「少帅将我宠上天…」对「少帅」仍通过）——A1 只过滤
-    明显无关的分享；同名短剧等由 A2/A3 文件级校验拦截。
+
+def _is_cjk_char(c: str) -> bool:
+    """CJK 统一表意文字（含扩展 A）——标题命中处紧贴中文字符视为另一中文词。"""
+    o = ord(c)
+    return 0x3400 <= o <= 0x4DBF or 0x4E00 <= o <= 0x9FFF
+
+
+def _is_roman_numeral_char(c: str) -> bool:
+    """罗马数字（Ⅰ-ⅿ、ↀ-ↈ）——续作常见「斗罗大陆Ⅱ」标记。"""
+    o = ord(c)
+    return 0x2160 <= o <= 0x2188
+
+
+def _title_member_hit(cand_norm: str, member: str) -> bool:
+    """成员命中 + 后续字符边界：member 在 cand 中出现（词间可跳过分隔符）且命中
+    末尾后一字符非「中文字符/罗马数字」→ True（串尾/分隔符/标点/年份/季号均放行）。
+
+    如别名 "soulland" 命中候选 "soul.land.s02e167.2160p.mkv"（"soul" 与 "land"
+    间跳过点）；"斗罗大陆" 命中 "斗罗大陆Ⅱ绝世唐门…" 后随「Ⅱ」（罗马数字）→
+    拒绝；"斗罗大陆" 命中 "斗罗大陆S01E157…" 后随 "S"（季号标记）→ 放行。
+    """
+    if not member:
+        return False
+    pattern = _A1_TITLE_SEP_SKIP.join(re.escape(ch) for ch in member)
+    for m in re.finditer(pattern, cand_norm):
+        after = cand_norm[m.end():]
+        if not after:
+            return True  # 命中处为串尾
+        if _is_cjk_char(after[0]) or _is_roman_numeral_char(after[0]):
+            continue  # 紧贴中文字符/罗马数字 → 本处命中拒绝，继续找下一处
+        return True  # 分隔符/标点/年份/季号/英文/数字 → 放行
+    return False
+
+
+def _share_title_relevant(media_title: str, cand_title: str, aliases: list[str] | None = None) -> bool:
+    """A1 分享标题相关性：剧名为空 → True（兜底不阻断）；否则归一化（去空格、lower）
+    后与 [主标题] ∪ [别名集合] 做成员匹配（_title_member_hit，命中处后续字符边界：
+    后随分隔符/串尾放行，紧贴中文字符/罗马数字拒绝）。
+
+    全部不中（如「斗罗大陆Ⅱ绝世唐门…」对主标题「斗罗大陆」——「Ⅱ」紧贴拒绝；
+    「少帅将我宠上天…」对「少帅」——紧贴中文拒绝）→ False，候选在排序前直接
+    剔除。别名成员匹配允许词间分隔符（"soulland" ↔ "Soul.Land.S02E167" 的点）。
+    aliases 可空（None/[] → 仅主标题成员）。同名短剧等标题相关的误匹配由 A2/A3
+    文件级校验拦截。
     """
     if not media_title:
         return True
-    title_norm = media_title.replace(" ", "").lower()
     cand_norm = (cand_title or "").replace(" ", "").lower()
     if not cand_norm:
         return True  # 候选标题为空：兜底放行，避免误杀无标题候选
-    return (
-        cand_norm == title_norm
-        or cand_norm.startswith(title_norm)
-        or title_norm in cand_norm
-    )
+    title_norm = media_title.replace(" ", "").lower()
+    members = [
+        title_norm,
+        *(
+            a.strip().lower().replace(" ", "")
+            for a in (aliases or [])
+            if isinstance(a, str) and a.strip()
+        ),
+    ]
+    return any(_title_member_hit(cand_norm, m) for m in members if m)
+
+
+def _media_aliases(media) -> list[str]:
+    """从 media.aliases（JSON 数组字符串）解析别名集合；无属性/空/解析失败 → []。
+
+    供 _search_and_rank A1 过滤等复用——tmdb_cache.aliases 以 JSON 数组字符串
+    落库（可空，见 models.TmdbCache.aliases），历史脏数据/手改解析失败降级空
+    列表，绝不阻断搜索（与 tmdb._read_cache 反序列化口径一致）。
+    """
+    raw = getattr(media, "aliases", None)
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(a) for a in parsed if a]
 
 
 def _is_standard_ep_naming(text: str) -> bool:
@@ -901,9 +967,10 @@ async def _search_and_rank(media, missing_keys: set[str]) -> list[dict]:
       召回同一失效分享码只占一个候选位，不浪费逐码验证配额。
     - 单关键词失败：记录 warning 并继续（一个词失败、其余成功 → 不中断整轮，
       保持既有降级语义）。
-    - A1 分享标题过滤（少帅式搜索误匹配修复）：剧名完全无关的分享候选在排序前直接
-      剔除（精确/前缀/子串判定，剧名为空兜底放行）——减少无关分享被验证/遍历的
-      浪费；同名短剧等标题相关的误匹配由 A2/A3 文件级校验（_full_mode_accept）拦截。
+    - A1 分享标题过滤（斗罗大陆场景误匹配修复）：与 [主标题] ∪ [别名集合] 无成员
+      命中（或命中处紧贴中文/罗马数字）的分享候选在排序前直接剔除，剧名为空兜底
+      放行——减少无关分享被验证/遍历的浪费；同名短剧等标题相关的误匹配由 A2/A3
+      文件级校验（_full_mode_accept）拦截。
     - 全部关键词均失败（ok==0 且关键词数 ≥1）→ 抛 ScanSearchUnavailable：
       调用方（_scan_one）将 search 阶段标 error，区分「搜索故障」与「搜索成功但无候选」
       （后者返回 []，message 走缺集人话文案，不再误报「无候选命中」）。
@@ -930,11 +997,13 @@ async def _search_and_rank(media, missing_keys: set[str]) -> list[dict]:
         # 「无缺集/无候选」），上抛由 _scan_one 记录 error + 阶段定位
         raise ScanSearchUnavailable("全部搜索关键词调用 cloudSaver 均失败")
     expanded = _expand_share_codes(raw)
-    # A1 分享标题过滤：与剧名完全无关的候选直接剔除（排序前），减少无关分享被
-    # share-info 验证/递归遍历的浪费；被过滤标题 debug 级记录（量可能大，不刷屏）。
+    # A1 分享标题过滤：与 [主标题] ∪ [别名集合] 无成员命中（或命中处紧贴中文/罗马
+    # 数字）的候选直接剔除（排序前），减少无关分享被 share-info 验证/递归遍历的
+    # 浪费；被过滤标题 info 级记录（量可能大，不刷屏）。
+    aliases = _media_aliases(media)
     kept: list[dict] = []
     for it in expanded:
-        if _share_title_relevant(media.title, it.get("title") or ""):
+        if _share_title_relevant(media.title, it.get("title") or "", aliases=aliases):
             kept.append(it)
         else:
             logger.info(
