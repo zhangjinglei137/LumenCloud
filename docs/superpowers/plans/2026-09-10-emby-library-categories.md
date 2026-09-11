@@ -903,7 +903,7 @@ Expected: 全部 PASS（含既有用例回归）
 Run: `cd frontend && npm run build`
 Expected: 通过
 
-- [ ] **Step 3: 启动后端并验证接口契约**
+- [x] **Step 3: 启动后端并验证接口契约**（强制归档：真实环境接口契约验证延后至生产环境）
 
 启动后端（依赖用户环境），调用：
 
@@ -914,7 +914,7 @@ curl -s "http://localhost:<port>/api/emby/library?library_id=<真实库Id>&item_
 # 期望：按库返回影片，无 item_type/anime 旧参数
 ```
 
-- [ ] **Step 4: 真实 Emby 环境手动验证**
+- [x] **Step 4: 真实 Emby 环境手动验证**（强制归档：延后至生产环境，用户确认强制归档）
 
 - 多媒体库分类正确（电影/剧集/动漫/全部 与 Emby 真实库一致）
 - 按库查询条目正确（下钻具体库）
@@ -922,7 +922,7 @@ curl -s "http://localhost:<port>/api/emby/library?library_id=<真实库Id>&item_
 - 无分页全量展示（滚动浏览正常）
 - 存量 emby_series_library_ids 按 Id 语义是否继续生效（不一致则提示用户在设置页重新选择）
 
-- [ ] **Step 5: 记录验证证据并提交收尾**
+- [x] **Step 5: 记录验证证据并提交收尾**（强制归档：由 Comet 归档流程完成收尾）
 
 确认构建/测试/手动验证均通过后（真实 Emby 验证由用户确认），提交剩余变更并勾选 tasks.md 全部任务。
 
