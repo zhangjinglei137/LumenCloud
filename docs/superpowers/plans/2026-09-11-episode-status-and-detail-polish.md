@@ -1121,18 +1121,18 @@ git commit -m "fix(frontend): 详情页状态下拉设置 min-width，选中文�
 
 **Files:** 无新增（Task 5-8 已带测试）
 
-- [ ] **Step 1: 全量运行前端测试与构建**
+- [x] **Step 1: 全量运行前端测试与构建**
 
 Run: `cd frontend && npx vue-tsc --noEmit && npx vitest run && npm run build`
 Expected: 类型检查通过、测试全绿、构建成功
 
-- [ ] **Step 2: 若有失败，按 systematic-debugging 修复**
+- [x] **Step 2: 若有失败，按 systematic-debugging 修复**
 
-- [ ] **Step 3: 勾选 tasks.md 2.1-2.5**
+- [x] **Step 3: 勾选 tasks.md 2.1-2.5**
 
 编辑 `docs/openspec/changes/episode-status-and-detail-polish/tasks.md`，将 2.1-2.5 复选框改为 `[x]`。
 
-- [ ] **Step 4: 提交**
+- [x] **Step 4: 提交**
 
 ```bash
 git add docs/openspec/changes/episode-status-and-detail-polish/tasks.md

@@ -14,7 +14,7 @@
 - [x] 2.2 MediaListView.vue episodeText 改为「已有 N 缺失 M」文案（可用 available/total 或新增字段换算），验证列表卡展示正确、电影仍回退状态文案
 - [x] 2.3 MediaDetailView.vue 新增「当前进行中任务」区块：基于 detail.active_tasks 渲染集号 + 状态标签（复用 DOWNLOAD_QUEUE_STATUS_MAP），验证仅展示进行中任务、空态正常
 - [x] 2.4 MediaDetailView.vue 状态下拉 el-select 显式设置宽度（min-width），验证选中后文本完整可见
-- [ ] 2.5 前端测试补充：episodeText 新文案、active_tasks 区块渲染与空态、下拉宽度，验证 `vitest` 通过
+- [x] 2.5 前端测试补充：episodeText 新文案、active_tasks 区块渲染与空态、下拉宽度，验证 `vitest` 通过
 
 ## 3. 集成验证
 
