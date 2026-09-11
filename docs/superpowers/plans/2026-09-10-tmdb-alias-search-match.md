@@ -607,22 +607,22 @@ git commit -m "test(scan): 新增斗罗大陆中英文混搜回归用例"
 **Files:**
 - 无源码改动（验证任务）
 
-- [ ] **Step 1: 后端全量测试**
+- [x] **Step 9.1: 后端全量测试**
 
 Run: `pytest backend/tests/ -q`
 Expected: 全绿（既有 60+ 测试文件无回归；scan/tmdb 相关文件重点确认）
 
-- [ ] **Step 2: 后端静态/启动检查**
+- [x] **Step 9.2: 后端静态/启动检查**
 
 Run: `python -m compileall backend/app` 与 `python -c "from app.tasks import scan; from app.services import tmdb"`（backend venv 下）
 Expected: 无语法/导入错误
 
-- [ ] **Step 3: 前端构建（后端无改动但 guard 会跑 npm build）**
+- [x] **Step 9.3: 前端构建（后端无改动但 guard 会跑 npm build）**
 
 Run: `npm run build`（frontend 目录）
 Expected: 构建成功
 
-- [ ] **Step 4: 提交（如有遗留改动）**
+- [x] **Step 9.4: 提交（如有遗留改动）**
 
 ```bash
 git status --short
@@ -636,9 +636,9 @@ git add -A && git commit -m "chore(scan): 搜索匹配改造全量验证通过"
 **Files:**
 - Modify: `docs/openspec/changes/tmdb-alias-search-match/tasks.md`（勾选全部任务）
 
-- [ ] **Step 1: 勾选 tasks.md 全部复选框**
+- [x] **Step 10.1: 勾选 tasks.md 全部复选框**
   确认 10 项全部 `- [x]`，与实现一致
-- [ ] **Step 2: 提交**
+- [x] **Step 10.2: 提交**
 
 ```bash
 git add docs/openspec/changes/tmdb-alias-search-match/tasks.md
