@@ -6,6 +6,9 @@ import { useMediaStore } from '../stores/media'
 import { useAuthStore } from '../stores/auth'
 import {
   buildEpisodeGroups,
+  downloadQueueStatusColor,
+  downloadQueueStatusLabel,
+  downloadQueueStatusType,
   episodeDisplayName,
   episodeStateTag,
   episodeStateTooltip,
@@ -16,6 +19,9 @@ import {
   mediaTypeLabel,
   seriesStatusLabel,
   seriesStatusType,
+  taskQueueStatusColor,
+  taskQueueStatusLabel,
+  taskQueueStatusType,
   taskStatusLabel,
   taskStatusType,
 } from '../utils/format'
@@ -53,6 +59,9 @@ onMounted(async () => {
 
 const detail = computed(() => store.detail)
 const episodes = computed(() => detail.value?.episode_state ?? [])
+
+/** 进行中任务行（active_tasks 契约见 types.ActiveTask；source 决定状态字典） */
+const activeTasks = computed(() => detail.value?.active_tasks ?? [])
 
 /** 集数行 + 预计算的 4 色分类 tag（模板直接使用，免去逐行重复判定；字段契约见 episodeStateTag） */
 const episodeRows = computed(() =>
@@ -268,6 +277,34 @@ async function onDelete() {
           {{ seriesStatusLabel(detail.series_status, 'movie') }}
         </el-tag>
         <p class="lc-muted" style="margin-top: 8px; font-size: 12px">电影无集数概念，状态以 TMDB 为准</p>
+      </div>
+
+      <!-- 当前进行中任务（episode-status-and-detail-polish：仅 tv + 有任务时展示） -->
+      <div v-if="detail.media_type !== 'movie' && activeTasks.length > 0" class="lc-panel">
+        <h3 class="lc-panel-title">当前进行中任务</h3>
+        <el-table :data="activeTasks" size="small" style="width: 100%">
+          <el-table-column label="集" width="110">
+            <template #default="{ row }">
+              <span>{{ row.episode }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="名称" min-width="140">
+            <template #default="{ row }">
+              <span>{{ episodeDisplayName(row) || '—' }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="状态" width="120" align="center">
+            <template #default="{ row }">
+              <el-tag
+                :type="row.source === 'task' ? taskQueueStatusType(row.status) : downloadQueueStatusType(row.status)"
+                :color="(row.source === 'task' ? taskQueueStatusColor(row.status) : downloadQueueStatusColor(row.status)) ?? undefined"
+                effect="plain"
+              >
+                {{ row.source === 'task' ? taskQueueStatusLabel(row.status) : downloadQueueStatusLabel(row.status) }}
+              </el-tag>
+            </template>
+          </el-table-column>
+        </el-table>
       </div>
 
       <!-- 集数状态（剧集：单列全宽） -->

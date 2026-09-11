@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { reactive } from 'vue'
 import MediaDetailView from './MediaDetailView.vue'
+import type { ActiveTask } from '../types'
 
 vi.mock('vue-router', () => ({
   useRoute: () => ({ params: { id: '1' } }),
@@ -26,6 +27,7 @@ const detail = reactive<{
   status: string
   episode_state: TestEpisodeState[]
   tmdb_episodes: Array<{ season: number; episode: number; name?: string }>
+  active_tasks: ActiveTask[]
 }>({
   id: 1,
   title: '测试剧',
@@ -39,6 +41,7 @@ const detail = reactive<{
     { season: 1, episode: 1, name: '第一集' },
     { season: 1, episode: 2 },
   ],
+  active_tasks: [],
 })
 
 vi.mock('../stores/media', () => ({
@@ -77,11 +80,16 @@ const EP_STUBS = {
     template: '<div><slot v-for="r in sampleRows" :row="r" /></div>',
     data: () => ({
       // 两行：一行有名称（渲染「第一集」），一行无名称（名称列回退 S01E02）
+      // episode/status/source 字段为「当前进行中任务」表格冒烟渲染补齐
+      // （该表格列访问 row.episode / row.source / row.status，按 source 复用对应状态字典）
       sampleRows: [
         {
           season: 1,
           episode_number: 1,
           name: '第一集',
+          episode: 'S01E001',
+          status: 'downloading',
+          source: 'dq',
           __tag: { label: '已在库', type: 'success', reason: '冒烟样例行' },
           size_gb: 1.5,
           updated_at: '2026-01-01T00:00:00Z',
@@ -90,6 +98,9 @@ const EP_STUBS = {
           season: 1,
           episode_number: 2,
           name: '',
+          episode: 'S01E002',
+          status: 'probing',
+          source: 'task',
           __tag: { label: '已开播', type: 'warning', reason: '冒烟样例行' },
           size_gb: null,
           updated_at: null,
@@ -192,5 +203,38 @@ describe('MediaDetailView 分组过滤（media-detail-ui）', () => {
     vm.activeGroup = '101-101'
     await flushPromises()
     expect(episodeNumbers()).toEqual([101, null])
+  })
+})
+
+describe('MediaDetailView 当前进行中任务区块（episode-status-and-detail-polish）', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    detail.active_tasks = []
+  })
+
+  afterEach(() => {
+    detail.active_tasks = []
+  })
+
+  it('有任务时渲染区块：集号 + 集名 + 按 source 的状态标签', async () => {
+    detail.active_tasks = [
+      { season: 1, episode: 'S01E001', status: 'downloading', source: 'dq', air_date: '2026-01-01' },
+      { season: 1, episode: 'S01E002', status: 'probing', source: 'task', air_date: null },
+    ]
+    const wrapper = mountView()
+    await flushPromises()
+    const text = wrapper.text()
+    expect(text).toContain('当前进行中任务')
+    expect(text).toContain('S01E001')
+    expect(text).toContain('下载中') // dq 字典
+    expect(text).toContain('S01E002')
+    expect(text).toContain('探测中') // task 字典
+  })
+
+  it('无任务时隐藏区块', async () => {
+    detail.active_tasks = []
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('当前进行中任务')
   })
 })
