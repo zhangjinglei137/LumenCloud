@@ -154,9 +154,12 @@ if STATIC_DIR.exists():
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
         # P3-5：/api 未知路径返回 404 JSON（REST 语义），其余未知路径保持 SPA fallback。
-        # 文件存在优先（防御性：/api 下若有静态产物仍正常直出）。
-        file_path = STATIC_DIR / full_path
-        if file_path.exists() and file_path.is_file():
+        # D7 安全审查（路径穿越防护）：URL 编码的 `..%2f` 未经规范化直接 join 可
+        # 穿越出 static 根读取任意文件（如 <data_dir>/.jwt_secret 伪造 token）。
+        # 先 resolve 规范化 + 必须落在 static 根内，越界一律回退 SPA（不直出文件）。
+        static_root = STATIC_DIR.resolve()
+        file_path = (static_root / full_path).resolve()
+        if file_path.is_relative_to(static_root) and file_path.is_file():
             return FileResponse(file_path)
         if full_path == "api" or full_path.startswith("api/"):
             # 与 FastAPI 默认错误结构一致（{"detail": "Not Found"}），
