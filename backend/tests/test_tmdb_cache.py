@@ -8,7 +8,13 @@
 """
 import asyncio
 import json
+import os
+import sqlite3
+import subprocess
+import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -716,3 +722,40 @@ def test_search_multi_does_not_overwrite_aliases(monkeypatch):
     run(tmdb_mod.search_multi("测试"))
     assert existing.aliases == '["soulland"]'  # 别名保持已落库值
     assert session.commit.called
+
+
+# ---------------------------------------------------------------------------
+# 迁移冒烟：0016_tmdb_cache_aliases upgrade / downgrade 对称增删列
+# 参照 test_queue_size_estimated.py 的 subprocess + 临时数据目录模式（真 alembic）。
+# 注：本 change 在 0016_queue_size_estimated 之上插入该迁移头，alembic 的 -1
+# 沿 down_revision 只回退 1 版，故显式指定目标 revision。
+# ---------------------------------------------------------------------------
+
+def _sqlite_columns(db_path: str, table: str) -> set[str]:
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        return {r[1] for r in rows}
+    finally:
+        conn.close()
+
+
+def test_migration_0016_tmdb_cache_aliases_symmetry():
+    """迁移 0016_tmdb_cache_aliases 冒烟：upgrade head 后 tmdb_cache 含 aliases 列；
+    显式 downgrade 0016_queue_size_estimated（回到其上游）后 aliases 列对称删除、表仍在。"""
+    backend = Path(__file__).resolve().parent.parent
+    with tempfile.TemporaryDirectory(prefix="lumencloud_mig_") as td:
+        db_path = os.path.join(td, "lumencloud.db")
+        env = dict(os.environ, LUMENCLOUD_DATA_DIR=td, DATABASE_URL="")
+        base = [sys.executable, "-m", "alembic", "-c", "alembic/alembic.ini"]
+
+        # upgrade head：全链迁移（含 0016_tmdb_cache_aliases）后 tmdb_cache 含 aliases 列
+        subprocess.run(base + ["upgrade", "head"], cwd=backend, env=env,
+                       check=True, capture_output=True, text=True)
+        assert "aliases" in _sqlite_columns(db_path, "tmdb_cache")
+
+        # downgrade 0016_queue_size_estimated：仅回滚本迁移 → aliases 列消失（对称删除），表仍在
+        subprocess.run(base + ["downgrade", "0016_queue_size_estimated"], cwd=backend, env=env,
+                       check=True, capture_output=True, text=True)
+        assert "aliases" not in _sqlite_columns(db_path, "tmdb_cache")
+        assert "tmdb_id" in _sqlite_columns(db_path, "tmdb_cache")  # 表仍存在（0004_tmdb_cache 建表）

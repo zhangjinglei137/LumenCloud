@@ -11,7 +11,10 @@
 3. transfer._complete_download(real_size=123) → DQ.file_size==123 且 size_estimated=False（轮询回填）
 4. transfer._complete_download(real_size=None) → 不改 file_size、不清估算标记（幂等/缺省）
 5. 迁移 0016 upgrade/downgrade 冒烟：upgrade head 后两表含 size_estimated 列，
-   downgrade -1 后列消失（对称回滚）
+   downgrade 0015_episode_info_cache 后列消失（对称回滚）。
+   注：本 change 已在 0016_queue_size_estimated 之上插入新迁移头
+   （0016_tmdb_cache_aliases），alembic 的 -1 按 down_revision 只回退 1 版、
+   不再等于回到 0015，故显式指定目标 revision。
 """
 import asyncio
 import os
@@ -273,7 +276,11 @@ def _sqlite_columns(db_path: str, table: str) -> set[str]:
 
 def test_migration_0016_upgrade_downgrade_symmetry():
     """迁移 0016 冒烟：upgrade head 后 task_queue/download_queue 含 size_estimated 列；
-    downgrade -1（回到 0015）后列对称删除。subprocess 隔离临时数据目录。"""
+    显式 downgrade 0015_episode_info_cache（回到 0015）后列对称删除。
+    注：本 change 在 0016_queue_size_estimated 之上插入了 0016_tmdb_cache_aliases，
+    alembic 的 -1 只会沿 down_revision 回退 1 版（落在 0016_queue_size_estimated，
+    列仍在），故此处显式指定目标 revision 而非 -1。
+    subprocess 隔离临时数据目录。"""
     backend = Path(__file__).resolve().parent.parent
     with tempfile.TemporaryDirectory(prefix="lumencloud_mig_") as td:
         db_path = os.path.join(td, "lumencloud.db")
@@ -287,8 +294,8 @@ def test_migration_0016_upgrade_downgrade_symmetry():
         assert "size_estimated" in _sqlite_columns(db_path, "task_queue")
         assert "size_estimated" in _sqlite_columns(db_path, "download_queue")
 
-        # downgrade -1：仅回滚 0016 → 列消失（对称删除），表仍在
-        subprocess.run(base + ["downgrade", "-1"], cwd=backend, env=env,
+        # downgrade 0015_episode_info_cache：回退到 0015 → size_estimated 列消失（对称删除），表仍在
+        subprocess.run(base + ["downgrade", "0015_episode_info_cache"], cwd=backend, env=env,
                        check=True, capture_output=True, text=True)
         assert "size_estimated" not in _sqlite_columns(db_path, "task_queue")
         assert "size_estimated" not in _sqlite_columns(db_path, "download_queue")
