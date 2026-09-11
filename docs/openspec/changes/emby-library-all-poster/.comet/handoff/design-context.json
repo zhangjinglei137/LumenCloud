@@ -1,0 +1,15 @@
+{
+  "change": "emby-library-all-poster",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "1f2491ee9517cc42bdcb20e46e8a74b7feede544cb53e50a909cb95ddd188280",
+  "files": [
+    { "path": "docs/openspec/changes/emby-library-all-poster/proposal.md", "sha256": "4753a9f016d3ca53790cb7028f5637d0df210ae47a5b683084ba146bc182ab65" },
+    { "path": "docs/openspec/changes/emby-library-all-poster/design.md", "sha256": "87ce5422c75538c08d9cb0f2bffe8d0e1abad7ad0ef5b3bc0d6f97b0189b8c6d" },
+    { "path": "docs/openspec/changes/emby-library-all-poster/tasks.md", "sha256": "b743857a0efdd9a55dfed5d00616d588f608d97c58eacd28822be26b3ba9abcf" },
+    { "path": "docs/openspec/changes/emby-library-all-poster/specs/emby-library-browse/spec.md", "sha256": "4e39404f6efd5f250f3fd489534e7ea1cfa232f58fdcc6a96a8f3e2fac44229d" },
+    { "path": "docs/openspec/changes/emby-library-all-poster/specs/poster-proxy/spec.md", "sha256": "24f3c7c6f83ab178c396af738d486e84138afef200d936b69c5fc2599b0c1774" }
+  ]
+}
