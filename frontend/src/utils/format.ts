@@ -75,6 +75,7 @@ export function timeAgo(iso: string | null | undefined, now: number = Date.now()
 const MEDIA_STATUS_MAP: Record<string, [string, string]> = {
   tracking: ['订阅中', 'success'],
   downloading: ['下载中', 'primary'],
+  download: ['下载中', 'primary'], // 历史数据残留值归并到「下载中」
   active: ['订阅中', 'success'],
   paused: ['已暂停', 'info'],
   completed: ['已完成', 'primary'],
@@ -84,7 +85,7 @@ const MEDIA_STATUS_MAP: Record<string, [string, string]> = {
 
 export function mediaStatusLabel(status: string | null | undefined): string {
   if (!status) return '—'
-  return MEDIA_STATUS_MAP[status]?.[0] ?? status
+  return MEDIA_STATUS_MAP[status]?.[0] ?? '未知'
 }
 
 export function mediaStatusType(status: string | null | undefined): string {

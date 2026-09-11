@@ -143,3 +143,18 @@ describe('episodeSummaryText（已有 N 缺失 M）', () => {
     expect(episodeSummaryText(null, 'tv', null)).toBe('—')
   })
 })
+
+import { mediaStatusLabel, mediaStatusType } from './format'
+
+describe('mediaStatusLabel 兜底（fix-online-issues）', () => {
+  it('download 归并到下载中', () => {
+    expect(mediaStatusLabel('download')).toBe('下载中')
+  })
+  it('未知值回退未知而非原样透传', () => {
+    expect(mediaStatusLabel('weird_value')).toBe('未知')
+  })
+  it('download 与未知值对应 tag type', () => {
+    expect(mediaStatusType('download')).toBe('primary')
+    expect(mediaStatusType('weird_value')).toBe('info')
+  })
+})
