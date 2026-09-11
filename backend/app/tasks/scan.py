@@ -922,6 +922,26 @@ def _share_title_relevant(media_title: str, cand_title: str, aliases: list[str] 
     return any(_title_member_hit(cand_norm, m) for m in members if m)
 
 
+def _normalize_alias_names(names: list[str] | None) -> list[str]:
+    """别名集合统一归一化：strip + 小写 + 去空格 + 去 (YYYY) 括号版本后缀 + 去重，
+    上限 20（对齐 services/tmdb._normalize_aliases 口径）。
+
+    _resolve_media_aliases 的两个来源——tmdb.get_by_tmdb_id 详情 aliases
+    （tmdb.py 已归一化，此处再归一化幂等）与 media.aliases（_media_aliases
+    返回原始 JSON 值，未归一化）——在消费方（关键词构造 / A1 过滤 / 排序加权）
+    保持同一语义（如 "Soul Land" / "soul land" / "Soul Land (2020)" → "soulland"）。
+    """
+    out: list[str] = []
+    for a in names or []:
+        if not isinstance(a, str):
+            continue
+        s = a.strip().lower().replace(" ", "")
+        s = re.sub(r"\(\d{4}\)", "", s).strip()
+        if s and s not in out:
+            out.append(s)
+    return out[:20]
+
+
 def _media_aliases(media) -> list[str]:
     """从 media.aliases（JSON 数组字符串）解析别名集合；无属性/空/解析失败 → []。
 
@@ -951,20 +971,44 @@ async def _resolve_media_aliases(media) -> list[str]:
     解析顺序：
     - media.tmdb_id 有值：tmdb.get_by_tmdb_id 详情 aliases（list[str]，来自
       tmdb_cache.aliases 反序列化 / 详情回源归一化，见 services/tmdb）；
-      拉取失败 → 降级 _media_aliases(media)（警告日志，绝不阻断搜索）；
+      ★ 缓存快路径命中但 aliases 为空（tmdb_cache 行可能由 search_multi 写入、
+      aliases 列 NULL，search_multi 不落详情字段）→ 追加一次
+      force_refresh=True 回源补全详情（also_known_as → _upsert_cache 落库
+      aliases）——仅当缓存别名缺失时触发，不放大常规调用量；
+      拉取失败 / force_refresh 后 aliases 仍为空 → 降级 _media_aliases(media)
+      （警告日志，绝不阻断搜索）；
     - media.tmdb_id 为空：直接 _media_aliases(media)（测试层 SimpleNamespace 可经
       media.aliases 属性注入；ORM 无该列 → 空列表）。
+
+    返回统一归一化（_normalize_alias_names：小写、去空格、去括号版本后缀、
+    去重、上限 20）——tmdb 详情与 media.aliases 两来源在消费方语义一致。
     """
+    raw: list[str] = []
     if media.tmdb_id:
+        media_type = media.media_type or "tv"
         try:
-            meta = await tmdb.get_by_tmdb_id(media.tmdb_id, media.media_type or "tv")
-            return [str(a) for a in (meta.get("aliases") or []) if a]
+            meta = await tmdb.get_by_tmdb_id(media.tmdb_id, media_type)
+            raw = [str(a) for a in (meta.get("aliases") or []) if a]
+            if not raw:
+                # 缓存命中但 aliases 缺失（search_multi 写入的行 aliases 列 NULL）
+                # → force_refresh 回源补全详情别名并刷新缓存（仅此场景追加一次调用）
+                logger.info(
+                    "[scan] media=%s tmdb 缓存 aliases 为空，force_refresh 回源补全",
+                    getattr(media, "id", None),
+                )
+                meta = await tmdb.get_by_tmdb_id(
+                    media.tmdb_id, media_type, force_refresh=True
+                )
+                raw = [str(a) for a in (meta.get("aliases") or []) if a]
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "[scan] media=%s 别名解析失败（降级 media.aliases 属性）: %s",
                 getattr(media, "id", None), exc,
             )
-    return _media_aliases(media)
+            raw = []
+    if not raw:
+        raw = _media_aliases(media)
+    return _normalize_alias_names(raw)
 
 
 # ---------------------------------------------------------------------------
@@ -1050,7 +1094,7 @@ async def _search_and_rank(media, missing_keys: set[str]) -> list[dict]:
     - 单关键词失败：记录 warning 并继续（一个词失败、其余成功 → 不中断整轮，
       保持既有降级语义）。
     - A1 分享标题过滤（斗罗大陆场景误匹配修复）：与 [主标题] ∪ [别名集合] 无成员
-      命中（或命中处紧贴中文/罗马数字）的分享候选在排序前直接剔除，剧名为空兜底
+      命中（或命中处紧贴罗马数字续作标记）的分享候选在排序前直接剔除，剧名为空兜底
       放行——减少无关分享被验证/遍历的浪费；同名短剧等标题相关的误匹配由 A2/A3
       文件级校验（_full_mode_accept）拦截。
     - 季号硬校验（A1 之后）：候选标题季号（SxxExx 的 Sxx / 第N季）不在目标季集合
@@ -1084,8 +1128,8 @@ async def _search_and_rank(media, missing_keys: set[str]) -> list[dict]:
         # 「无缺集/无候选」），上抛由 _scan_one 记录 error + 阶段定位
         raise ScanSearchUnavailable("全部搜索关键词调用 cloudSaver 均失败")
     expanded = _expand_share_codes(raw)
-    # A1 分享标题过滤：与 [主标题] ∪ [别名集合] 无成员命中（或命中处紧贴中文/罗马
-    # 数字）的候选直接剔除（排序前），减少无关分享被 share-info 验证/递归遍历的
+    # A1 分享标题过滤：与 [主标题] ∪ [别名集合] 无成员命中（或命中处紧贴罗马数字
+    # 续作标记）的候选直接剔除（排序前），减少无关分享被 share-info 验证/递归遍历的
     # 浪费；被过滤标题 info 级记录（量可能大，不刷屏）。别名集合与关键词/排序同源
     # （_resolve_media_aliases 解析一次，见函数首部）。
     kept: list[dict] = []

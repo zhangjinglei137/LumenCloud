@@ -114,6 +114,47 @@ def test_build_keywords_async_falls_back_when_tmdb_fails(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# _resolve_media_aliases：缓存 aliases 缺失 → force_refresh 回源补全
+# ---------------------------------------------------------------------------
+
+def test_resolve_media_aliases_force_refresh_when_cache_aliases_empty(monkeypatch):
+    """缓存命中但 aliases 为空（tmdb_cache 行由 search_multi 写入、aliases 列
+    NULL）→ 追加一次 force_refresh=True 回源补全（详情响应含 also_known_as，
+    归一化落库）；断言返回归一化别名集合且 get_by_tmdb_id 被调用 2 次、
+    第二次带 force_refresh=True。"""
+    calls = []
+
+    async def fake_get(tmdb_id, media_type, force_refresh=False):
+        calls.append((tmdb_id, media_type, force_refresh))
+        if force_refresh:
+            return {"aliases": ["soul land"]}  # 详情回源归一化前原始值
+        return {"aliases": []}  # 缓存命中但 aliases 为空
+
+    monkeypatch.setattr(scan_mod.tmdb, "get_by_tmdb_id", fake_get)
+    result = run(scan_mod._resolve_media_aliases(_media(title="斗罗大陆", tmdb_id=61852)))
+    assert result == ["soulland"]
+    assert len(calls) == 2
+    assert calls[0] == (61852, "tv", False)
+    assert calls[1] == (61852, "tv", True)
+
+
+def test_resolve_media_aliases_degrade_when_force_refresh_still_empty(monkeypatch):
+    """缓存 aliases 空 → force_refresh 后 aliases 仍为空 → 降级空列表（保持
+    现有降级语义，绝不阻断搜索）；get_by_tmdb_id 调用 2 次后即止。"""
+    calls = []
+
+    async def fake_get(tmdb_id, media_type, force_refresh=False):
+        calls.append((tmdb_id, media_type, force_refresh))
+        return {"aliases": []}
+
+    monkeypatch.setattr(scan_mod.tmdb, "get_by_tmdb_id", fake_get)
+    result = run(scan_mod._resolve_media_aliases(_media(title="斗罗大陆", tmdb_id=61852)))
+    assert result == []
+    assert len(calls) == 2
+    assert calls[1] == (61852, "tv", True)
+
+
+# ---------------------------------------------------------------------------
 # _rank_candidates：TMDB 年份加权
 # ---------------------------------------------------------------------------
 
