@@ -864,6 +864,7 @@ async def download_progress(
             "gid": dq.aria2_gid,
             "speed": None,
             "progress": None,
+            "total": None,
             "download_name": dq.download_name,
         }
         try:
@@ -872,6 +873,7 @@ async def download_progress(
             done = int(st.get("completedLength") or 0)
             if total > 0:
                 entry["progress"] = round(done / total * 100, 1)
+                entry["total"] = total
             speed = st.get("downloadSpeed")
             if speed is not None:
                 entry["speed"] = int(speed)

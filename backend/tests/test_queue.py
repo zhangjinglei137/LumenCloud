@@ -682,6 +682,9 @@ def test_progress_aggregates_tell_status_and_degrades(db, env):
     assert by_gid["gid-1"]["progress"] == 25.0 and by_gid["gid-1"]["speed"] == 500
     # 失败行降级：gid/字段保留，speed/progress 为 null
     assert by_gid["gid-2"]["progress"] is None and by_gid["gid-2"]["speed"] is None
+    # total：totalLength>0 → 真实字节；失败行降级 None
+    assert by_gid["gid-1"]["total"] == 1000
+    assert by_gid["gid-2"]["total"] is None
 
 
 # ---------------------------------------------------------------------------
