@@ -153,6 +153,7 @@ beforeEach(() => {
   storeState.loading = false
   storeState.downloadLoading = false
   storeState.pauseState = { paused: false, in_flight: null }
+  storeState.progressMap = {}
   authState.isAdmin = true
 })
 
@@ -254,5 +255,36 @@ describe('QueueView 下载队列分享码链接（queue-inspection-rework）', (
     await pagers[1].find('.page-next').trigger('click')
     expect(storeState.fetchPage).toHaveBeenCalledWith(2)
     expect(storeState.fetchDownloadPage).toHaveBeenCalledWith(2)
+  })
+})
+
+describe('QueueView 下载队列拆列（queue-size-and-progress）', () => {
+  it('下载中行：进度列含进度条+速度，大小列优先 progressMap.total 精确值', async () => {
+    storeState.downloadItems = [makeDownload({ id: 7, status: 'downloading', file_size: 1024 ** 3, size_estimated: true })]
+    storeState.progressMap = { 7: { id: 7, progress: 50, speed: 512 * 1024, total: 2 * 1024 ** 3 } }
+    wrapper = mountView()
+    await flushPromises()
+    const text = wrapper.text()
+    // 大小列展示 total 精确值（2.00 GB），不出现「约」与 1GB 估算值
+    expect(text).toContain('2.00 GB')
+    expect(text).not.toContain('约')
+    expect(text).not.toContain('1.00 GB')
+  })
+
+  it('下载中行 total 缺失：大小列回退 file_size 并带「约」（估算兜底）', async () => {
+    storeState.downloadItems = [makeDownload({ id: 8, status: 'downloading', file_size: 1024 ** 3, size_estimated: true })]
+    storeState.progressMap = { 8: { id: 8, progress: 30, speed: null, total: null } }
+    wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.text()).toContain('约 1.00 GB')
+  })
+
+  it('非下载中行：无进度条，仅大小列（精确值）', async () => {
+    storeState.downloadItems = [makeDownload({ id: 9, status: 'pending', file_size: 2 * 1024 ** 3, size_estimated: false })]
+    wrapper = mountView()
+    await flushPromises()
+    const text = wrapper.text()
+    expect(text).toContain('2.00 GB')
+    expect(text).not.toContain('约')
   })
 })

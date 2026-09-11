@@ -599,7 +599,7 @@ async function onPauseToggle(next: boolean) {
                   </el-tag>
                 </template>
               </el-table-column>
-              <el-table-column label="进度 / 大小" width="210">
+              <el-table-column label="进度" width="200">
                 <template #default="{ row }">
                   <!-- downloading：2.5s 局部轮询的实时进度条 + 速度 -->
                   <div v-if="row.status === 'downloading'">
@@ -611,7 +611,15 @@ async function onPauseToggle(next: boolean) {
                     </template>
                     <el-progress v-else :percentage="100" :stroke-width="8" striped striped-flow :show-text="false" status="warning" />
                   </div>
-                  <span v-else style="font-size: 13px">{{ formatBytes(row.file_size) }}</span>
+                  <span v-else class="lc-muted">—</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="大小" width="140">
+                <template #default="{ row }">
+                  <!-- 下载中行优先 aria2 total 精确值（实时）；缺失回退 file_size（估算带「约」） -->
+                  <span style="font-size: 13px">
+                    {{ formatFileSize(row.status === 'downloading' ? (store.progressMap[row.id]?.total ?? row.file_size) : row.file_size, row.status === 'downloading' && store.progressMap[row.id]?.total != null ? false : row.size_estimated) }}
+                  </span>
                 </template>
               </el-table-column>
               <el-table-column v-if="auth.isAdmin" prop="share_code" label="分享码" width="150">
