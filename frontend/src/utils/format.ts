@@ -228,6 +228,28 @@ export function episodeStatusType(status: string | null | undefined): string {
   return EPISODE_STATUS_MAP[status]?.[1] ?? 'info'
 }
 
+/**
+ * 影视列表卡集数摘要（episode-status-and-detail-polish）：
+ * tv + available/missing 已知 → 「已有 N 缺失 M」；total 未知 → 「已有 N 集」；
+ * movie → seriesStatusLabel 回退（电影无集数概念）。
+ */
+export function episodeSummaryText(
+  stats: { available?: number; total?: number; missing?: number; downloaded?: number } | null | undefined,
+  mediaType: string | null | undefined,
+  seriesStatus: string | null | undefined,
+): string {
+  if (mediaType === 'movie') return seriesStatusLabel(seriesStatus, 'movie')
+  if (!stats) return '—'
+  const avail = stats.available ?? stats.downloaded
+  const total = stats.total
+  const missing = stats.missing
+  if (avail !== undefined && missing !== undefined && total !== undefined) return `已有 ${avail} 缺失 ${missing}`
+  if (avail !== undefined && total !== undefined) return `已有 ${avail} / ${total} 集`
+  if (total !== undefined) return `共 ${total} 集`
+  if (avail !== undefined) return `已有 ${avail} 集`
+  return '—'
+}
+
 /** 集数状态分类 tag 结果 */
 export interface EpisodeStateTag {
   /** tag 文案：已在库 / 未开播 / 已开播 / 异常 */

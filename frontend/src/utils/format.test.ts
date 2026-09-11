@@ -123,3 +123,23 @@ describe('文件大小约标注（formatFileSize，queue-inspection-rework）', 
     expect(formatFileSize(-5)).toBe('—')
   })
 })
+
+import { episodeSummaryText } from './format'
+
+describe('episodeSummaryText（已有 N 缺失 M）', () => {
+  it('tv + available/missing/total 已知 → 已有 N 缺失 M', () => {
+    expect(episodeSummaryText({ available: 5, total: 20, missing: 15 }, 'tv', null)).toBe('已有 5 缺失 15')
+  })
+  it('missing 缺失 → 回退旧「已有 N / total 集」', () => {
+    expect(episodeSummaryText({ available: 5, total: 20 }, 'tv', null)).toBe('已有 5 / 20 集')
+  })
+  it('total 未知 → 已有 N 集', () => {
+    expect(episodeSummaryText({ available: 5 }, 'tv', null)).toBe('已有 5 集')
+  })
+  it('movie → seriesStatusLabel 回退', () => {
+    expect(episodeSummaryText(null, 'movie', 'ended')).toBe('已完结')
+  })
+  it('无统计 → 占位符', () => {
+    expect(episodeSummaryText(null, 'tv', null)).toBe('—')
+  })
+})

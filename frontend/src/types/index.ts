@@ -23,6 +23,15 @@ export interface EpisodeStats {
   [key: string]: unknown
 }
 
+/** 详情页「当前进行中任务」行（后端 get_media.active_tasks 契约） */
+export interface ActiveTask {
+  season: number | null
+  episode: string
+  status: string
+  source: 'dq' | 'task'
+  air_date: string | null
+}
+
 export interface TaskRunBrief {
   id?: number
   task_type?: string
@@ -94,6 +103,8 @@ export interface MediaDetail extends MediaItem {
   episode_state?: EpisodeState[]
   transfer_queue?: QueueSummaryItem[]
   tmdb_episodes?: TmdbEpisode[]
+  /** episode-status-and-detail-polish：进行中任务（仅 tv；source=dq 用下载队列字典、task 用探测队列字典） */
+  active_tasks?: ActiveTask[]
   [key: string]: unknown
 }
 
