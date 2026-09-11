@@ -366,21 +366,21 @@ git commit -m "fix(security): 安全审查修复确认漏洞（明细见验证�
 - Consumes: 全部任务产物
 - Produces: 全量验证证据
 
-- [ ] **Step 1: 后端全量**
+- [x] **Step 1: 后端全量**
 
 Run: `cd backend && .venv/bin/python -m pytest -q`
 Expected: 全量 PASS
 
-- [ ] **Step 2: 前端全量**
+- [x] **Step 2: 前端全量**
 
 Run: `cd frontend && npx vitest run && npm run build`
 Expected: 全量 PASS
 
-- [ ] **Step 3: 核对 7 项问题行为**
+- [x] **Step 3: 核对 7 项问题行为**
 
 逐项核对 delta spec 场景：缺失集（未开播不计入）、状态（两值+中文兜底）、图片（poster 路径校验通过）、角色（只读）、订阅（admin 可见）、队列（guest 无 403 弹窗）、安全修复。
 
-- [ ] **Step 4: 提交验证证据**
+- [x] **Step 4: 提交验证证据**
 
 ```bash
 git add -A
