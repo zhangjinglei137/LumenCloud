@@ -1147,13 +1147,13 @@ git commit -m "chore(comet): 勾选 tasks 2.1-2.5（前端展示与测试完成�
 
 **Files:** 无代码改动（验证任务）
 
-- [ ] **Step 1: 前后端构建与测试**
+- [x] **Step 1: 前后端构建与测试**
 
 Run: `cd backend && python -m pytest -q`
 Run: `cd frontend && npm run build`
 Expected: 全部通过
 
-- [ ] **Step 2: 本地启动后端，确认列表/详情接口在无真实 Emby 时回退不报错**
+- [x] **Step 2: 本地启动后端，确认列表/详情接口在无真实 Emby 时回退不报错**
 
 Run: 启动后端（`cd backend && uvicorn app.main:app` 或项目指定方式），确认：
 - `GET /api/media` 返回 200，`episode_stats.available/missing` 为回退口径
@@ -1161,11 +1161,11 @@ Run: 启动后端（`cd backend && uvicorn app.main:app` 或项目指定方式�
 
 > 注：若本机无法启动服务验证（服务管理规则），此项标注「待用户验证」，不阻塞 guard。
 
-- [ ] **Step 3: 勾选 tasks.md 3.1**
+- [x] **Step 3: 勾选 tasks.md 3.1**
 
 编辑 `docs/openspec/changes/episode-status-and-detail-polish/tasks.md`，将 3.1 复选框改为 `[x]`（真实环境部分可标注「待用户验证」）。
 
-- [ ] **Step 4: 提交**
+- [x] **Step 4: 提交**
 
 ```bash
 git add docs/openspec/changes/episode-status-and-detail-polish/tasks.md
