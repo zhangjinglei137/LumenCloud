@@ -170,7 +170,7 @@ git commit -m "fix(frontend): 媒体状态字典中文兜底，未知值不再�
 - Consumes: `_validate_poster_path(p: str) -> bool`（poster.py，要求 `/emby/<itemId>/Primary` 前缀）
 - Produces: `poster_url = "/api/poster?p=/emby/{item_id}/Primary"`（补前导 `/`）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `test_poster_proxy.py` 追加：
 
@@ -182,12 +182,12 @@ def test_production_poster_url_passes_validation():
     assert poster_mod._validate_poster_path(p) is True
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `cd backend && .venv/bin/python -m pytest -q tests/test_poster_proxy.py -x`
 Expected: FAIL（当前 `p=emby/...` 无前导 `/`）
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `emby.py` L432：
 
@@ -195,12 +195,12 @@ Expected: FAIL（当前 `p=emby/...` 无前导 `/`）
 poster_url = f"/api/poster?p=/emby/{item_id}/Primary"
 ```
 
-- [ ] **Step 4: 运行确认通过**
+- [x] **Step 4: 运行确认通过**
 
 Run: `cd backend && .venv/bin/python -m pytest -q tests/test_poster_proxy.py tests/test_emby_library_all.py -x`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add backend/app/services/emby.py backend/tests/test_poster_proxy.py

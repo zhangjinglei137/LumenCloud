@@ -13,8 +13,8 @@
 
 ## 3. Emby 封面代理修复（D3）
 
-- [ ] 3.1 后端 emby.py `_normalize_library_item`：poster_url 构造补前导 `/`（`/api/poster?p=/emby/{item_id}/Primary`），验证生成路径经 `_validate_poster_path` 校验通过
-- [ ] 3.2 后端补测试：构造的 Emby 代理路径通过校验、非法路径仍拒绝，验证 `pytest` poster 用例通过
+- [x] 3.1 后端 emby.py `_normalize_library_item`：poster_url 构造补前导 `/`（`/api/poster?p=/emby/{item_id}/Primary`），验证生成路径经 `_validate_poster_path` 校验通过
+- [x] 3.2 后端补测试：构造的 Emby 代理路径通过校验、非法路径仍拒绝，验证 `pytest` poster 用例通过
 
 ## 4. 用户角色只读（D4）
 
