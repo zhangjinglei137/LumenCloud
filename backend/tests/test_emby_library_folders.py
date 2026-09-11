@@ -351,3 +351,27 @@ def test_list_library_default_item_types(monkeypatch, _db_maker):
     run(list_library("x1"))
     assert captured["params"]["IncludeItemTypes"] == "Movie,Series"
     assert captured["params"]["ParentId"] == "x1"
+
+
+# ---------------------------------------------------------------------------
+# _build_library_params（全部聚合与单库共用参数口径）
+# ---------------------------------------------------------------------------
+
+
+def test_build_params_default_types():
+    params = emby_mod._build_library_params(None, None)
+    assert params["IncludeItemTypes"] == "Movie,Series"
+    assert "ParentId" not in params
+    assert "SeriesStatus" not in params
+
+
+def test_build_params_maps_item_type():
+    assert emby_mod._build_library_params("movie", None)["IncludeItemTypes"] == "Movie"
+    assert emby_mod._build_library_params("series", None)["IncludeItemTypes"] == "Series"
+
+
+def test_build_params_status_forces_series():
+    params = emby_mod._build_library_params("movie", "continuing", parent_id="m1")
+    assert params["IncludeItemTypes"] == "Movie,Series"  # status 非空强制含 Series
+    assert params["SeriesStatus"] == "continuing"
+    assert params["ParentId"] == "m1"

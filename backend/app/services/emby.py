@@ -574,6 +574,31 @@ async def _fetch_items(params: dict[str, Any]) -> list[dict[str, Any]]:
     return items
 
 
+def _build_library_params(
+    item_type: Optional[str],
+    status: Optional[str],
+    parent_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """构造 /Items 查询参数：IncludeItemTypes 映射 + SeriesStatus + 分页 + 可选 ParentId。
+
+    单库（list_library）与全部聚合（list_all_library）共用，保证口径一致。
+    """
+    include_item_types = {"movie": "Movie", "series": "Series"}.get(item_type or "", "Movie,Series")
+    if status and "Series" not in include_item_types:
+        include_item_types = f"{include_item_types},Series"
+    params: dict[str, Any] = {
+        "Recursive": "true",
+        "IncludeItemTypes": include_item_types,
+        "Fields": "ProviderIds,CommunityRating,ProductionYear,SeriesStatus",
+        "Limit": str(_LIST_PAGE_SIZE),
+    }
+    if parent_id:
+        params["ParentId"] = parent_id
+    if status:
+        params["SeriesStatus"] = status
+    return params
+
+
 async def list_library(
     library_id: str,
     item_type: Optional[str] = None,
@@ -590,20 +615,7 @@ async def list_library(
     异常:
         EmbyUnavailable: 配置缺失 / 请求失败
     """
-    # IncludeItemTypes：按 item_type 选择；status 非空时须含 Series（SeriesStatus 只对剧集生效）
-    include_item_types = {"movie": "Movie", "series": "Series"}.get(item_type or "", "Movie,Series")
-    if status and "Series" not in include_item_types:
-        include_item_types = f"{include_item_types},Series"
-
-    params: dict[str, Any] = {
-        "Recursive": "true",
-        "IncludeItemTypes": include_item_types,
-        "Fields": "ProviderIds,CommunityRating,ProductionYear,SeriesStatus",
-        "Limit": str(_LIST_PAGE_SIZE),
-        "ParentId": library_id,
-    }
-    if status:
-        params["SeriesStatus"] = status
+    params = _build_library_params(item_type, status, parent_id=library_id)
 
     items = await _fetch_items(params)
 
