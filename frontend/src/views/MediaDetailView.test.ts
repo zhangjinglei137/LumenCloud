@@ -68,7 +68,8 @@ const EP_STUBS = {
   'el-empty': { template: '<div><slot /></div>' },
   'el-input-number': { template: '<input />' },
   // 订阅状态选择（Task 3 修复轮 1）：label 文案渲染在 select 容器内
-  'el-select': { template: '<select><slot /></select>' },
+  // name: 'ElSelect'：VTU 对自定义 stub 的拷贝不带 name，findComponent({ name }) 无法命中，显式命名以支持组件选择器匹配
+  'el-select': { name: 'ElSelect', template: '<select><slot /></select>' },
   'el-option': { template: '<option />' },
   // 分组导航（Task 3）：label 内容渲染在 ep-group-nav 容器内
   'el-radio-group': { template: '<div class="ep-group-nav"><slot /></div>' },
@@ -236,5 +237,19 @@ describe('MediaDetailView 当前进行中任务区块（episode-status-and-detai
     const wrapper = mountView()
     await flushPromises()
     expect(wrapper.text()).not.toContain('当前进行中任务')
+  })
+})
+
+describe('状态下拉宽度（episode-status-and-detail-polish）', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  it('el-select 设置显式 min-width', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const select = wrapper.findComponent({ name: 'ElSelect' })
+    expect(select.exists()).toBe(true)
+    expect(select.attributes('style') ?? '').toContain('min-width')
   })
 })

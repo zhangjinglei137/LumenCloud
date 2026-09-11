@@ -261,7 +261,7 @@ async function onDelete() {
           </div>
           <div class="hs-item">
             <label class="hs-label">状态</label>
-            <el-select v-model="form.status" size="small">
+            <el-select v-model="form.status" size="small" style="min-width: 132px">
               <el-option label="订阅中" value="tracking" />
               <el-option label="已暂停" value="paused" />
             </el-select>
