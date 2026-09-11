@@ -429,7 +429,7 @@ def _normalize_library_item(
     poster_url = None
     if has_poster:
         # Emby 封面改经后端代理加载：不内嵌 api_key，前端同源请求（登录态 cookie 兜底）
-        poster_url = f"/api/poster?p=emby/{item_id}/Primary"
+        poster_url = f"/api/poster?p=/emby/{item_id}/Primary"
 
     # D-1（P1）：Emby web 详情路由依赖 serverId 定位后端实例（缺参 → 空白页）；
     # serverId 获取失败时降级 None（前端隐藏「在 Emby 中打开」入口）

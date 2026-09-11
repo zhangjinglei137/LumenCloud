@@ -271,3 +271,33 @@ def test_fetch_poster_emby_cache_isolated_from_tmdb(monkeypatch):
     content, ctype = asyncio.run(poster_mod.fetch_poster("/emby/abc-123/Primary"))
     assert content == b"emby-cached"
     assert calls == []
+
+
+# ---- Task 3（fix-online-issues）：生产构造的 Emby 代理路径须通过校验 ----
+
+def test_production_poster_url_passes_validation():
+    """生产构造的 Emby 代理路径必须通过校验（回归：缺前导 / 曾导致全部 400）。"""
+    url = f"/api/poster?p=/emby/{'abc-123'}/Primary"
+    p = url.split("p=", 1)[1]
+    assert poster_mod._validate_poster_path(p) is True
+
+
+def test_normalized_poster_url_passes_validation():
+    """_normalize_library_item 产出的 poster_url 的 p 参数必须通过校验。
+
+    回归：poster_url 曾缺前导斜杠（p=emby/...），而 _validate_poster_path
+    要求 p 以 /emby/ 开头 → 全部图片 400。此测试直接调用生产函数，修复前必失败。
+    """
+    from app.services import emby as emby_mod
+
+    item = {
+        "Id": "abc-123",
+        "Name": "回归测试",
+        "Type": "Movie",
+        "ProviderIds": {"Tmdb": "11"},
+        "ImageTags": {"Primary": "poster"},
+    }
+    result = emby_mod._normalize_library_item(item, "http://emby.test", server_id="srv1")
+    assert result is not None
+    p = result["poster_url"].split("p=", 1)[1]
+    assert poster_mod._validate_poster_path(p) is True
