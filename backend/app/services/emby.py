@@ -641,3 +641,78 @@ async def list_library(
         library_id, item_type, status, len(result),
     )
     return result
+
+
+# 全部聚合逐库并发上限：Emby 单实例，并发过高无收益且可能打爆服务端（低于 TMDB 批处理 5）
+_LIBRARY_FETCH_CONCURRENCY = 3
+
+
+async def list_all_library(
+    item_type: Optional[str] = None,
+    status: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """聚合全部影视类媒体库条目（GET /api/emby/library/all）。
+
+    1. 复用 list_library_folders() 取全部影视类库（movies/tvshows/mixed/null，
+       tvshows 白名单过滤沿用）；配置缺失抛 EmbyUnavailable（emby_not_configured）；
+       无影视库 → 返回 []。
+    2. 逐库并发 _fetch_items（信号量 _LIBRARY_FETCH_CONCURRENCY 限并发）。
+    3. 归一化 + 按 emby_id 去重（保留先到者；Emby ItemId 全局唯一，去重仅防御）。
+    4. 复用 _attach_tmdb_series_status + _attach_in_media_flag。
+    5. 错误语义：全部库失败（含库列表获取失败）→ 抛 EmbyUnavailable（emby_unreachable，
+       取首个失败原因）；部分失败 → 返回成功部分 + warn 日志。
+    """
+    folders = await list_library_folders()
+    if not folders:
+        # list_library_folders 对非配置类失败（网络/5xx）静默降级为空列表，无法与
+        # 「确无影视库」区分；全部聚合入口必须区分「空」与「失败」（静默空会被前端
+        # 误判为库内无内容）。以 /System/Info/Public（Public 端点）探针确认可达性：
+        # 可达 → 确为无影视库，返回 []；不可达 → 全部库失败，异常上抛（emby_unreachable）。
+        await _get("/System/Info/Public", {})
+        return []
+
+    sem = asyncio.Semaphore(_LIBRARY_FETCH_CONCURRENCY)
+
+    async def _fetch_one(folder: dict[str, Any]) -> list[dict[str, Any]]:
+        async with sem:
+            params = _build_library_params(item_type, status, parent_id=folder["id"])
+            return await _fetch_items(params)
+
+    errors: list[Exception] = []
+    results = await asyncio.gather(
+        *(_fetch_one(f) for f in folders), return_exceptions=True
+    )
+    for exc in results:
+        if isinstance(exc, Exception):
+            errors.append(exc)
+
+    base = _base_url()
+    api_key = config_store.get("emby_api_key", settings.EMBY_API_KEY)
+    seen: dict[str, dict[str, Any]] = {}
+    for chunk in results:
+        if isinstance(chunk, Exception):
+            continue
+        for raw in chunk:
+            # 注意：当前 _normalize_library_item 为 4 参签名（item/base/api_key/server_id）；
+            # Task 5 改为 3 参（删除 api_key）后，此处同步改为 _normalize_library_item(raw, base, server_id=None)
+            normalized = _normalize_library_item(raw, base, api_key, server_id=None)
+            if normalized is not None:
+                seen.setdefault(normalized["emby_id"], normalized)
+
+    # D-1：serverId 批量获取（惰性缓存），一次性为条目附加 emby_web_url
+    server_id = await _get_server_id()
+    items = list(seen.values())
+    if server_id:
+        base = _base_url()
+        for item in items:
+            item["emby_web_url"] = f"{base}/web/index.html#!/item?id={item['emby_id']}&serverId={server_id}"
+
+    await _attach_tmdb_series_status(items)
+    await _attach_in_media_flag(items)
+
+    if errors and not items:
+        raise errors[0]  # 全部库失败 → 上抛（路由映射 emby_unreachable）
+    if errors:
+        logger.warning("Emby 全部聚合部分库失败: %d/%d", len(errors), len(folders))
+    logger.info("Emby 全部影视库聚合: %d 条（去重后）", len(items))
+    return items
