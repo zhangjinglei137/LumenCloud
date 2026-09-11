@@ -16,11 +16,16 @@
 - 状态：complete（commit 8e8e404，协调者 diff 复核通过，无风险信号）
 - M1 已落地：gid-3 totalLength=0 成功降级路径断言 + list 接口 size_estimated 透传断言
 
-## 当前任务：T3（plan Task 3 — formatFileSize ≤0 语义 + 类型扩展，tasks 2.1）
+## T3（已完成）：formatFileSize ≤0 语义 + 类型扩展（tasks 2.1）
+
+- 状态：complete（commit 6c4c58a，协调者 diff 复核通过，无风险信号）
+- formatFileSize 0/负数 →「—」；DownloadProgressEntry 补 total 可选字段；vitest 全量 69 passed
+
+## 当前任务：T4（plan Task 4 — 巡检队列大小列验证补测，tasks 2.2）
 
 - 阶段：implementing
 - 派发：fixer（后台）
 - 实现提交哈希：(待回报)
-- RED/GREEN 证据：(待回报)
-- 风险信号自报：(待回报；预期命中「公共 API 契约变更」——DownloadProgressEntry 类型扩展 → 触发任务级审查)
+- 测试证据：(待回报)
+- 风险信号自报：(待回报；预期无命中——纯测试任务)
 - 审查-修复轮次：0/1
