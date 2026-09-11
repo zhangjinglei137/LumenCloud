@@ -919,12 +919,12 @@ git commit -m "feat(frontend): 全部 Tab 改走 /emby/library/all 单次聚合�
 **Files:**
 - 无代码改动（验证产物：tasks.md 勾选、诊断结论）
 
-- [ ] **Step 1: 后端全量测试**
+- [x] **Step 1: 后端全量测试**
 
 Run: `cd backend && python -m pytest -v`
 Expected: PASS（全量用例绿；若命中无关历史失败，记录并报告，不静默跳过）
 
-- [ ] **Step 2: 前端测试与构建**
+- [x] **Step 2: 前端测试与构建**
 
 Run: `cd frontend && npx vitest run && npm run build`
 Expected: PASS（vitest 全绿；`npm run build` 产物生成成功）

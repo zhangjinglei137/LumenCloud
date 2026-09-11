@@ -12,12 +12,13 @@
 - Task 3: complete（commits 81ff911..5263b93，review Approved；11 passed，checkoff PASS）
 - Task 4: complete（commits f4b98c6..2a2744c，review Approved；20 passed，checkoff PASS）
 - Task 5: complete（commits 0e7f5ea..7bb2941，review Approved；37 passed，checkoff PASS）
+- Task 6: complete（commits 811ecd1..a89f4d5，review Approved；3/3 vitest，checkoff PASS）
 
 ## 当前任务
 
-- Task 6: 前端 API 函数与全部 Tab 单次请求
-- OpenSpec 映射: tasks.md 3.1/3.2/3.3（前端切换）
-- 阶段: implementing（派发中）
-- Implementer: 全新 fixer（Comet 禁止跨 task 复用）
-- 审查轮次: 0/1（standard）
-- 风险信号: 待自报（预估命中：公共 API 契约——新 API 函数暴露；视图行为分流）
+- Task 7: 集成验证与真实环境诊断
+- OpenSpec 映射: tasks.md 1.1/4.1（诊断记录 + 真实环境验证）
+- 阶段: implementing（验证命令执行中）
+- Implementer: 全新 fixer（验证命令执行 + 证据回报）
+- 审查轮次: 0/1（standard；验证任务无代码 diff，由协调者核对证据）
+- 说明: Step 3 真实 Emby 环境诊断需用户环境，build 阶段标注待用户验证
