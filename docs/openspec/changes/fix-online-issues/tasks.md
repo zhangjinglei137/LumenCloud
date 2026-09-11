@@ -23,8 +23,8 @@
 
 ## 5. Emby 订阅按钮按角色可见（D5）
 
-- [ ] 5.1 前端 EmbyLibraryView.vue：单条订阅按钮、批量订阅入口、TMDB 搜索对话框订阅入口加 `v-if="auth.isAdmin"`，guest 仅浏览，验证前端构建通过
-- [ ] 5.2 前端测试补充：admin 可见订阅入口、guest 不显示订阅按钮用例，验证 `vitest` 通过
+- [x] 5.1 前端 EmbyLibraryView.vue：单条订阅按钮、批量订阅入口、TMDB 搜索对话框订阅入口加 `v-if="auth.isAdmin"`，guest 仅浏览，验证前端构建通过
+- [x] 5.2 前端测试补充：admin 可见订阅入口、guest 不显示订阅按钮用例，验证 `vitest` 通过
 
 ## 6. 队列页访客权限语义（D6）
 

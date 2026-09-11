@@ -264,20 +264,20 @@ git commit -m "feat(frontend): 用户管理角色改为只读展示，移除编�
 - Consumes: `auth.isAdmin`（useAuthStore，已存在）
 - Produces: 订阅相关按钮 `v-if="auth.isAdmin"`
 
-- [ ] **Step 1: 实现按角色可见**
+- [x] **Step 1: 实现按角色可见**
 
 三处订阅入口加 `v-if="auth.isAdmin"`（或包一层）；guest 时未收录条目不显示订阅按钮，仅保留「在 Emby 中打开」等只读入口。
 
-- [ ] **Step 2: 补充前端测试**
+- [x] **Step 2: 补充前端测试**
 
 `EmbyLibraryView` 相关测试（若现有组件测试则扩展；否则在新增 mount 测试中）：admin 渲染订阅按钮、guest 不渲染。若项目无组件测试基建，改为构建核对 + 在 `format.test.ts` 或 view 测试补 `auth` stub。
 
-- [ ] **Step 3: 构建 + vitest 验证**
+- [x] **Step 3: 构建 + vitest 验证**
 
 Run: `cd frontend && npm run build && npx vitest run`
 Expected: 通过
 
-- [ ] **Step 4: 提交**
+- [x] **Step 4: 提交**
 
 ```bash
 git add frontend/src/views/EmbyLibraryView.vue
