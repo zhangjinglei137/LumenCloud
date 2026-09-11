@@ -375,3 +375,28 @@ def test_build_params_status_forces_series():
     assert params["IncludeItemTypes"] == "Movie,Series"  # status 非空强制含 Series
     assert params["SeriesStatus"] == "continuing"
     assert params["ParentId"] == "m1"
+
+
+# ---- _normalize_library_item poster_url 代理格式（Task 5）----
+
+
+def test_normalize_poster_url_proxy_format():
+    item = _library_item("A", kind="Movie", tmdb=11)
+    result = emby_mod._normalize_library_item(item, "http://emby.test", server_id="srv1")
+    assert result["poster_url"] == "/api/poster?p=emby/id-A/Primary"
+    assert "api_key" not in result["poster_url"]  # api_key 不再内嵌
+    assert result["emby_web_url"] == (
+        "http://emby.test/web/index.html#!/item?id=id-A&serverId=srv1"
+    )
+
+
+def test_normalize_no_poster_returns_null():
+    item = {
+        "Id": "id-N",
+        "Name": "N",
+        "Type": "Movie",
+        "ProviderIds": {"Tmdb": "11"},
+        "ImageTags": {},
+    }
+    result = emby_mod._normalize_library_item(item, "http://emby.test", server_id="srv1")
+    assert result["poster_url"] is None

@@ -345,7 +345,7 @@ async def list_episodes(emby_id: str) -> list[dict[str, Any]]:
 
 
 def _normalize_library_item(
-    item: dict[str, Any], base: str, api_key: Optional[str], server_id: Optional[str] = None,
+    item: dict[str, Any], base: str, server_id: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
     """把 Emby Item 归一化为影视库 DTO（des-3 Emby 展示页）。
 
@@ -375,7 +375,8 @@ def _normalize_library_item(
 
     poster_url = None
     if has_poster:
-        poster_url = f"{base}/Items/{item_id}/Images/Primary?api_key={api_key}"
+        # Emby 封面改经后端代理加载：不内嵌 api_key，前端同源请求（登录态 cookie 兜底）
+        poster_url = f"/api/poster?p=emby/{item_id}/Primary"
 
     # D-1（P1）：Emby web 详情路由依赖 serverId 定位后端实例（缺参 → 空白页）；
     # serverId 获取失败时降级 None（前端隐藏「在 Emby 中打开」入口）
@@ -620,12 +621,11 @@ async def list_library(
     items = await _fetch_items(params)
 
     base = _base_url()
-    api_key = config_store.get("emby_api_key", settings.EMBY_API_KEY)
     # D-1（P1）：详情链接的 serverId 一次获取，批量复用（惰性缓存，失败降级 None）
     server_id = await _get_server_id()
     result: list[dict[str, Any]] = []
     for item in items:
-        normalized = _normalize_library_item(item, base, api_key, server_id)
+        normalized = _normalize_library_item(item, base, server_id)
         if normalized is not None:
             result.append(normalized)
 
@@ -687,15 +687,12 @@ async def list_all_library(
             errors.append(exc)
 
     base = _base_url()
-    api_key = config_store.get("emby_api_key", settings.EMBY_API_KEY)
     seen: dict[str, dict[str, Any]] = {}
     for chunk in results:
         if isinstance(chunk, Exception):
             continue
         for raw in chunk:
-            # 注意：当前 _normalize_library_item 为 4 参签名（item/base/api_key/server_id）；
-            # Task 5 改为 3 参（删除 api_key）后，此处同步改为 _normalize_library_item(raw, base, server_id=None)
-            normalized = _normalize_library_item(raw, base, api_key, server_id=None)
+            normalized = _normalize_library_item(raw, base, server_id=None)
             if normalized is not None:
                 seen.setdefault(normalized["emby_id"], normalized)
 
