@@ -709,7 +709,7 @@ git commit -m "feat(poster): 代理扩展支持 Emby 封面回源（/emby/<itemI
 - Consumes: 无新依赖
 - Produces: `_normalize_library_item(item, base, server_id=None)`（api_key 参数删除）；poster_url 为 `/api/poster?p=emby/{item_id}/Primary`
 
-- [ ] **Step 1: 写失败测试**（追加到 `backend/tests/test_emby_library_folders.py` 末尾）
+- [x] **Step 1: 写失败测试**（追加到 `backend/tests/test_emby_library_folders.py` 末尾）
 
 ```python
 # ---- _normalize_library_item poster_url 代理格式（Task 5）----
@@ -737,12 +737,12 @@ def test_normalize_no_poster_returns_null():
     assert result["poster_url"] is None
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cd backend && python -m pytest tests/test_emby_library_folders.py -k normalize -v`
 Expected: FAIL（当前 poster_url 为 Emby 直连 URL）
 
-- [ ] **Step 3: 实现改造**
+- [x] **Step 3: 实现改造**
 
 修改 `backend/app/services/emby.py` `_normalize_library_item`：
 
@@ -773,12 +773,12 @@ def _normalize_library_item(
 > 1. `list_library`（原 616 行）：`_normalize_library_item(item, base, api_key, server_id)` → `_normalize_library_item(item, base, server_id)`
 > 2. `list_all_library`（Task 2 新增）：`_normalize_library_item(raw, base, api_key, server_id=None)` → `_normalize_library_item(raw, base, server_id=None)`，并删除其 `api_key` 局部变量
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `cd backend && python -m pytest tests/test_emby_library_all.py tests/test_emby_library_folders.py tests/test_emby_series_status.py -v`
 Expected: PASS（新旧用例全绿，含 Task 2 聚合测试——其断言不含 poster_url 具体值，不受影响）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add backend/app/services/emby.py backend/tests/test_emby_library_folders.py
