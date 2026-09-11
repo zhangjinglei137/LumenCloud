@@ -113,7 +113,7 @@ git commit -m "fix(media): 缺失集按已开播口径计算，未开播集不�
 - Consumes: 无
 - Produces: `mediaStatusLabel('download') === '下载中'`；未知值回退「未知」
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `format.test.ts` 追加：
 
@@ -128,12 +128,12 @@ describe('mediaStatusLabel 兜底', () => {
 })
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `cd frontend && npx vitest run src/utils/format.test.ts`
 Expected: FAIL
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `MEDIA_STATUS_MAP` 增加 `download: ['下载中', 'primary']`；`mediaStatusLabel` 未知键返回 `'未知'`：
 
@@ -146,12 +146,12 @@ export function mediaStatusLabel(status: string | null | undefined): string {
 
 `mediaStatusType` 未知键返回 `'info'`（现状已如此）。核对 `episodeSummaryText` 与后端新口径一致（无逻辑改动）。
 
-- [ ] **Step 4: 运行确认通过**
+- [x] **Step 4: 运行确认通过**
 
 Run: `cd frontend && npx vitest run src/utils/format.test.ts`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add frontend/src/utils/format.ts frontend/src/utils/format.test.ts
