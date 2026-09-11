@@ -410,7 +410,7 @@ git commit -m "feat(emby): 新增 list_all_library 全部影视类库聚合服�
 - Consumes: `list_all_library`（Task 2）、`_to_http_exc`（已存在）
 - Produces: `GET /api/emby/library/all?item_type=&status=` → `{items, total, item_type}`；503 detail 含 code
 
-- [ ] **Step 1: 写失败测试**（追加到 `backend/tests/test_emby_library_all.py` 末尾）
+- [x] **Step 1: 写失败测试**（追加到 `backend/tests/test_emby_library_all.py` 末尾）
 
 ```python
 # ---- 端点级（路由直调，对齐 test_poster_proxy 约定；鉴权由 Depends 注入，不经鉴权测试）----
@@ -474,12 +474,12 @@ def test_router_library_all_unreachable_503(monkeypatch):
     assert exc_info.value.detail["code"] == "emby_unreachable"
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cd backend && python -m pytest tests/test_emby_library_all.py -k router_library_all -v`
 Expected: FAIL（`AttributeError: module 'app.routers.emby' has no attribute 'library_all'`）
 
-- [ ] **Step 3: 实现端点**
+- [x] **Step 3: 实现端点**
 
 修改 `backend/app/routers/emby.py`：
 
@@ -513,12 +513,12 @@ async def library_all(
 
 > 注意：FastAPI 路由匹配按声明顺序与具体度，`/library/all` 与 `/library` 路径不同不冲突；`/library` 端点保持 `library_id` 必选不变。
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `cd backend && python -m pytest tests/test_emby_library_all.py -v`
 Expected: PASS（端点 4 条 + 服务层 6 条全绿）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add backend/app/routers/emby.py backend/tests/test_emby_library_all.py

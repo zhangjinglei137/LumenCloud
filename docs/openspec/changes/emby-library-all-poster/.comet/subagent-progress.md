@@ -7,16 +7,16 @@
 
 ## 已完成任务
 
-- Task 1: complete（commits 926957f..f8e915c，16 passed 无回归，无风险信号 → 直接放行，task-checkoff PASS）
+- Task 1: complete（commits 926957f..f8e915c，16 passed，无风险信号直接放行，checkoff PASS）
+- Task 2: complete（commits 35b826a..4dad361，fix round 1/1 后 re-review Approved；I-1/M-1 修复、I-2 接受、M-2/M-3 deferred；7 passed + 28 回归，checkoff PASS）
 
 ## 当前任务
 
-- Task 2: 后端 list_all_library 聚合服务
-- OpenSpec 映射: tasks.md 1.2（修复全部聚合查询的核心实现）
+- Task 3: 后端端点 GET /api/emby/library/all
+- OpenSpec 映射: tasks.md 1.2（端点出口）
 - 阶段: task-review
-- Implementer: fix-2 / ses_f70ab676effeBXTZ7POvBOAqzr（DONE_WITH_CONCERNS，提交 e32a419，6 passed + 28 回归）
-- Reviewer: ora-1 / ses_f70a5a4f1ffenDwLdi0zLBAwAC（oracle）
-- 命中风险信号: 跨模块协调 / 并发 / 公共 API 契约（探针偏离）/ diff>200行 / DONE_WITH_CONCERNS
-- 审查轮次: 1/1 进行中（fix round 1，resume fix-2 / ses_f70ab676effeBXTZ7POvBOAqzr）
-- 反馈处理: I-1 修复判据 + 补边界测试；M-1 补 fixture；I-2 接受记录；M-2/M-3 deferred
-- 待 re-review（scoped）
+- Implementer: fix-3 / ses_f709a8b29ffeqTI4cjdyso8jcE（DONE，提交 5263b93，11 passed）
+- Reviewer: ora-2 / ses_f7098b6deffegrlyWdvnV8OGRa（oracle）
+- 命中风险信号: 公共 API 契约（新端点）
+- 审查轮次: 0/1（standard）
+- 待 reviewer 反馈
