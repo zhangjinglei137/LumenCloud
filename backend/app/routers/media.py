@@ -421,6 +421,33 @@ async def list_media(
         results = await asyncio.gather(*(_fetch_ingested(m) for m in emby_targets))
         ingested_by_media = dict(results)
 
+    # 缺失集已开播口径（fix-online-issues Task 1）：并行读取每部 tv 的
+    # episode_info_cache 已开播集数（air_date<=today，无日期视为已开播）；
+    # 空缓存/异常返回 -1 → _stats 回退 TMDB 全集数口径。total 保持 TMDB 全集数不变。
+    aired_by_media: dict[int, int] = {}
+
+    async def _fetch_aired_total(m: Media) -> tuple[int, int]:
+        try:
+            eps = await tmdb.get_episode_info(m.tmdb_id)
+            if not eps:
+                return m.id, -1  # 无缓存 → 回退 total 口径
+            today = date.today()
+            aired = sum(
+                1 for ep in eps
+                if not ep.get("air_date") or (ep["air_date"] <= today.isoformat())
+            )
+            return m.id, aired
+        except Exception:  # noqa: BLE001  查询失败回退 total 口径，不阻断列表
+            return m.id, -1
+
+    aired_targets = [
+        m for m in media_rows
+        if (m.media_type or "").strip().lower() != "movie" and m.tmdb_id is not None
+    ]
+    if aired_targets:
+        results = await asyncio.gather(*(_fetch_aired_total(m) for m in aired_targets))
+        aired_by_media = dict(results)
+
     # 最近一条 task_run（按时间倒序，取每条 media 首条）
     latest: dict[int, dict] = {}
     for row in await session.execute(
@@ -455,6 +482,10 @@ async def list_media(
         done_codes = done_codes_by_media.get(m.id, set())
         ingested = ingested_by_media.get(m.id, set())
         available = len(done_codes | ingested)
+        # 缺失集已开播口径：aired_total>=0 时按已开播集数算缺失（未开播集不计入），
+        # 无缓存/失败（-1）回退 TMDB 全集数口径
+        aired_total = aired_by_media.get(m.id, -1)
+        base = aired_total if aired_total >= 0 else total
         return {
             "total": total,
             "done": ep["done"],
@@ -464,7 +495,7 @@ async def list_media(
             # 「已有」= Emby 实际入库 ∪ 本系统完成（去重）；缺失防负
             "available": available,
             "downloaded": ep["done"],
-            "missing": max(0, total - available),
+            "missing": max(0, base - available),
         }
 
     return [

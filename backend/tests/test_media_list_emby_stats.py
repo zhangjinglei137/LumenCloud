@@ -15,7 +15,7 @@ os.environ["LUMENCLOUD_DATA_DIR"] = _TMP_DATA
 os.environ["EMBY_BASE_URL"] = ""
 os.environ["EMBY_API_KEY"] = ""
 
-from datetime import datetime, timezone  # noqa: E402
+from datetime import date, datetime, timedelta, timezone  # noqa: E402
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
@@ -194,3 +194,39 @@ def test_stats_no_emby_query_when_no_missing(monkeypatch):
         item = next(m for m in r.json() if m["id"] == mid)
         assert item["episode_stats"]["available"] == 1
         mock.assert_not_awaited()
+
+
+def test_stats_missing_excludes_unaired(monkeypatch):
+    """未开播集不计入缺失：aired_total 只计 air_date<=today 的集（无日期视为已开播），
+    total 保持 TMDB 全集数。
+
+    缓存 4 集：today / 3 天前 / 无日期（均视为已开播）+ 30 天后（未开播）。
+    aired_total=3，本系统完成 1 集 → missing=3-1=2（而非 total 口径的 30-1=29）。
+    """
+    from app.routers import media as media_mod
+    from app.services import emby as emby_mod
+
+    today = date.today()
+
+    async def fake_episode_info(tmdb_id):
+        return [
+            {"season": 1, "episode": 1, "name": "A", "air_date": today.isoformat()},
+            {"season": 1, "episode": 2, "name": "B",
+             "air_date": (today - timedelta(days=3)).isoformat()},
+            {"season": 1, "episode": 3, "name": "C",
+             "air_date": (today + timedelta(days=30)).isoformat()},
+            {"season": 1, "episode": 4, "name": "D", "air_date": None},
+        ]
+
+    monkeypatch.setattr(media_mod.tmdb, "get_episode_info", fake_episode_info)
+    monkeypatch.setattr(emby_mod, "get_ingested_episode_codes", AsyncMock(return_value=set()))
+
+    with TestClient(app) as client:
+        h = _login(client)
+        mid = client.portal.call(_seed_tv_with_done, 30)["media_id"]
+        r = client.get("/api/media", headers=h)
+        assert r.status_code == 200, r.text
+        item = next(m for m in r.json() if m["id"] == mid)
+        assert item["episode_stats"]["total"] == 30  # 全集数口径不变
+        assert item["episode_stats"]["available"] == 1
+        assert item["episode_stats"]["missing"] == 2  # 仅已开播 3 集中缺 2 集
