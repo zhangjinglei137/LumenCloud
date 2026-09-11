@@ -832,7 +832,7 @@ git commit -m "chore(comet): 勾选 tasks 1.1-1.5（后端 Emby 聚合 + active_
 **Interfaces:**
 - Produces: `ActiveTask` 类型（`{season: number | null; episode: string; status: string; source: 'dq' | 'task'; air_date: string | null}`）、`MediaDetail.active_tasks?: ActiveTask[]`；`episodeSummaryText(stats, mediaType, seriesStatus) -> string`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `frontend/src/utils/format.test.ts` 末尾追加：
 
@@ -858,12 +858,12 @@ describe('episodeSummaryText（已有 N 缺失 M）', () => {
 })
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cd frontend && npx vitest run src/utils/format.test.ts`
 Expected: FAIL（`episodeSummaryText` 未定义）
 
-- [ ] **Step 3: 实现类型与纯函数**
+- [x] **Step 3: 实现类型与纯函数**
 
 a) `frontend/src/types/index.ts` 的 `MediaDetail` 接口（第 92 行附近）增加：
 
@@ -911,12 +911,12 @@ export function episodeSummaryText(
 }
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `cd frontend && npx vitest run src/utils/format.test.ts`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add frontend/src/types/index.ts frontend/src/utils/format.ts frontend/src/utils/format.test.ts
