@@ -1,0 +1,50 @@
+{
+  "change": "fix-online-issues",
+  "phase": "design",
+  "mode": "beta",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "60272beda0048a5d9eed217864f66dc50da72ec773d6995c775a7e01d7526030",
+  "files": [
+    {
+      "path": "docs/openspec/changes/fix-online-issues/proposal.md",
+      "sha256": "842c4dc8ca5f3a02646978b72bae81d6f32bfe418aeea75c0cb9f30aff0232a6",
+      "role": "supporting"
+    },
+    {
+      "path": "docs/openspec/changes/fix-online-issues/design.md",
+      "sha256": "44b7372c8d341a219e953a6ca619e3ed18513f498dba43b855a8724e5c2b6793",
+      "role": "supporting"
+    },
+    {
+      "path": "docs/openspec/changes/fix-online-issues/tasks.md",
+      "sha256": "cbc1be5247ad990988613e6da15cf690333dc958720755fdc26bba3882c4cc53",
+      "role": "supporting"
+    },
+    {
+      "path": "docs/openspec/changes/fix-online-issues/specs/emby-library-browse/spec.md",
+      "sha256": "6db3c5974d04e5f2a5550473d9963e2f4a9069a9e463412ca2cb96ba0a2cd9fa",
+      "role": "spec"
+    },
+    {
+      "path": "docs/openspec/changes/fix-online-issues/specs/media-detail-ui/spec.md",
+      "sha256": "8bbb43f116b22c636d2bc7520aca496f67dca553ddf71abf2b4001f973aff45f",
+      "role": "spec"
+    },
+    {
+      "path": "docs/openspec/changes/fix-online-issues/specs/media-status/spec.md",
+      "sha256": "6a6c032362db059ad445f5603a67100fdcfa44d0fa4e4c1633fcbb61392ae9ee",
+      "role": "spec"
+    },
+    {
+      "path": "docs/openspec/changes/fix-online-issues/specs/queue-inspection-display/spec.md",
+      "sha256": "78e52d1c3d42612b7175f14a2fe20b38234ab530418dd379f26089a1d2e8e70a",
+      "role": "spec"
+    },
+    {
+      "path": "docs/openspec/changes/fix-online-issues/specs/user-role-display/spec.md",
+      "sha256": "8606ec7c4643acebaf44f8915e9ba87f4be2db70bf5ccff1747faf9694ad9afc",
+      "role": "spec"
+    }
+  ]
+}
