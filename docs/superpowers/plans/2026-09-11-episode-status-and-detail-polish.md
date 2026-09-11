@@ -972,7 +972,7 @@ git commit -m "feat(frontend): 列表卡集数文案接入「已有 N 缺失 M�
 **Interfaces:**
 - Consumes: `detail.active_tasks`（Task 5 类型）、`taskQueueStatusLabel/Type/Color`、`downloadQueueStatusLabel/Type/Color`、`episodeDisplayName`（均已在 format.ts）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `frontend/src/views/MediaDetailView.test.ts` 追加（沿用文件既有 detail reactive + mount 模式；先确认文件末尾结构再追加）：
 
@@ -1002,12 +1002,12 @@ describe('当前进行中任务区块', () => {
 })
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cd frontend && npx vitest run src/views/MediaDetailView.test.ts`
 Expected: FAIL（区块不存在）
 
-- [ ] **Step 3: 实现区块**
+- [x] **Step 3: 实现区块**
 
 a) script 区新增：
 
@@ -1050,12 +1050,12 @@ c) 模板：在「集数状态」panel（`v-if="detail.media_type !== 'movie'"`�
       </div>
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `cd frontend && npx vitest run src/views/MediaDetailView.test.ts`
 Expected: PASS（含新增 2 个用例）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add frontend/src/views/MediaDetailView.vue frontend/src/views/MediaDetailView.test.ts
