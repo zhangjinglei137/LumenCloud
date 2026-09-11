@@ -10,8 +10,8 @@
 
 - [x] 2.1 frontend/src/utils/format.ts `formatFileSize` 语义调整：estimated=true 且无真实值时保留「约」前缀，否则显示精确值，验证调用处输出符合新语义
 - [x] 2.2 QueueView.vue 巡检队列大小列移除无条件「约」前缀，验证展示精确大小
-- [ ] 2.3 QueueView.vue 下载队列拆列：进度（进度条 + 速度）与文件大小独立展示区域/单元格，验证下载中行进度与大小分区清晰、非下载中行仅大小
-- [ ] 2.4 前端测试补充：formatFileSize 新语义、下载队列分区渲染，验证 `vitest` 通过
+- [x] 2.3 QueueView.vue 下载队列拆列：进度（进度条 + 速度）与文件大小独立展示区域/单元格，验证下载中行进度与大小分区清晰、非下载中行仅大小
+- [x] 2.4 前端测试补充：formatFileSize 新语义、下载队列分区渲染，验证 `vitest` 通过
 
 ## 3. 集成验证
 

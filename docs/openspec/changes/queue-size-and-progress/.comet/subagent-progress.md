@@ -21,11 +21,16 @@
 - 状态：complete（commit 6c4c58a，协调者 diff 复核通过，无风险信号）
 - formatFileSize 0/负数 →「—」；DownloadProgressEntry 补 total 可选字段；vitest 全量 69 passed
 
-## 当前任务：T4（plan Task 4 — 巡检队列大小列验证补测，tasks 2.2）
+## T4（已完成）：巡检队列大小列验证补测（tasks 2.2）
+
+- 状态：complete（commit 34f12c6，协调者 diff 复核通过，无风险信号）
+- QueueView.test.ts 追加 0 值断言，6/6 通过
+
+## 当前任务：T5（plan Task 5 — 下载队列拆列 + total 优先，tasks 2.3/2.4）
 
 - 阶段：implementing
 - 派发：fixer（后台）
 - 实现提交哈希：(待回报)
-- 测试证据：(待回报)
-- 风险信号自报：(待回报；预期无命中——纯测试任务)
+- RED/GREEN 证据：(待回报)
+- 风险信号自报：(待回报；预期命中「公共 API 契约/界面结构变更」——下载队列列表列结构拆分，前端消费 progressMap.total → 协调者复核后判定是否派发任务级审查)
 - 审查-修复轮次：0/1

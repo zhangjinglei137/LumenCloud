@@ -339,8 +339,10 @@ Expected: FAIL——`"2.00 GB"` 不出现（下载中行当前不渲染大小）
               <el-table-column label="大小" width="140">
                 <template #default="{ row }">
                   <!-- 下载中行优先 aria2 total 精确值（实时）；缺失回退 file_size（估算带「约」） -->
+                  <!-- Ruling（协调者 2026-09-11）：estimated 参数条件化——total 存在时为精确值强制无「约」，
+                       否则用 row.size_estimated（total 是 aria2 真实值，不应带「约」；与测试 1 断言一致） -->
                   <span style="font-size: 13px">
-                    {{ formatFileSize(row.status === 'downloading' ? (store.progressMap[row.id]?.total ?? row.file_size) : row.file_size, row.size_estimated) }}
+                    {{ formatFileSize(row.status === 'downloading' ? (store.progressMap[row.id]?.total ?? row.file_size) : row.file_size, row.status === 'downloading' && store.progressMap[row.id]?.total != null ? false : row.size_estimated) }}
                   </span>
                 </template>
               </el-table-column>
