@@ -23,6 +23,7 @@ Emby 防重基线 / 遗漏集 / 已有集 / 影视库展示服务。
 （docs/新系统设计.md §4.3：Emby 故障时不进入新缺集发现）。
 """
 import asyncio
+import hashlib
 import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -68,6 +69,11 @@ _TMDB_BATCH_CONCURRENCY = 5
 # 页数上限防御（防 Emby 恒满页导致死循环拉爆）。
 _LIST_PAGE_SIZE = 500
 _LIST_MAX_PAGES = 40  # 500 × 40 = 20000 条，远超影视库实际规模，仅作异常兜底
+
+# episode-status-and-detail-polish：Emby 已入库集聚合的进程内 TTL 缓存。
+# 模式对齐 tmdb.py _SEASON_AIR_CACHE（模块级 dict + timestamp + TTL）。
+_INGESTED_TTL_SECONDS = 6 * 3600  # 6h，与 TMDB season air_date 缓存一致
+_INGESTED_CACHE: dict[str, tuple[float, frozenset[str]]] = {}
 
 
 class EmbyUnavailable(Exception):
@@ -342,6 +348,53 @@ async def list_episodes(emby_id: str) -> list[dict[str, Any]]:
     result.sort(key=lambda ep: (ep["season"] or 0, ep["episode"] or 0))
     logger.info("Emby 已有集（emby_id=%s）: %d 集", emby_id, len(result))
     return result
+
+
+def _config_fingerprint() -> str:
+    """Emby 配置指纹：base_url + api_key 的短哈希（缓存 key 前缀）。
+
+    配置变化（设置页 PATCH /api/settings）→ 指纹变化 → 缓存 key 变化 →
+    旧缓存自然失效，无需主动清理（tasks 1.2 验收点）。
+    """
+    raw = (
+        f"{config_store.get('emby_base_url', settings.EMBY_BASE_URL)}|"
+        f"{config_store.get('emby_api_key', settings.EMBY_API_KEY)}"
+    )
+    return hashlib.sha256(raw.encode()).hexdigest()[:8]
+
+
+async def get_ingested_episode_codes(tmdb_id: int, title: Optional[str] = None) -> set[str]:
+    """查询影视已入库集号集合（"SxxExx"），带进程内 TTL 缓存（6h）。
+
+    组合 find_emby_id（tmdb_id → Emby Item Id，含 title 模糊兜底）+ list_episodes
+    （已入库集列表）→ 归一 code 集合。供列表「已有 N 缺失 M」统计与详情
+    active_tasks「已入库剔除」复用。
+
+    缓存语义：
+    - key = 配置指纹 + tmdb_id（配置变化自然失效）
+    - find_emby_id 未命中（影视不在 Emby）→ 缓存空集（TTL 内避免反复查询）
+    - EmbyUnavailable（配置缺失/网络故障）→ 不缓存、上抛，由调用方降级
+
+    参数:
+        tmdb_id: TMDB id
+        title:   影视名称（可选；find_emby_id 模糊兜底用）
+    返回:
+        已入库集 code 集合（可能为空集）
+    异常:
+        EmbyUnavailable: 配置缺失 / 请求失败
+    """
+    key = f"{_config_fingerprint()}:{tmdb_id}"
+    hit = _INGESTED_CACHE.get(key)
+    if hit is not None and datetime.now(timezone.utc).timestamp() - hit[0] < _INGESTED_TTL_SECONDS:
+        return set(hit[1])
+
+    emby_id = await find_emby_id(tmdb_id, title)
+    codes: set[str] = set()
+    if emby_id:
+        eps = await list_episodes(emby_id)
+        codes = {str(ep.get("code")) for ep in eps if ep.get("code")}
+    _INGESTED_CACHE[key] = (datetime.now(timezone.utc).timestamp(), frozenset(codes))
+    return codes
 
 
 def _normalize_library_item(
