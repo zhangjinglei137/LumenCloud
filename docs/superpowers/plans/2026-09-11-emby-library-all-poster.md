@@ -537,7 +537,7 @@ git commit -m "feat(emby): 新增 GET /api/emby/library/all 全部聚合端点"
 - Consumes: `config_store`（已存在）、`settings`（已存在）、`httpx`（已存在）
 - Produces: `_validate_poster_path("/emby/<itemId>/Primary")` 放行；`fetch_poster("/emby/<itemId>/Primary")` 回源 Emby 图片；未配置抛 `PosterUnavailable`
 
-- [ ] **Step 1: 写失败测试**（追加到 `backend/tests/test_poster_proxy.py` 末尾）
+- [x] **Step 1: 写失败测试**（追加到 `backend/tests/test_poster_proxy.py` 末尾）
 
 ```python
 # ---- Task 4：Emby 封面代理（/emby/<itemId>/Primary 前缀）----
@@ -603,12 +603,12 @@ def test_fetch_poster_emby_cache_isolated_from_tmdb(monkeypatch):
     assert calls == []
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cd backend && python -m pytest tests/test_poster_proxy.py -k emby -v`
 Expected: FAIL（`/emby/...` 校验拒绝或回源失败）
 
-- [ ] **Step 3: 实现代理扩展**
+- [x] **Step 3: 实现代理扩展**
 
 修改 `backend/app/services/poster.py`：
 
@@ -685,12 +685,12 @@ def _emby_image_url(item_id: str) -> str:
 
 （其余逻辑不变：缓存 key 即 p 原文，前缀天然隔离；失败路径不写缓存。）
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `cd backend && python -m pytest tests/test_poster_proxy.py -v`
 Expected: PASS（新增 5 条 + 既有 13 条全绿；`_validate_poster_path` 改动不回归 `/t/p/` 校验）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add backend/app/services/poster.py backend/tests/test_poster_proxy.py
