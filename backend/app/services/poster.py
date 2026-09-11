@@ -1,12 +1,13 @@
 """影视海报图床代理服务。
 
-- 校验：_validate_poster_path 仅放行 /t/p/... 形态（防 SSRF/路径穿越）
+- 校验：_validate_poster_path 放行 /t/p/... 与 /emby/<itemId>/Primary（防 SSRF/路径穿越）
 - 回源：httpx 拉取镜像/官方图床，返回 bytes + content_type
 - 缓存：进程内 TTL dict（上限 + 过期），纯优化，任何异常降级直出
 - 节流：模块级 {key: ts}，60s 内同键只告警一次
 """
 import logging
 import posixpath
+import re
 import time
 from datetime import datetime, timezone
 
@@ -29,13 +30,19 @@ _POSTER_CACHE: dict[str, tuple[float, str, bytes]] = {}
 _POSTER_ALERT_TTL = 60
 _ALERT_COOLDOWN: dict[str, float] = {}
 
+# Emby ItemId 白名单（GUID 或数字串）；回源 URL 仅由「配置 base + 固定路径 + 白名单 id」拼接
+_EMBY_ITEM_ID_RE = re.compile(r"^[A-Za-z0-9-]{1,64}$")
+
 
 class PosterUnavailable(Exception):
     """海报代理不可用：配置缺失 / 配置误填（防御校验）→ 503。"""
 
 
 def _validate_poster_path(p: str) -> bool:
-    """校验 TMDB 图床相对路径合法性（防 SSRF / 路径穿越）。
+    """校验代理相对路径合法性（防 SSRF / 路径穿越）。
+
+    - /t/p/...   ：TMDB 图床相对路径（原有）
+    - /emby/<itemId>/Primary：Emby 封面（itemId 白名单字符集，回源地址由配置拼接）
 
     - FastAPI Query 已解码一次 URL 编码，%2e%2e → ..、%2f → /，无需再次解码；
     - posixpath.normpath 消化 ../ 分段后与 /t/p/ 前缀复核，杜绝归一化越界；
@@ -49,6 +56,11 @@ def _validate_poster_path(p: str) -> bool:
         return False
     if "\\" in p or "\x00" in p:
         return False
+    if p.startswith("/emby/"):
+        parts = p.split("/")
+        if len(parts) != 4 or parts[-1] != "Primary":
+            return False
+        return bool(_EMBY_ITEM_ID_RE.match(parts[2]))
     norm = posixpath.normpath(p)
     if not norm.startswith("/t/p/"):
         return False
@@ -73,6 +85,22 @@ def _base_url() -> str:
             "「TMDB 出口代理」（tmdb_http_proxy）。设置页 → 服务凭据 → 元数据 · TMDB 修改。"
         )
     return mirror or POSTER_DEFAULT_BASE
+
+
+def _emby_image_url(item_id: str) -> str:
+    """构造 Emby 封面回源 URL（配置 base + 固定路径 + 白名单 id + api_key）。
+
+    未配置 → PosterUnavailable（路由映射 503）；误填防御与 _base_url 同规则。
+    """
+    base = (config_store.get("emby_base_url", settings.EMBY_BASE_URL) or "").strip().rstrip("/")
+    api_key = config_store.get("emby_api_key", settings.EMBY_API_KEY) or ""
+    if not base or not api_key:
+        raise PosterUnavailable("Emby 图片代理未配置（emby_base_url / emby_api_key）")
+    if "://" not in base and ":" in base:
+        raise PosterUnavailable(
+            "Emby 地址疑似填了代理端口，应为 Emby 服务根地址（如 http://192.168.1.10:8096）"
+        )
+    return f"{base}/Items/{item_id}/Images/Primary?api_key={api_key}"
 
 
 def _client_factory():
@@ -104,8 +132,10 @@ async def fetch_poster(p: str) -> tuple[bytes, str]:
     if hit is not None and now < hit[0]:
         return hit[2], hit[1]
 
-    base = _base_url()
-    url = f"{base}{p}"
+    if p.startswith("/emby/"):
+        url = _emby_image_url(p.split("/")[2])
+    else:
+        url = f"{_base_url()}{p}"
     try:
         async with _client_factory() as client:
             resp = await client.get(url)

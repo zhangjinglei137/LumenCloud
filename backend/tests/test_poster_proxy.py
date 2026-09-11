@@ -204,3 +204,70 @@ def test_cache_cap_drops_writes(monkeypatch):
     monkeypatch.setattr(poster_mod, "_client_factory", _make_client_factory(resp, calls))
     asyncio.run(poster_mod.fetch_poster("/t/p/w500/overflow.jpg"))
     assert poster_mod._POSTER_CACHE.get("/t/p/w500/overflow.jpg") is None  # 未写入
+
+
+# ---- Task 4：Emby 封面代理（/emby/<itemId>/Primary 前缀）----
+
+
+def test_validate_emby_path_ok():
+    assert poster_mod._validate_poster_path("/emby/abc-123/Primary") is True
+    assert poster_mod._validate_poster_path("/emby/9f2c1a4b-0000-4c3e-8f7d-1234567890ab/Primary") is True
+
+
+def test_validate_emby_path_rejects():
+    # 非法字符 / 路径穿越 / 协议段 / 多余路径段 / 空 id / 非 Primary 后缀
+    for bad in [
+        "/emby/../x/Primary",
+        "/emby/a/b/Primary",        # 多路径段
+        "/emby/a/Primary/x",        # 多余后缀
+        "/emby/a/Primary/../x",
+        "/emby/",                    # 空 id
+        "/emby/abc/Backdrop",        # 非 Primary
+        "/emby/ab cd/Primary",       # 空白
+        "/emby/ab;cd/Primary",       # 分号
+        "/emby/ab%2Fcd/Primary",     # 编码斜杠（FastAPI 已解码一次 → %2F → /）
+        "emby/a/Primary",            # 缺前导斜杠
+        "/emby//Primary",            # 空段
+    ]:
+        assert poster_mod._validate_poster_path(bad) is False, bad
+
+
+def test_fetch_poster_emby_success(monkeypatch):
+    calls: list[str] = []
+    resp = SimpleNamespace(status_code=200, content=b"\xff\xd8jpg", headers={"content-type": "image/jpeg"})
+    monkeypatch.setattr(poster_mod, "_client_factory", _make_client_factory(resp, calls))
+    monkeypatch.setattr(poster_mod, "_POSTER_CACHE", {})
+    monkeypatch.setattr(poster_mod, "_ALERT_COOLDOWN", {})
+    monkeypatch.setattr(
+        "app.services.config_store._cache",
+        {"emby_base_url": "http://emby.test", "emby_api_key": "k123"},
+    )
+    content, ctype = asyncio.run(poster_mod.fetch_poster("/emby/abc-123/Primary"))
+    assert content == b"\xff\xd8jpg"
+    assert ctype == "image/jpeg"
+    assert calls == ["http://emby.test/Items/abc-123/Images/Primary?api_key=k123"]
+
+
+def test_fetch_poster_emby_not_configured(monkeypatch):
+    # 隔离本机 .env 注入的真实 Emby 配置：_cache 置空后 config_store.get 会回退
+    # settings.EMBY_BASE_URL / EMBY_API_KEY，须一并置空才能表达「未配置」语义
+    monkeypatch.setattr(poster_mod.settings, "EMBY_BASE_URL", "")
+    monkeypatch.setattr(poster_mod.settings, "EMBY_API_KEY", "")
+    monkeypatch.setattr("app.services.config_store._cache", {})
+    monkeypatch.setattr(poster_mod, "_POSTER_CACHE", {})
+    with pytest.raises(poster_mod.PosterUnavailable):
+        asyncio.run(poster_mod.fetch_poster("/emby/abc-123/Primary"))
+
+
+def test_fetch_poster_emby_cache_isolated_from_tmdb(monkeypatch):
+    """/emby/ 与 /t/p/ 缓存 key 天然隔离：emby 命中不回源、tmdb 不误伤。"""
+    monkeypatch.setattr(
+        poster_mod, "_POSTER_CACHE",
+        {"/emby/abc-123/Primary": (time.monotonic() + 100, "image/jpeg", b"emby-cached")},
+    )
+    calls: list[str] = []
+    resp = SimpleNamespace(status_code=200, content=b"tmdb-fresh", headers={"content-type": "image/jpeg"})
+    monkeypatch.setattr(poster_mod, "_client_factory", _make_client_factory(resp, calls))
+    content, ctype = asyncio.run(poster_mod.fetch_poster("/emby/abc-123/Primary"))
+    assert content == b"emby-cached"
+    assert calls == []
