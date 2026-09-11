@@ -2,6 +2,8 @@
 comet_change: queue-size-and-progress
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-09-11-queue-size-and-progress
+status: final
 ---
 
 # Design Doc: queue-size-and-progress（队列大小精确值与下载进度分区展示）

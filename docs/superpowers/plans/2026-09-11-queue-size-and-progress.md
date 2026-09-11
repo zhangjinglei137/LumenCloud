@@ -2,6 +2,7 @@
 change: queue-size-and-progress
 design-doc: docs/superpowers/specs/2026-09-11-queue-size-and-progress-design.md
 base-ref: 273a9d3ba49b04693810355907be5e1ecfc537de
+archived-with: 2026-09-11-queue-size-and-progress
 ---
 
 # queue-size-and-progress 实施计划
