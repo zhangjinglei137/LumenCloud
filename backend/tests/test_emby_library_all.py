@@ -58,6 +58,18 @@ def _set_cache(monkeypatch):
     })
 
 
+def _reset_user_id(monkeypatch):
+    """重置模块级惰性缓存（UserId），防跨用例串缓存（对齐 test_emby_library_folders 既有约定）。"""
+    monkeypatch.setattr(emby_mod, "_USER_ID", None)
+    monkeypatch.setattr(emby_mod, "_USER_ID_LOADED", False)
+
+
+def _reset_server_id(monkeypatch):
+    """重置模块级惰性缓存（serverId），防跨用例串缓存（对齐 test_emby_server_id 既有约定）。"""
+    monkeypatch.setattr(emby_mod, "_SERVER_ID", None)
+    monkeypatch.setattr(emby_mod, "_SERVER_ID_LOADED", False)
+
+
 def _item(name, kind="Series", tmdb=1001):
     return {
         "Id": f"id-{name}",
@@ -93,6 +105,8 @@ def _handler(items_by_lib: dict[str, list[dict]], folders: Optional[list[dict]] 
 
 
 def test_all_aggregates_movies_tvshows_mixed(monkeypatch, _db_maker):
+    _reset_user_id(monkeypatch)
+    _reset_server_id(monkeypatch)
     _use_test_db(monkeypatch, _db_maker)
     _set_cache(monkeypatch)
     _install_get(monkeypatch, _handler({
@@ -106,6 +120,8 @@ def test_all_aggregates_movies_tvshows_mixed(monkeypatch, _db_maker):
 
 
 def test_all_dedupes_by_emby_id(monkeypatch, _db_maker):
+    _reset_user_id(monkeypatch)
+    _reset_server_id(monkeypatch)
     _use_test_db(monkeypatch, _db_maker)
     _set_cache(monkeypatch)
     _install_get(monkeypatch, _handler({
@@ -118,6 +134,8 @@ def test_all_dedupes_by_emby_id(monkeypatch, _db_maker):
 
 
 def test_all_no_libraries_returns_empty(monkeypatch, _db_maker):
+    _reset_user_id(monkeypatch)
+    _reset_server_id(monkeypatch)
     _use_test_db(monkeypatch, _db_maker)
     _set_cache(monkeypatch)
     _install_get(monkeypatch, _handler({}, folders=[]))
@@ -125,6 +143,8 @@ def test_all_no_libraries_returns_empty(monkeypatch, _db_maker):
 
 
 def test_all_partial_failure_keeps_success(monkeypatch, _db_maker):
+    _reset_user_id(monkeypatch)
+    _reset_server_id(monkeypatch)
     _use_test_db(monkeypatch, _db_maker)
     _set_cache(monkeypatch)
 
@@ -148,6 +168,8 @@ def test_all_partial_failure_keeps_success(monkeypatch, _db_maker):
 
 
 def test_all_all_failed_raises(monkeypatch, _db_maker):
+    _reset_user_id(monkeypatch)
+    _reset_server_id(monkeypatch)
     _use_test_db(monkeypatch, _db_maker)
     _set_cache(monkeypatch)
 
@@ -160,6 +182,8 @@ def test_all_all_failed_raises(monkeypatch, _db_maker):
 
 
 def test_all_not_configured_raises(monkeypatch, _db_maker):
+    _reset_user_id(monkeypatch)
+    _reset_server_id(monkeypatch)
     _use_test_db(monkeypatch, _db_maker)
     _set_cache(monkeypatch)
 
@@ -169,3 +193,37 @@ def test_all_not_configured_raises(monkeypatch, _db_maker):
     _install_get(monkeypatch, _boom)
     with pytest.raises(EmbyUnavailable):
         run(list_all_library())
+
+
+def test_all_partial_failure_success_empty_not_raises(monkeypatch, _db_maker, caplog):
+    """部分失败边界：1 库成功但返回 0 条 + 2 库失败 → 返回 [] 且不抛（warn）。
+
+    旧判据 `if errors and not items` 会误抛（成功库无条目时 items 为空）；
+    契约「部分失败返回成功部分」要求仅当全部库失败（len(errors) == len(folders)）才上抛。
+    """
+    _reset_user_id(monkeypatch)
+    _reset_server_id(monkeypatch)
+    _use_test_db(monkeypatch, _db_maker)
+    _set_cache(monkeypatch)
+
+    def _h(path, params):
+        if path == "/Users":
+            return [{"Id": "user1", "Name": "admin"}]
+        if path == "/Users/user1/Views":
+            return {"Items": [
+                {"Id": "m1", "Name": "电影", "CollectionType": "movies"},
+                {"Id": "t1", "Name": "剧集", "CollectionType": "tvshows"},
+                {"Id": "x1", "Name": "混合", "CollectionType": "mixed"},
+            ]}
+        if path == "/System/Info/Public":
+            return {"Id": "srv1"}
+        if path == "/Items":
+            if params.get("ParentId") == "m1":
+                return {"Items": []}  # 成功但 0 条
+            raise EmbyUnavailable("Emby 请求失败: boom")  # t1/x1 失败
+        raise AssertionError(f"unexpected path: {path}")
+
+    _install_get(monkeypatch, _h)
+    result = run(list_all_library())  # 部分失败 + 成功库 0 条 → 不抛，返回空
+    assert result == []
+    assert "部分库失败" in caplog.text  # warn 日志

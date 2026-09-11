@@ -710,7 +710,7 @@ async def list_all_library(
     await _attach_tmdb_series_status(items)
     await _attach_in_media_flag(items)
 
-    if errors and not items:
+    if len(errors) == len(folders):
         raise errors[0]  # 全部库失败 → 上抛（路由映射 emby_unreachable）
     if errors:
         logger.warning("Emby 全部聚合部分库失败: %d/%d", len(errors), len(folders))
