@@ -1,0 +1,14 @@
+{
+  "change": "queue-size-and-progress",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "f61a47792ef813082a273758bf294aaf3ac6246db88e6216cfd8b558f753e89f",
+  "files": [
+    { "path": "docs/openspec/changes/queue-size-and-progress/proposal.md", "sha256": "4c4f9965106f8ff8a21d1931d098e19d509c315430c04217bb1660d1b9babfe4" },
+    { "path": "docs/openspec/changes/queue-size-and-progress/design.md", "sha256": "56d2383b983b09bf4f050871216ddbd46c046a843a62e4fd8a8f1f5f778421cd" },
+    { "path": "docs/openspec/changes/queue-size-and-progress/tasks.md", "sha256": "8b6828a7e1d4b6c1d226acab76f358963ee2336903cb4c8a8bfac05b5c29e476" },
+    { "path": "docs/openspec/changes/queue-size-and-progress/specs/queue-inspection-display/spec.md", "sha256": "dde85051c3b0d9d2f8bd6b03ff10ce02d0fdd46d68dd92b63460ebde0420540a" }
+  ]
+}
