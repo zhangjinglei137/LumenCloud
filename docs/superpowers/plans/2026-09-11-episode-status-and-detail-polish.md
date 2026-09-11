@@ -520,7 +520,7 @@ git commit -m "feat(media): 列表 _stats「已有」加入 Emby 入库维度（
 - Consumes: `_DQ_ACTIVE_STATUSES` / `_TQ_ACTIVE_STATUSES`（media.py:44-45）、`_parse_episode`（media.py:121）、`in_emby_codes`、`tmdb_episodes`（均在 get_media 内已有）
 - Produces: 响应新增可选字段 `active_tasks: [{season, episode, status, source: "dq"|"task", air_date}]`（仅 tv，按 (season, episode) 升序；movie 不返回）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 创建 `backend/tests/test_media_active_tasks.py`：
 
@@ -704,12 +704,12 @@ def test_active_tasks_movie_absent(monkeypatch):
         assert "active_tasks" not in r.json()
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cd backend && python -m pytest tests/test_media_active_tasks.py -v`
 Expected: FAIL（`active_tasks` 键不存在）
 
-- [ ] **Step 3: 实现 `active_tasks` 构建**
+- [x] **Step 3: 实现 `active_tasks` 构建**
 
 在 `backend/app/routers/media.py` 的 `get_media` 中，`merged_episodes` 构建之后、`tq_rows` 查询之前（或 `tq_rows` 之后均可，需 `tq_rows` 在作用域内）插入：
 
@@ -775,17 +775,17 @@ Expected: FAIL（`active_tasks` 键不存在）
         media_dto["active_tasks"] = active_tasks
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `cd backend && python -m pytest tests/test_media_active_tasks.py -v`
 Expected: 5 个测试全部 PASS
 
-- [ ] **Step 5: 全量后端测试回归**
+- [x] **Step 5: 全量后端测试回归**
 
 Run: `cd backend && python -m pytest -q`
 Expected: 全部通过
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add backend/app/routers/media.py backend/tests/test_media_active_tasks.py
