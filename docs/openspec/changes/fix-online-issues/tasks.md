@@ -33,8 +33,8 @@
 
 ## 7. 安全审查（D7）
 
-- [ ] 7.1 后端安全审查：认证/授权（路由依赖覆盖）、SQL 注入（参数化）、SSRF（poster/emby 回源校验）、敏感信息泄露（api_key/token 回显），修复确认的高危/中危漏洞并补测试，验证 pytest 通过
-- [ ] 7.2 前端安全审查：XSS（v-html/插值）、权限绕过（按钮/路由级）、敏感信息暴露（localStorage/token），修复确认的漏洞，验证前端构建 + vitest 通过
+- [x] 7.1 后端安全审查：认证/授权（路由依赖覆盖）、SQL 注入（参数化）、SSRF（poster/emby 回源校验）、敏感信息泄露（api_key/token 回显），修复确认的高危/中危漏洞并补测试，验证 pytest 通过
+- [x] 7.2 前端安全审查：XSS（v-html/插值）、权限绕过（按钮/路由级）、敏感信息暴露（localStorage/token），修复确认的漏洞，验证前端构建 + vitest 通过
 
 ## 8. 验证
 

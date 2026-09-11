@@ -334,20 +334,20 @@ git commit -m "fix(queue): 暂停状态接口降为登录可读，访客打开�
 - Consumes: 设计文档 §7 审查清单
 - Produces: 确认漏洞修复 + 测试；审查发现记录（供 verify 报告）
 
-- [ ] **Step 1: 后端审查（认证/授权/注入/SSRF/敏感信息）**
+- [x] **Step 1: 后端审查（认证/授权/注入/SSRF/敏感信息）**
 
 逐路由核对依赖覆盖（get_current_user/admin 与操作匹配）、SQLAlchemy 参数化、poster/emby/tmdb/alist/nastools 回源 URL 拼接、settings GET 遮蔽、日志泄露、DTO 脱敏（share_code 等）。修复确认的 Critical/High 漏洞并补测试。
 
-- [ ] **Step 2: 前端审查（XSS/权限绕过/敏感信息）**
+- [x] **Step 2: 前端审查（XSS/权限绕过/敏感信息）**
 
 核对 v-html 使用、token 存取、按钮级权限（auth.isAdmin 覆盖所有写操作入口）、localStorage 敏感数据。修复确认漏洞。
 
-- [ ] **Step 3: 全量回归**
+- [x] **Step 3: 全量回归**
 
 Run: `cd backend && .venv/bin/python -m pytest -q` && `cd frontend && npx vitest run && npm run build`
 Expected: 全部通过
 
-- [ ] **Step 4: 提交**
+- [x] **Step 4: 提交**
 
 ```bash
 git add -A
