@@ -9,8 +9,6 @@ import { formatTime } from '../utils/format'
 const store = useUsersStore()
 const auth = useAuthStore()
 
-/** 正在修改角色的用户 id（el-select loading）；失败时回滚选中值 */
-const patchingRoleIds = ref<Set<number>>(new Set())
 /** 正在删除的用户 id */
 const removingIds = ref<Set<number>>(new Set())
 
@@ -44,21 +42,6 @@ function removeDisabledReason(row: UserItem): string | null {
   return null
 }
 
-async function onRoleChange(row: UserItem, role: string): Promise<void> {
-  if (role !== 'admin' && role !== 'guest') return
-  if (role === row.role) return
-  patchingRoleIds.value.add(row.id)
-  try {
-    await store.patchRole(row.id, role)
-    ElMessage.success(`已把 ${row.username} 调整为「${roleLabel(role)}」`)
-  } catch {
-    // 409（不能修改自己的角色 / 唯一管理员）等已由拦截器提示后端文案；刷新使选中值回退
-    await store.fetchList()
-  } finally {
-    patchingRoleIds.value.delete(row.id)
-  }
-}
-
 async function onRemove(row: UserItem): Promise<void> {
   try {
     await ElMessageBox.confirm(
@@ -88,7 +71,7 @@ async function onRemove(row: UserItem): Promise<void> {
         <div>
           <h3 class="lc-panel-title" style="margin: 0">用户管理</h3>
           <p class="lc-muted" style="margin: 4px 0 0; font-size: 12px">
-            调整角色立即生效；删除受限制：不能删除自己、最后一个管理员、或存在关联记录（审批 / 通知 / 邀请码）的用户。
+            角色仅作展示；删除受限制：不能删除自己、最后一个管理员、或存在关联记录（审批 / 通知 / 邀请码）的用户。
           </p>
         </div>
         <div class="right">
@@ -109,21 +92,7 @@ async function onRemove(row: UserItem): Promise<void> {
         </el-table-column>
         <el-table-column label="角色" width="150">
           <template #default="{ row }">
-            <el-tooltip :disabled="row.id !== auth.user?.id" content="不能修改自己的角色" placement="top">
-              <span style="display: inline-block">
-                <el-select
-                  :model-value="row.role"
-                  size="small"
-                  :loading="patchingRoleIds.has(row.id)"
-                  :disabled="patchingRoleIds.has(row.id) || row.id === auth.user?.id"
-                  @change="(v: string) => onRoleChange(row, v)"
-                >
-                  <el-option value="admin" :label="`管理员`" />
-                  <el-option value="guest" :label="`访客`" />
-                </el-select>
-              </span>
-            </el-tooltip>
-            <el-tag size="small" effect="plain" :type="roleTagType(row.role)" style="margin-left: 6px">
+            <el-tag size="small" effect="plain" :type="roleTagType(row.role)">
               {{ roleLabel(row.role) }}
             </el-tag>
           </template>
