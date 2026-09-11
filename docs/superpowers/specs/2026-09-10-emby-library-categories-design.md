@@ -2,6 +2,8 @@
 comet_change: emby-library-categories
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-09-11-emby-library-categories
+status: final
 ---
 
 # Design Doc: Emby 影视库按媒体库类型分类 + 去分页
