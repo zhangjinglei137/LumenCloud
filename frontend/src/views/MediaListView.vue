@@ -6,6 +6,7 @@ import { useMediaStore } from '../stores/media'
 import { useAuthStore } from '../stores/auth'
 import type { MediaItem } from '../types'
 import {
+  episodeSummaryText,
   formatTime,
   mediaStatusLabel,
   mediaStatusType,
@@ -62,15 +63,7 @@ onUnmounted(() => {
 const hasRunning = computed(() => store.items.some((m) => m.last_task_run?.status === 'running'))
 
 function episodeText(m: MediaItem): string {
-  if (m.media_type === 'movie') return seriesStatusLabel(m.series_status, 'movie')
-  const s = m.episode_stats
-  if (!s) return '—'
-  const avail = s.available ?? s.downloaded
-  const total = s.total
-  if (avail !== undefined && total !== undefined) return `${avail} / ${total} 集`
-  if (total !== undefined) return `共 ${total} 集`
-  if (avail !== undefined) return `已有 ${avail} 集`
-  return '—'
+  return episodeSummaryText(m.episode_stats, m.media_type, m.series_status)
 }
 
 async function onScan(m: MediaItem, e: Event) {
