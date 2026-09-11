@@ -49,7 +49,7 @@ base-ref: 273a9d3ba49b04693810355907be5e1ecfc537de
 
 **核查结论（tasks 1.1）**：真实大小来源为 aria2 `totalLength`（下载链路）+ 分享总大小均摊（探测链路，cloudSaver 无单文件 size，外部 issue jiangrui1994/CloudSaver#130）；`size_estimated` 判定在 scan.py `_walk_share`（缺失均摊置 True）/ `_complete_download`（回填清 False）。写入/拷贝/回填/估算链路测试均已存在（见现状事实），无需新增。
 
-- [ ] **Step 1: 扩展测试（Red）**——在 `test_progress_aggregates_tell_status_and_degrades` 的断言区（680-684 行后）追加：
+- [x] **Step 1: 扩展测试（Red）**——在 `test_progress_aggregates_tell_status_and_degrades` 的断言区（680-684 行后）追加：
 
 ```python
     # total：totalLength>0 → 真实字节；失败行降级 None
@@ -57,12 +57,12 @@ base-ref: 273a9d3ba49b04693810355907be5e1ecfc537de
     assert by_gid["gid-2"]["total"] is None
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `cd backend && ./.venv/bin/python -m pytest tests/test_queue.py::test_progress_aggregates_tell_status_and_degrades -v`
 Expected: FAIL——`KeyError: 'total'`（接口未返回 total 字段）。
 
-- [ ] **Step 3: 实现**——`queue.py` `download_progress` 循环内（859-880 行），在 `speed` 处理之后追加 total：
+- [x] **Step 3: 实现**——`queue.py` `download_progress` 循环内（859-880 行），在 `speed` 处理之后追加 total：
 
 ```python
             if total > 0:
@@ -85,17 +85,17 @@ Expected: FAIL——`KeyError: 'total'`（接口未返回 total 字段）。
 
 注意：`totalLength` 缺失/0/非法时保持 `None`（不显示 0 字节，Design Doc §4 边界条件）。
 
-- [ ] **Step 4: 运行确认通过**
+- [x] **Step 4: 运行确认通过**
 
 Run: `cd backend && ./.venv/bin/python -m pytest tests/test_queue.py::test_progress_aggregates_tell_status_and_degrades -v`
 Expected: PASS（total=1000 与 total=None 两条新断言 + 原断言）。
 
-- [ ] **Step 5: 回归整个队列测试**
+- [x] **Step 5: 回归整个队列测试**
 
 Run: `cd backend && ./.venv/bin/python -m pytest tests/test_queue.py tests/test_queue_size_estimated.py -v`
 Expected: 全部 PASS。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add backend/app/routers/queue.py backend/tests/test_queue.py
@@ -103,7 +103,7 @@ git commit -m "feat(queue): progress 接口返回 aria2 真实总大小 total
 下载中行可实时展示精确大小（totalLength>0 时返回，缺失/0 降级 None）"
 ```
 
-- [ ] **Step 7: 勾选 tasks.md 1.1 与 1.2**
+- [x] **Step 7: 勾选 tasks.md 1.1 与 1.2**
 
 tasks.md 中 `- [ ] 1.1 ...` 与 `- [ ] 1.2 ...` 改为 `- [x]`。
 
@@ -119,12 +119,12 @@ tasks.md 中 `- [ ] 1.1 ...` 与 `- [ ] 1.2 ...` 改为 `- [x]`。
 - Consumes: 现状事实中列出的既有测试文件。
 - Produces: 无新接口；确认后端链路测试完整。
 
-- [ ] **Step 1: 运行既有链路测试**
+- [x] **Step 1: 运行既有链路测试**
 
 Run: `cd backend && ./.venv/bin/python -m pytest tests/test_queue_size_estimated.py tests/test_scan_walk_size.py -v`
 Expected: 全部 PASS（覆盖：size_estimated 写入/拷贝/回填清标记、walk_share 单文件 size 读取与均摊估算）。
 
-- [ ] **Step 2: 核查列表接口透传断言**——`backend/tests/test_queue.py` 中 `test_list_download_flat_type_download`（272 行）与 `test_list_flat_contract_fields_and_no_credentials`（242 行）应含 `size_estimated` 断言；若缺失，在该测试的响应行断言区追加：
+- [x] **Step 2: 核查列表接口透传断言**——`backend/tests/test_queue.py` 中 `test_list_download_flat_type_download`（272 行）与 `test_list_flat_contract_fields_and_no_credentials`（242 行）应含 `size_estimated` 断言；若缺失，在该测试的响应行断言区追加：
 
 ```python
     assert rows[0]["size_estimated"] is False
@@ -133,7 +133,7 @@ Expected: 全部 PASS（覆盖：size_estimated 写入/拷贝/回填清标记、
 Run: `cd backend && ./.venv/bin/python -m pytest tests/test_queue.py -k "list_" -v`
 Expected: 全部 PASS。
 
-- [ ] **Step 3: 提交（如有断言补充）**
+- [x] **Step 3: 提交（如有断言补充）**
 
 ```bash
 git add backend/tests/test_queue.py
@@ -142,7 +142,7 @@ git commit -m "test(queue): 固化列表接口 size_estimated 透传断言"
 
 （无断言补充时跳过本步，直接进入 Step 4。）
 
-- [ ] **Step 4: 勾选 tasks.md 1.3**
+- [x] **Step 4: 勾选 tasks.md 1.3**
 
 tasks.md 中 `- [ ] 1.3 ...` 改为 `- [x]`。
 
@@ -159,7 +159,7 @@ tasks.md 中 `- [ ] 1.3 ...` 改为 `- [x]`。
 - Consumes: `formatBytes(bytes)`（format.ts:16，`null/NaN/<0 → '—'`，`>=1GB → "X.XX GB"`）。
 - Produces: `formatFileSize(fileSize: number | null | undefined, estimated?: boolean): string`——`fileSize == null || fileSize <= 0 → '—'`；否则 `estimated ? '约 X' : X`。`DownloadProgressEntry.total?: number | null`。
 
-- [ ] **Step 1: 写失败测试**——在 `format.test.ts` 的 `describe('文件大小约标注...')`（104-120 行）内追加：
+- [x] **Step 1: 写失败测试**——在 `format.test.ts` 的 `describe('文件大小约标注...')`（104-120 行）内追加：
 
 ```typescript
   it('0 与负数视为无记录 → —（不显示 0 B）', () => {
@@ -186,12 +186,12 @@ export interface DownloadProgressEntry {
 }
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `cd frontend && npx vitest run src/utils/format.test.ts`
 Expected: FAIL——`formatFileSize(0)` 返回 `"0 B"`（当前 `formatBytes(0)` 分支）而非 `"—"`。
 
-- [ ] **Step 3: 实现**——format.ts `formatFileSize`（26-30 行）改为：
+- [x] **Step 3: 实现**——format.ts `formatFileSize`（26-30 行）改为：
 
 ```typescript
 /** 文件大小展示：估算值加「约 」前缀；无值或 ≤0 显示 —（0 字节影视场景不存在） */
@@ -202,12 +202,12 @@ export function formatFileSize(fileSize: number | null | undefined, estimated?: 
 }
 ```
 
-- [ ] **Step 4: 运行确认通过**
+- [x] **Step 4: 运行确认通过**
 
 Run: `cd frontend && npx vitest run src/utils/format.test.ts`
 Expected: PASS（新增 0/负数 断言 + 既有四态断言）。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add frontend/src/utils/format.ts frontend/src/utils/format.test.ts frontend/src/types/index.ts
@@ -215,7 +215,7 @@ git commit -m "feat(ui): formatFileSize 零值与负值显示 —，progress 类
 0 字节影视场景不存在，杜绝「0 B」误导；total 供下载中行实时精确大小"
 ```
 
-- [ ] **Step 6: 勾选 tasks.md 2.1**
+- [x] **Step 6: 勾选 tasks.md 2.1**
 
 tasks.md 中 `- [ ] 2.1 ...` 改为 `- [x]`。
 
@@ -231,7 +231,7 @@ tasks.md 中 `- [ ] 2.1 ...` 改为 `- [x]`。
 - Consumes: `storeState.items`（test 文件 9-41 行 mock）；`makeTask()`（53-67 行 helper）；EP_STUBS + `mountView()`（92-141 行，el-table 通过 TABLE_ROWS provide 渲染 scoped slot）。
 - Produces: 无新接口；验证巡检队列大小列 `formatFileSize` 条件语义。
 
-- [ ] **Step 1: 写测试**——在 `describe('QueueView 巡检队列 Tab'...)`（164 行起）内追加：
+- [x] **Step 1: 写测试**——在 `describe('QueueView 巡检队列 Tab'...)`（164 行起）内追加：
 
 ```typescript
   it('巡检队列大小列：file_size=0 显示「—」，精确值无「约」', async () => {
@@ -248,19 +248,19 @@ tasks.md 中 `- [ ] 2.1 ...` 改为 `- [x]`。
 
 （参考既有 174 行测试「巡检队列行渲染标题、集号与『约 』标注大小」的断言风格，它已覆盖 `size_estimated=true` 时「约 」标注渲染。）
 
-- [ ] **Step 2: 运行确认通过**
+- [x] **Step 2: 运行确认通过**
 
 Run: `cd frontend && npx vitest run src/views/QueueView.test.ts`
 Expected: PASS（新增断言 + 既有 174 行「约 」断言）。
 
-- [ ] **Step 3: 提交**
+- [x] **Step 3: 提交**
 
 ```bash
 git add frontend/src/views/QueueView.test.ts
 git commit -m "test(ui): 巡检队列大小列 0 值显示 — 与精确值无约前缀断言"
 ```
 
-- [ ] **Step 4: 勾选 tasks.md 2.2**
+- [x] **Step 4: 勾选 tasks.md 2.2**
 
 tasks.md 中 `- [ ] 2.2 ...` 改为 `- [x]`。
 
@@ -276,7 +276,7 @@ tasks.md 中 `- [ ] 2.2 ...` 改为 `- [x]`。
 - Consumes: `downloadProgress(d)`（QueueView.vue:149，`store.progressMap[id].progress`）、`downloadSpeed(d)`（155 行）、`store.progressMap[id].total`（新，类型见 Task 3）、`formatFileSize` / `formatBytes`（format.ts）。
 - Produces: 模板两列——「进度」列（仅 `downloading` 显示进度条+速度，其余「—」）；「大小」列（`downloading` 行 `progressMap[id].total ?? file_size` 经 `formatFileSize` 展示，其余行 `formatFileSize(file_size, size_estimated)`）。
 
-- [ ] **Step 1: 写失败测试**——在 `QueueView.test.ts` 末尾追加：
+- [x] **Step 1: 写失败测试**——在 `QueueView.test.ts` 末尾追加：
 
 ```typescript
 describe('QueueView 下载队列拆列（queue-size-and-progress）', () => {
@@ -313,12 +313,12 @@ describe('QueueView 下载队列拆列（queue-size-and-progress）', () => {
 
 注意：`makeDownload`（69-85 行）默认 `file_size: null`，本测试显式传值；`progressMap` 需在 beforeEach 重置（156 行后追加 `storeState.progressMap = {}`）。
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `cd frontend && npx vitest run src/views/QueueView.test.ts`
 Expected: FAIL——`"2.00 GB"` 不出现（下载中行当前不渲染大小）且 `"约 1.00 GB"` 不出现（非下载中行用 `formatBytes` 无「约」）。
 
-- [ ] **Step 3: 实现**——QueueView.vue 模板 602-616 行替换为两列：
+- [x] **Step 3: 实现**——QueueView.vue 模板 602-616 行替换为两列：
 
 ```vue
               <el-table-column label="进度" width="200">
@@ -350,17 +350,17 @@ Expected: FAIL——`"2.00 GB"` 不出现（下载中行当前不渲染大小）
 
 同时补齐 script 中 `progressMap` 已由 store 提供（QueueView.vue 未直接引用过 total，类型已在 Task 3 扩展）。
 
-- [ ] **Step 4: 运行确认通过**
+- [x] **Step 4: 运行确认通过**
 
 Run: `cd frontend && npx vitest run src/views/QueueView.test.ts`
 Expected: PASS（新增 3 断言 + 既有全部断言）。
 
-- [ ] **Step 5: 前端类型检查 + 全量前端测试**
+- [x] **Step 5: 前端类型检查 + 全量前端测试**
 
 Run: `cd frontend && npx vue-tsc --noEmit && npx vitest run`
 Expected: 类型零错误、全部测试 PASS。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add frontend/src/views/QueueView.vue frontend/src/views/QueueView.test.ts
@@ -368,7 +368,7 @@ git commit -m "feat(ui): 下载队列拆列，进度与大小分列且下载中�
 进度列仅下载中渲染进度条+速度；大小列全行展示，total 缺失回退估算带「约」"
 ```
 
-- [ ] **Step 7: 勾选 tasks.md 2.3 与 2.4**
+- [x] **Step 7: 勾选 tasks.md 2.3 与 2.4**
 
 tasks.md 中 `- [ ] 2.3 ...` 与 `- [ ] 2.4 ...` 改为 `- [x]`。
 
@@ -379,32 +379,32 @@ tasks.md 中 `- [ ] 2.3 ...` 与 `- [ ] 2.4 ...` 改为 `- [x]`。
 **Files:**
 - 无源码改动（验证任务）。
 
-- [ ] **Step 1: 后端全量测试**
+- [x] **Step 1: 后端全量测试**
 
 Run: `cd backend && ./.venv/bin/python -m pytest -v`
 Expected: 全部 PASS。
 
-- [ ] **Step 2: 前端构建**
+- [x] **Step 2: 前端构建**
 
 Run: `cd frontend && npm run build`
 Expected: 零报错（构建产物生成）。
 
-- [ ] **Step 3: 前端全量测试（含新增拆列/格式化断言）**
+- [x] **Step 3: 前端全量测试（含新增拆列/格式化断言）**
 
 Run: `cd frontend && npx vitest run`
 Expected: 全部 PASS。
 
-- [ ] **Step 4: 记录构建证据**
+- [x] **Step 4: 记录构建证据**
 
 ```bash
 comet state record-check queue-size-and-progress build --command "cd backend && ./.venv/bin/python -m pytest -v && cd frontend && npm run build && npx vitest run" --exit-code 0
 ```
 
-- [ ] **Step 5: 起服目视指引（需用户操作）**
+- [x] **Step 5: 起服目视指引（需用户操作）**
 
 告知用户本地起服查看巡检/下载队列展示（下载中行大小精确、进度独立列、「约」仅估算兜底、0/空显示「—」），并说明服务启动由用户自行执行（全局规则）。
 
-- [ ] **Step 6: 勾选 tasks.md 3.1**
+- [x] **Step 6: 勾选 tasks.md 3.1**
 
 tasks.md 中 `- [ ] 3.1 ...` 改为 `- [x]`。
 
