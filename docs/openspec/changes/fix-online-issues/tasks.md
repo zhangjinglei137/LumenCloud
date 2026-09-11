@@ -18,8 +18,8 @@
 
 ## 4. 用户角色只读（D4）
 
-- [ ] 4.1 前端 UsersView.vue：角色列由 el-select 改为只读 tag（复用 roleLabel/roleTagType），移除角色修改入口与 patchRole 调用，验证前端构建通过且无角色编辑控件
-- [ ] 4.2 核对后端 PATCH /admin/users/{id} 保留但前端不再调用（admin-only + 既有 409 保护），验证 pytest admin 用户用例不受影响
+- [x] 4.1 前端 UsersView.vue：角色列由 el-select 改为只读 tag（复用 roleLabel/roleTagType），移除角色修改入口与 patchRole 调用，验证前端构建通过且无角色编辑控件
+- [x] 4.2 核对后端 PATCH /admin/users/{id} 保留但前端不再调用（admin-only + 既有 409 保护），验证 pytest admin 用户用例不受影响
 
 ## 5. Emby 订阅按钮按角色可见（D5）
 

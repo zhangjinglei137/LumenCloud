@@ -219,7 +219,7 @@ git commit -m "fix(emby): 封面代理路径补前导斜杠，修复全部图片
 - Consumes: `roleLabel(role) -> '管理员'|'访客'`、`roleTagType(role) -> 'warning'|'info'`（已存在）
 - Produces: 角色列只读 tag，无 el-select
 
-- [ ] **Step 1: 移除编辑控件**
+- [x] **Step 1: 移除编辑控件**
 
 `UsersView.vue` 角色列 `el-select` 块（L110-130）替换为只读展示：
 
@@ -235,17 +235,17 @@ git commit -m "fix(emby): 封面代理路径补前导斜杠，修复全部图片
 
 移除 `onRoleChange`、`patchingRoleIds`；`stores/users.ts` 移除 `patchRole` action。
 
-- [ ] **Step 2: 前端构建验证**
+- [x] **Step 2: 前端构建验证**
 
 Run: `cd frontend && npm run build`
 Expected: 成功（无未使用引用报错）
 
-- [ ] **Step 3: 后端回归**
+- [x] **Step 3: 后端回归**
 
 Run: `cd backend && .venv/bin/python -m pytest -q tests/test_admin_users.py`
 Expected: PASS（PATCH 接口仍可用）
 
-- [ ] **Step 4: 提交**
+- [x] **Step 4: 提交**
 
 ```bash
 git add frontend/src/views/UsersView.vue frontend/src/stores/users.ts
