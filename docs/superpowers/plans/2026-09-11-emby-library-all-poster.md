@@ -798,7 +798,7 @@ git commit -m "feat(emby): Emby 条目 poster_url 改为后端代理地址，去
 - Consumes: `http`（已存在）、`EmbyLibraryResponse`/`EmbyItemType`/`EmbySeriesStatus` 类型（已存在）
 - Produces: `listAllEmbyLibraryApi(params: { itemType?: EmbyItemType; status?: EmbySeriesStatus }) -> Promise<EmbyLibraryResponse>`
 
-- [ ] **Step 1: 写失败测试**（更新 `frontend/src/views/embyLibraryView.test.ts`）
+- [x] **Step 1: 写失败测试**（更新 `frontend/src/views/embyLibraryView.test.ts`）
 
 在 `vi.mock('../api', ...)` 中追加 `listAllEmbyLibraryApi: vi.fn()`，并在 import 中引入：
 
@@ -848,12 +848,12 @@ it('全部 Tab 聚合失败：置错误态', async () => {
 
 > 「单库下钻」用例保留（下钻仍走 `store.fetchLibrary`/`listEmbyLibraryApi`，不受影响）。
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cd frontend && npx vitest run src/views/embyLibraryView.test.ts`
 Expected: FAIL（视图仍逐库请求，`mockedListAll` 未调用）
 
-- [ ] **Step 3: 实现前端改造**
+- [x] **Step 3: 实现前端改造**
 
 `frontend/src/api/index.ts`（`listEmbyLibraryApi` 之后新增）：
 
@@ -900,12 +900,12 @@ export function listAllEmbyLibraryApi(params: {
 
 > 其余（movie/series/anime 聚合逐库、下钻 fetchSingle、posterErrors 兜底）保持不变。封面 `<img :src="item.poster_url">` 直接使用后端代理地址，无需改动。
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `cd frontend && npx vitest run src/views/embyLibraryView.test.ts`
 Expected: PASS（全部 Tab 单次请求 + 失败错误态 + 单库下钻用例全绿）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add frontend/src/api/index.ts frontend/src/views/EmbyLibraryView.vue frontend/src/views/embyLibraryView.test.ts
