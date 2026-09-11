@@ -26,11 +26,24 @@
 - 状态：complete（commit 34f12c6，协调者 diff 复核通过，无风险信号）
 - QueueView.test.ts 追加 0 值断言，6/6 通过
 
-## 当前任务：T5（plan Task 5 — 下载队列拆列 + total 优先，tasks 2.3/2.4）
+## T5（已完成）：下载队列拆列 + total 优先（tasks 2.3/2.4）
 
-- 阶段：implementing
-- 派发：fixer（后台）
-- 实现提交哈希：(待回报)
-- RED/GREEN 证据：(待回报)
-- 风险信号自报：(待回报；预期命中「公共 API 契约/界面结构变更」——下载队列列表列结构拆分，前端消费 progressMap.total → 协调者复核后判定是否派发任务级审查)
-- 审查-修复轮次：0/1
+- 状态：complete（commit 6daf956，ora-2 Spec ✅ / Approved；Ruling：estimated 参数条件化采纳）
+- deferred minors：M1 模板表达式密度（QueueView.vue:621 可抽 downloadFileSize）；M2 测试名与断言对齐（Test 1/3 名收窄或补断言）
+- plan Task 5 模板转写已同步实现（commit 26882c6）
+
+## T6（已完成）：集成验证（tasks 3.1）
+
+- 状态：complete（fix-6 DONE）
+- 后端 pytest 540 passed / 前端 build 零报错 / vitest 73 passed
+- 构建证据已记录：`comet state record-check` exit=0
+- 起服目视：由用户自行执行（AGENTS.md 服务规则）
+
+## 全部任务完成
+
+- T1-T6 全部 complete（tasks.md 8/8 勾选，task-checkoff 验证通过）
+- 实现提交：c558130（T1）、8e8e404（T2）、6c4c58a（T3）、34f12c6（T4）、6daf956（T5）
+- 审查：T1（ora-1 Spec ✅）、T5（ora-2 Spec ✅）——命中的两个风险任务均已通过任务级审查
+- deferred minors：T2-M1（已落地）、T5-M1 模板密度、T5-M2 测试名对齐
+- Rulings：T5 estimated 参数条件化（采纳，符合 Design Doc D2）
+- 阶段：提交后运行 build guard → verify
