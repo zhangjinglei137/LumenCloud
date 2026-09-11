@@ -2,6 +2,8 @@
 comet_change: tmdb-alias-search-match
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-09-11-tmdb-alias-search-match
+status: final
 ---
 
 # tmdb-alias-search-match 深度技术设计
