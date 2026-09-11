@@ -229,7 +229,9 @@ async def _list_download(
             "node_error": dq.node_error,
             "retry_count": dq.retry_count,
             "quota_hint": dq.error,  # quota_wait 排队原因（后端直出，前端可读）
-            "aria2_gid": dq.aria2_gid,
+            # D7 安全审查：aria2_gid 属 §9.1 脱敏口径执行跟踪字段（与 media 详情
+            # 一致——guest 不返回，admin 明文），修复前此处对 guest 明文泄露
+            "aria2_gid": dq.aria2_gid if is_admin else None,
             "enqueued_at": _iso(dq.enqueued_at),
             "updated_at": _iso(dq.updated_at),
         })
