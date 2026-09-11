@@ -117,4 +117,9 @@ describe('文件大小约标注（formatFileSize，queue-inspection-rework）', 
   it('十进制 1e9 按 formatBytes 1024 进制换算为 MB', () => {
     expect(formatFileSize(1e9, false)).toBe('953.7 MB')
   })
+  it('0 与负数视为无记录 → —（不显示 0 B）', () => {
+    expect(formatFileSize(0)).toBe('—')
+    expect(formatFileSize(0, true)).toBe('—')
+    expect(formatFileSize(-5)).toBe('—')
+  })
 })

@@ -235,6 +235,8 @@ export interface DownloadProgressEntry {
   speed?: number | null
   /** 0~100 */
   progress?: number | null
+  /** aria2 totalLength 真实总大小（字节）；缺失/0 为 null */
+  total?: number | null
   [key: string]: unknown
 }
 

@@ -22,9 +22,9 @@ export function formatBytes(bytes: number | null | undefined): string {
   return `${bytes} B`
 }
 
-/** 文件大小展示：估算值加「约 」前缀，无值显示 — */
+/** 文件大小展示：估算值加「约 」前缀；无值或 ≤0 显示 —（0 字节影视场景不存在） */
 export function formatFileSize(fileSize: number | null | undefined, estimated?: boolean): string {
-  if (fileSize == null) return '—'
+  if (fileSize == null || fileSize <= 0) return '—'
   const s = formatBytes(fileSize)
   return estimated ? `约 ${s}` : s
 }
