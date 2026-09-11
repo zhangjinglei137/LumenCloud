@@ -800,18 +800,18 @@ git commit -m "feat(media): 详情接口新增 active_tasks 字段（进行中�
 
 **Files:** 无新增（1.1-1.4 各任务已带测试）
 
-- [ ] **Step 1: 全量运行后端测试**
+- [x] **Step 1: 全量运行后端测试**
 
 Run: `cd backend && python -m pytest -q`
 Expected: 全部 PASS（确认 1.1-1.5 验收点：已有口径去重 / Emby 未配置回退 / active_tasks 终态与未开播剔除均有覆盖）
 
-- [ ] **Step 2: 若有失败，按 systematic-debugging 修复**（见 build 执行约束）
+- [x] **Step 2: 若有失败，按 systematic-debugging 修复**（见 build 执行约束）
 
-- [ ] **Step 3: 勾选 tasks.md 1.1-1.5**
+- [x] **Step 3: 勾选 tasks.md 1.1-1.5**
 
 编辑 `docs/openspec/changes/episode-status-and-detail-polish/tasks.md`，将 1.1-1.5 复选框改为 `[x]`。
 
-- [ ] **Step 4: 提交**
+- [x] **Step 4: 提交**
 
 ```bash
 git add docs/openspec/changes/episode-status-and-detail-polish/tasks.md
