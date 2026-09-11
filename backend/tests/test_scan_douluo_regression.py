@@ -5,16 +5,19 @@
 绝世唐门.The.Peerless.Tang.Clan.S01E29」（错部续作 + 错季 S01）必须被拒。
 
 本用例打通 _search_and_rank 集成态：
-- 任务 3-4：_build_keywords_async 别名关键词（soulland / douluodalu，来源 mock
-  tmdb.get_by_tmdb_id）+ asyncio.gather 并行搜索 + share_code 去重；
+- 任务 3-4：别名关键词（source tmdb.get_by_tmdb_id）+ asyncio.gather 并行搜索
+  + share_code 去重；
 - 任务 5：A1 分享标题过滤——主标题「斗罗大陆」命中「斗罗大陆Ⅱ…」后紧贴罗马
   数字续作标记 → 拒绝；别名 soulland 命中「Soul.Land.S02E167」的点分隔 → 放行；
 - 任务 6：季号硬校验——AAA 季号 S02 ∈ 目标季 {2} 放行；BBB 若穿过 A1 也会被
   S01 ∉ {2} 兜底拒绝；
 - 任务 7：_rank_candidates 别名/季号加权保持正确候选入选。
+
+别名唯一来源（I-1 修复）：tmdb.get_by_tmdb_id（_resolve_media_aliases）——media
+为纯 ORM 形状（无 aliases 属性），A1 过滤与排序的别名集合必须来自 tmdb；若该源
+失守，AAA（英文名候选）在 A1 层即被剔除，用例变红。
 """
 import asyncio
-import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -28,11 +31,10 @@ def run(coro):
 
 
 def _media():
-    # aliases 为 tmdb_cache 别名注入（仅测试层构造——ORM media 无 aliases 列，
-    # 生产链路别名来源由后续决策评估；此构造供 _search_and_rank A1 过滤读取）
+    # 纯 SimpleNamespace（ORM Media 形状）：无 aliases 属性——别名只能来自
+    # tmdb.get_by_tmdb_id mock，杜绝测试层别名注入掩盖生产缺口
     return SimpleNamespace(
         id=1, title="斗罗大陆", media_type="tv", tmdb_id=61852,
-        aliases=json.dumps(["soul land", "douluo dalu"]),
     )
 
 
@@ -51,9 +53,9 @@ def test_douluo_end_to_end(monkeypatch):
         return []
 
     monkeypatch.setattr(scan_mod.cloudsaver, "search", fake_search)
-    # _build_keywords_async 以 media.tmdb_id 无条件调 tmdb 拉别名（media.aliases
-    # 属性仅供 A1 过滤读取，不参与关键词构造）→ 必须 mock 返回 aliases + year；
-    # 否则关键词不含英文别名词、fake_search 英文分支不触发、AAA 无法召回
+    # _resolve_media_aliases（统一别名来源）以 media.tmdb_id 调 tmdb 拉别名 →
+    # 必须 mock 返回 aliases + year；否则关键词不含英文别名词、fake_search 英文
+    # 分支不触发、AAA 无法召回
     monkeypatch.setattr(
         scan_mod.tmdb, "get_by_tmdb_id",
         AsyncMock(return_value={"year": 2023, "aliases": ["soul land", "douluo dalu"]}),

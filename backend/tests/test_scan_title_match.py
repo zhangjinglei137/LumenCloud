@@ -9,7 +9,6 @@ A1 从「精确/前缀/子串」宽松放行改为「[主标题] ∪ [别名集�
 「少帅全集」等合法打包资源不得误杀）。
 """
 import asyncio
-import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -114,16 +113,18 @@ def test_media_aliases_none_or_invalid_falls_back_empty():
 
 
 # ---------------------------------------------------------------------------
-# _search_and_rank：A1 过滤读取 media.aliases（集成）
+# _search_and_rank：A1 过滤别名来源 = tmdb 解析（集成，I-1 唯一来源）
 # ---------------------------------------------------------------------------
 
-def test_search_and_rank_a1_filter_uses_media_aliases(monkeypatch):
-    """A1 过滤传入 media.aliases：主标题不中但别名词（soulland ↔ Soul.Land）命中
-    的候选保留；主标题/别名全不中的无关候选剔除。
+def test_search_and_rank_a1_filter_uses_tmdb_aliases(monkeypatch):
+    """A1 过滤别名来自 tmdb 解析（_resolve_media_aliases 唯一来源，media 无
+    aliases 属性）：主标题不中但别名词（soulland ↔ Soul.Land）命中的候选保留；
+    主标题/别名全不中的无关候选剔除。
 
     适配：目标缺失集从 S01E01 改为 S02E167——候选 Soul.Land.S02E167 季号 S02，
     任务 6 季号硬校验要求候选季号与目标季一致（S02 vs 目标 S01 会被正确拒绝），
-    用例意图（A1 别名过滤）与季号无关，故对齐目标季。"""
+    用例意图（A1 别名过滤）与季号无关，故对齐目标季；别名注入从 media.aliases
+    属性迁移到 tmdb.get_by_tmdb_id mock（I-1 修复：ORM 链路下 tmdb 是唯一来源）。"""
     async def fake_search(kw: str):
         return [
             _cs_result("Soul.Land.S02E167 2160p", "codeA"),
@@ -133,13 +134,13 @@ def test_search_and_rank_a1_filter_uses_media_aliases(monkeypatch):
     monkeypatch.setattr(scan_mod.cloudsaver, "search", fake_search)
     monkeypatch.setattr(
         scan_mod.tmdb, "get_by_tmdb_id",
-        AsyncMock(return_value={"year": 2020}),  # 无 aliases → 关键词不走别名词路径
+        AsyncMock(return_value={"year": 2020, "aliases": ["soulland", "douluodalu"]}),
     )
 
-    media = _media(title="斗罗大陆", tmdb_id=61852, aliases=json.dumps(["soulland", "douluodalu"]))
+    media = _media(title="斗罗大陆", tmdb_id=61852)  # 纯 ORM 形状：无 aliases 属性
     items = run(scan_mod._search_and_rank(media, {"S02E167"}))
     codes = [i["share_code"] for i in items]
-    assert "codeA" in codes      # 别名词成员命中 + 季号 S02 命中目标 S02 → 保留进候选
+    assert "codeA" in codes      # tmdb 别名词成员命中 + 季号 S02 命中目标 S02 → 保留进候选
     assert "codeB" not in codes  # 主标题/别名全不中 → A1 过滤剔除
 
 
@@ -176,7 +177,8 @@ def test_candidate_season_ok_empty_target_seasons_degrades_open():
 def test_search_and_rank_season_filter(monkeypatch):
     """季号硬校验在 _search_and_rank 内生效（A1 过滤之后）：
     错季候选（S01 vs 目标 S02）被拒；命中季（S02）保留；无季号候选（更新集连载
-    资源）降级放行。三个候选均通过 A1（主标题/别名词成员命中），仅验证季号层。"""
+    资源）降级放行。三个候选均通过 A1（主标题/别名词成员命中），仅验证季号层。
+    别名来源为 tmdb 解析（I-1：media 无 aliases 属性，别名词走 mock）。"""
     async def fake_search(kw: str):
         return [
             _cs_result("Soul.Land.S02E167 2160p", "codeA"),          # 别名词命中 + S02 命中目标 → 保留
@@ -187,10 +189,10 @@ def test_search_and_rank_season_filter(monkeypatch):
     monkeypatch.setattr(scan_mod.cloudsaver, "search", fake_search)
     monkeypatch.setattr(
         scan_mod.tmdb, "get_by_tmdb_id",
-        AsyncMock(return_value={"year": 2020}),
+        AsyncMock(return_value={"year": 2020, "aliases": ["soulland", "douluodalu"]}),
     )
 
-    media = _media(title="斗罗大陆", tmdb_id=61852, aliases=json.dumps(["soulland", "douluodalu"]))
+    media = _media(title="斗罗大陆", tmdb_id=61852)  # 纯 ORM 形状：无 aliases 属性
     items = run(scan_mod._search_and_rank(media, {"S02E167"}))
     codes = [i["share_code"] for i in items]
     assert "codeA" in codes      # S02 命中目标季集合 {2} → 保留

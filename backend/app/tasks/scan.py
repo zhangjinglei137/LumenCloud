@@ -704,7 +704,8 @@ def _build_keywords(media, missing_keys: set[str], aliases: list[str] | None = N
     aliases（可选）：tmdb 别名（见 tmdb.get_by_tmdb_id 的 aliases 键），归一化
     （小写、去空格，对齐 _normalize_aliases 口径）后作为独立关键词，插在季词之后、
     纯标题兜底词之前；movie 不加别名词。纯函数不读 media 模型属性（ORM 无 aliases 列），
-    保持可测——aliases 由调用方传入（_build_keywords_async 负责从 tmdb 拉取）。
+    保持可测——aliases 由调用方传入（_resolve_media_aliases 负责解析，关键词/A1/
+    排序三处同源）。
     总量裁剪到 _MAX_SEARCH_KEYWORDS。
     """
     title = (media.title or "").strip()
@@ -726,14 +727,8 @@ def _build_keywords(media, missing_keys: set[str], aliases: list[str] | None = N
 
 
 async def _build_keywords_async(media, missing_keys: set[str]) -> list[str]:
-    """取别名后构造关键词；tmdb 不可用/失败降级为仅主标题词，绝不阻断搜索。"""
-    aliases: list[str] = []
-    if media.tmdb_id:
-        try:
-            meta = await tmdb.get_by_tmdb_id(media.tmdb_id, media.media_type or "tv")
-            aliases = meta.get("aliases") or []
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[scan] media=%s 别名获取失败（降级主标题）: %s", media.id, exc)
+    """取别名后构造关键词；别名解析失败降级（_resolve_media_aliases 兜底），绝不阻断搜索。"""
+    aliases = await _resolve_media_aliases(media)
     return _build_keywords(media, missing_keys, aliases=aliases)
 
 
@@ -946,6 +941,32 @@ def _media_aliases(media) -> list[str]:
     return [str(a) for a in parsed if a]
 
 
+async def _resolve_media_aliases(media) -> list[str]:
+    """解析媒体别名集合——搜索关键词 / A1 过滤 / 排序加权的唯一别名来源（I-1 修复）。
+
+    生产缺口背景：ORM Media 无 aliases 列，_media_aliases(media) 恒返回空集合，
+    A1 过滤与排序此前拿不到别名，英文名候选（如「Soul.Land.S02E167」对「斗罗大陆」）
+    仅凭主标题成员匹配失败 → 在 A1 层被误剔，change 核心收益在生产链路失效。
+
+    解析顺序：
+    - media.tmdb_id 有值：tmdb.get_by_tmdb_id 详情 aliases（list[str]，来自
+      tmdb_cache.aliases 反序列化 / 详情回源归一化，见 services/tmdb）；
+      拉取失败 → 降级 _media_aliases(media)（警告日志，绝不阻断搜索）；
+    - media.tmdb_id 为空：直接 _media_aliases(media)（测试层 SimpleNamespace 可经
+      media.aliases 属性注入；ORM 无该列 → 空列表）。
+    """
+    if media.tmdb_id:
+        try:
+            meta = await tmdb.get_by_tmdb_id(media.tmdb_id, media.media_type or "tv")
+            return [str(a) for a in (meta.get("aliases") or []) if a]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[scan] media=%s 别名解析失败（降级 media.aliases 属性）: %s",
+                getattr(media, "id", None), exc,
+            )
+    return _media_aliases(media)
+
+
 # ---------------------------------------------------------------------------
 # 季号解析与候选硬校验（任务 6）
 # ---------------------------------------------------------------------------
@@ -1023,7 +1044,7 @@ def _full_mode_accept(media, file_name: str, total_episodes: int | None) -> bool
 async def _search_and_rank(media, missing_keys: set[str]) -> list[dict]:
     """cloudSaver 搜索 → 展开分享码 → A1 分享标题过滤 → 加分匹配（TMDB 年份加权）→ 限数。
 
-    - 多关键词并行（_build_keywords_async 取别名 → asyncio.gather 并发搜索），
+    - 多关键词并行（别名关键词 → asyncio.gather 并发搜索），
       结果合并后由 _expand_share_codes 按 share_code 去重（保留首现）——多个关键词
       召回同一失效分享码只占一个候选位，不浪费逐码验证配额。
     - 单关键词失败：记录 warning 并继续（一个词失败、其余成功 → 不中断整轮，
@@ -1040,7 +1061,8 @@ async def _search_and_rank(media, missing_keys: set[str]) -> list[dict]:
       调用方（_scan_one）将 search 阶段标 error，区分「搜索故障」与「搜索成功但无候选」
       （后者返回 []，message 走缺集人话文案，不再误报「无候选命中」）。
     """
-    keywords = await _build_keywords_async(media, missing_keys)
+    aliases = await _resolve_media_aliases(media)  # 三处（关键词/A1/排序）唯一别名来源，只解析一次
+    keywords = _build_keywords(media, missing_keys, aliases=aliases)
     raw: list[dict] = []
     ok = 0  # 成功关键词计数（调用无异常即计，空结果不算失败——区分「搜索成功但无候选」）
 
@@ -1064,8 +1086,8 @@ async def _search_and_rank(media, missing_keys: set[str]) -> list[dict]:
     expanded = _expand_share_codes(raw)
     # A1 分享标题过滤：与 [主标题] ∪ [别名集合] 无成员命中（或命中处紧贴中文/罗马
     # 数字）的候选直接剔除（排序前），减少无关分享被 share-info 验证/递归遍历的
-    # 浪费；被过滤标题 info 级记录（量可能大，不刷屏）。
-    aliases = _media_aliases(media)
+    # 浪费；被过滤标题 info 级记录（量可能大，不刷屏）。别名集合与关键词/排序同源
+    # （_resolve_media_aliases 解析一次，见函数首部）。
     kept: list[dict] = []
     for it in expanded:
         if _share_title_relevant(media.title, it.get("title") or "", aliases=aliases):
@@ -1096,9 +1118,9 @@ async def _search_and_rank(media, missing_keys: set[str]) -> list[dict]:
     year = await _media_year(media)
     # 候选分享筛选：rank 排序后不再硬截断前 20（诊断：前 20/60 可能全是失效码，
     # 有效分享被挤出）——放行排序后最多 _MAX_RANK_CANDIDATES 个，验证/尝试上限由
-    # _scan_one 按 share-info 成功数控制。排序带上 aliases（_media_aliases 既有来源，
-    # 任务 5 A1 过滤同源）与 target_seasons（即下方季号硬校验用的同一集合）做
-    # 别名/季号增量加权。
+    # _scan_one 按 share-info 成功数控制。排序带上 aliases（_resolve_media_aliases
+    # 唯一来源，与关键词/A1 过滤同源）与 target_seasons（即下方季号硬校验用的同一
+    # 集合）做别名/季号增量加权。
     return _rank_candidates(
         media, expanded, year=year, aliases=aliases, target_seasons=target_seasons,
     )[:_MAX_RANK_CANDIDATES]
