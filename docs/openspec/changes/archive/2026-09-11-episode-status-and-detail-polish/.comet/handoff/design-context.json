@@ -1,0 +1,15 @@
+{
+  "change": "episode-status-and-detail-polish",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "8839e3c32efeb2886add00c603ebd6f19c639d55604999a15d3d9f643a105234",
+  "files": [
+    { "path": "docs/openspec/changes/episode-status-and-detail-polish/proposal.md", "sha256": "6825390e98c3bd58a1b26d9afba61dc7fb771c7d1635989395722994ac80424a" },
+    { "path": "docs/openspec/changes/episode-status-and-detail-polish/design.md", "sha256": "5567de243728aba43e3ca33f2e205511af2ae4eab3fe44ac9ab983ffef9f8041" },
+    { "path": "docs/openspec/changes/episode-status-and-detail-polish/tasks.md", "sha256": "875f1f563fc3b5e3349899b102bb826b8626ef814aedbb8df6f79e136c24acc5" },
+    { "path": "docs/openspec/changes/episode-status-and-detail-polish/specs/media-detail-ui/spec.md", "sha256": "ae8f085968761ad5c16c0d6877d80d62df1e53581004b8fa067a1a09f171a8fc" },
+    { "path": "docs/openspec/changes/episode-status-and-detail-polish/specs/media-status/spec.md", "sha256": "3db8b2322fe10da960c9a14b2e9e78c9054668919aeb9a22bd034e880e0d3630" }
+  ]
+}

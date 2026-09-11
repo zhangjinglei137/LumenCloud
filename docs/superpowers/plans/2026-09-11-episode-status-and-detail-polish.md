@@ -2,6 +2,7 @@
 change: episode-status-and-detail-polish
 design-doc: docs/superpowers/specs/2026-09-11-episode-status-and-detail-polish-design.md
 base-ref: 08761cb6a5b02943f14fc277849220ea52aa345a
+archived-with: 2026-09-11-episode-status-and-detail-polish
 ---
 
 # episode-status-and-detail-polish 实施计划
