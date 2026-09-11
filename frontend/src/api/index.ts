@@ -8,9 +8,11 @@ import type {
   ChangePasswordResponse,
   DownloadProgressEntry,
   DownloadQueueItem,
+  EmbyItemType,
   EmbyLibraryQuery,
   EmbyLibraryResponse,
   EmbyLibrariesResponse,
+  EmbySeriesStatus,
   InviteCode,
   LogItem,
   LoginResponse,
@@ -282,6 +284,20 @@ export function listEmbyLibraryApi(params: EmbyLibraryQuery) {
   return http
     .get<EmbyLibraryResponse>('/emby/library', { params: query })
     .then((r) => r.data)
+}
+
+/**
+ * 全部影视类库聚合查询（GET /api/emby/library/all）。
+ * item_type/status 可选，契约与单库端点一致（item_type 回显；错误码同 503 detail.code）。
+ */
+export function listAllEmbyLibraryApi(params: {
+  itemType?: EmbyItemType
+  status?: EmbySeriesStatus
+}): Promise<EmbyLibraryResponse> {
+  const query: Record<string, string> = {}
+  if (params.itemType) query.item_type = params.itemType
+  if (params.status) query.status = params.status
+  return http.get<EmbyLibraryResponse>('/emby/library/all', { params: query }).then((r) => r.data)
 }
 
 /**

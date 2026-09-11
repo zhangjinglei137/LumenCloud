@@ -5,7 +5,7 @@ import { ElMessage } from 'element-plus'
 import TmdbSearch from '../components/TmdbSearch.vue'
 import { useEmbyStore } from '../stores/emby'
 import { useAuthStore } from '../stores/auth'
-import { createMediaApi, listEmbyLibraryApi, scanMediaApi } from '../api'
+import { createMediaApi, listAllEmbyLibraryApi, listEmbyLibraryApi, scanMediaApi } from '../api'
 import type {
   EmbyLibraryFolder,
   EmbyLibraryItem,
@@ -77,6 +77,21 @@ async function fetchCurrent() {
   const libs = categoryLibraries.value
   if (selectedLibraryId.value) {
     await fetchSingle(selectedLibraryId.value)
+    return
+  }
+  if (category.value === 'all') {
+    // 全部聚合态：后端聚合端点单次请求（多库去重由服务端保证）
+    store.loading = true
+    try {
+      const res = await listAllEmbyLibraryApi({ status: statusFilter.value || undefined })
+      store.items = res.items
+      store.error = null
+    } catch (err) {
+      store.items = []
+      store.error = parseEmbyErrorCode(err)
+    } finally {
+      store.loading = false
+    }
     return
   }
   if (libs.length === 0) {
