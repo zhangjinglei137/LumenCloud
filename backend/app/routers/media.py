@@ -713,6 +713,59 @@ async def get_media(
         .scalars()
         .all()
     )
+
+    # episode-status-and-detail-polish：「当前进行中任务」数据（仅 tv）。
+    # 合并 download_queue（执行层）+ task_queue（探测层）进行中行；过滤：
+    # 1) 已入库（code 命中 in_emby_codes，Emby 故障时空集 → 全部保留，宽松）；
+    # 2) 未到首播日（air_date 已知且未来；缺失/非法 → 保留）。
+    # source 标识供前端选状态字典（task「待探测」vs dq「排队中」语义不同）。
+    active_tasks: list[dict] = []
+    if (media.media_type or "").strip().lower() != "movie":
+        air_by_key: dict[tuple[int, int], str | None] = {
+            (int(ep["season"]), int(ep["episode"])): ep.get("air_date")
+            for ep in (tmdb_episodes or [])
+            if ep.get("season") is not None and ep.get("episode") is not None
+        }
+        today = date.today()
+        raw: list[tuple[int | None, int | None, str, str, str]] = []
+        for r in dq_rows:
+            if r.status in _DQ_ACTIVE_STATUSES:
+                s, e = _parse_episode(r.episode)
+                raw.append((s, e, r.episode, r.status, "dq"))
+        for r in tq_rows:
+            if r.status in _TQ_ACTIVE_STATUSES:
+                s, e = _parse_episode(r.episode)
+                raw.append((s, e, r.episode, r.status, "task"))
+
+        seen: set[tuple[int | None, int | None, str]] = set()
+        for s, e, episode, status, source in raw:
+            code = episode
+            if s is not None and e is not None:
+                code = f"S{int(s):02d}E{int(e):02d}"
+            if code in in_emby_codes:
+                continue  # 已入库，不展示
+            air = air_by_key.get((s, e)) if s is not None and e is not None else None
+            if air:
+                try:
+                    if date.fromisoformat(air) > today:
+                        continue  # 未到首播日
+                except ValueError:
+                    pass  # 非法日期不剔除
+            key = (s, e, source)
+            if key in seen:
+                continue  # 同集同源去重（dq 行可能重复）
+            seen.add(key)
+            active_tasks.append({
+                "season": s,
+                "episode": code,
+                "status": status,
+                "source": source,
+                "air_date": air,
+            })
+        active_tasks.sort(key=lambda t: (
+            t["season"] is None, t["season"] or 0,
+            _parse_episode(t["episode"])[1] if t["season"] is not None else 0,
+        ))
     legacy_tq_rows = (
         (
             await session.execute(
@@ -754,6 +807,11 @@ async def get_media(
         if latest_run
         else None
     )
+
+    # episode-status-and-detail-polish：tv 详情附加「当前进行中任务」列表；
+    # movie 不返回该字段（前端当前无电影进行中任务视图）。
+    if (media.media_type or "").strip().lower() != "movie":
+        media_dto["active_tasks"] = active_tasks
 
     # 前端按扁平结构读 detail.title/last_task_run（P1-4 契约错位修复）：
     # media 字段展开到顶层（**media_dto），并保留嵌套 media 兼容。
