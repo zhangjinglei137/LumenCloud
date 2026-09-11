@@ -27,7 +27,9 @@
 - GET  /api/queue/download/progress     downloading 行实时进度（aria2.tellStatus 聚合；
                                          失败行降级返回 null 字段，局部轮询用）。
 
-权限：除 GET /queue 树外均需 admin（§8.2）；网盘凭据（stoken/fids 等）一律不返回。
+权限：GET /queue 树与 GET /queue/download/state 登录可读（§8.2 例外：state 返回
+暂停开关/在途任务数等展示数据）；其余端点（写操作 + progress）均需 admin；
+网盘凭据（stoken/fids 等）一律不返回。
 """
 import logging
 from datetime import datetime, timedelta, timezone

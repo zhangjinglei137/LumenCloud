@@ -356,6 +356,8 @@ def test_pause_resume_state(db, env):
 
     async def _state():
         async with db() as s:
+            # 单测直接调用路由函数绕过 Depends：state 已降为 get_current_user（登录可读），
+            # 参数名为 user 仅满足签名，role 权限校验由 HTTP 层依赖负责（test_queue_auth.py）
             return await queue_mod.download_queue_state(user=_admin(), session=s)
     state = run(_state())
     assert state["paused"] is True
