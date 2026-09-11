@@ -234,7 +234,7 @@ git commit -m "feat(emby): 新增已入库集查询 get_ingested_episode_codes�
 - Consumes: `emby.get_ingested_episode_codes(tmdb_id, title)`（Task 1 产物）
 - Produces: `episode_stats.available`（升级为 Emby 入库 ∪ 本系统完成 去重计数）、`episode_stats.missing = max(0, total - available)`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 创建 `backend/tests/test_media_list_emby_stats.py`（复用 test_media_episode_tags.py 的 seed/登录模式）：
 
@@ -416,12 +416,12 @@ def test_stats_no_emby_query_when_no_missing(monkeypatch):
 
 注意：`TmdbCache` 模型字段需与 `list_media` 中 `select(TmdbCache.tmdb_id, TmdbCache.number_of_episodes)` 对齐（tmdb_id 为字符串、number_of_episodes 为 int）。
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cd backend && python -m pytest tests/test_media_list_emby_stats.py -v`
 Expected: FAIL（`available` 仍等于 done=1，断言 4 不满足；Emby 维度的用例失败）
 
-- [ ] **Step 3: 实现 `_stats` Emby 维度**
+- [x] **Step 3: 实现 `_stats` Emby 维度**
 
 在 `backend/app/routers/media.py` 中：
 
@@ -489,17 +489,17 @@ c) 修改 `_stats`：
         }
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `cd backend && python -m pytest tests/test_media_list_emby_stats.py -v`
 Expected: 5 个测试全部 PASS
 
-- [ ] **Step 5: 全量后端测试回归**
+- [x] **Step 5: 全量后端测试回归**
 
 Run: `cd backend && python -m pytest -q`
 Expected: 全部通过（既有列表/详情测试不受影响）
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add backend/app/routers/media.py backend/tests/test_media_list_emby_stats.py
