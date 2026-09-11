@@ -285,10 +285,14 @@ async def resume_download_queue(
 
 @router.get("/queue/download/state")
 async def download_queue_state(
-    admin: User = Depends(get_current_admin),  # noqa: B008
+    user: User = Depends(get_current_user),  # noqa: B008  登录即可读（展示数据，非敏感）
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """暂停状态 + 在途任务数（§8.1 横幅「队列已暂停，在途 n 个继续完成」）。"""
+    """暂停状态 + 在途任务数（§8.1 横幅「队列已暂停，在途 n 个继续完成」）。
+
+    权限：Task 6 降权为 get_current_user——暂停开关与在途任务数为展示数据（横幅文案
+    数据源），guest 打开队列页读取不再 403；写操作（pause/resume）维持 admin-only。
+    """
     row = await session.get(SystemConfig, _PAUSE_CONFIG_KEY)
     paused = as_bool(row.value) if row is not None else False
     in_flight = (

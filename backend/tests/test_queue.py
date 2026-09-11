@@ -356,7 +356,7 @@ def test_pause_resume_state(db, env):
 
     async def _state():
         async with db() as s:
-            return await queue_mod.download_queue_state(admin=_admin(), session=s)
+            return await queue_mod.download_queue_state(user=_admin(), session=s)
     state = run(_state())
     assert state["paused"] is True
     assert state["in_flight"] == 2  # downloading + library（pending 不计在途）
