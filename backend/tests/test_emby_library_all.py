@@ -227,3 +227,64 @@ def test_all_partial_failure_success_empty_not_raises(monkeypatch, _db_maker, ca
     result = run(list_all_library())  # 部分失败 + 成功库 0 条 → 不抛，返回空
     assert result == []
     assert "部分库失败" in caplog.text  # warn 日志
+
+
+# ---- 端点级（路由直调，对齐 test_poster_proxy 约定；鉴权由 Depends 注入，不经鉴权测试）----
+
+
+def test_router_library_all_contract(monkeypatch):
+    from types import SimpleNamespace
+    from app.routers import emby as emby_router
+
+    async def _fake(item_type=None, status=None):
+        return [{"emby_id": "x", "title": "X"}]
+
+    monkeypatch.setattr(emby_router, "list_all_library", _fake)
+    _user = SimpleNamespace(id=1, role="user", username="u")
+    resp = run(emby_router.library_all(item_type=None, status=None, user=_user))
+    assert resp == {"items": [{"emby_id": "x", "title": "X"}], "total": 1, "item_type": None}
+
+
+def test_router_library_all_item_type_echo(monkeypatch):
+    from types import SimpleNamespace
+    from app.routers import emby as emby_router
+
+    async def _fake(item_type=None, status=None):
+        return []
+
+    monkeypatch.setattr(emby_router, "list_all_library", _fake)
+    _user = SimpleNamespace(id=1, role="user", username="u")
+    resp = run(emby_router.library_all(item_type="movie", status="continuing", user=_user))
+    assert resp["item_type"] == "movie"
+
+
+def test_router_library_all_not_configured_503(monkeypatch):
+    from types import SimpleNamespace
+    from fastapi import HTTPException
+    from app.routers import emby as emby_router
+
+    async def _fake(item_type=None, status=None):
+        raise EmbyUnavailable("EMBY_API_KEY 未配置")
+
+    monkeypatch.setattr(emby_router, "list_all_library", _fake)
+    _user = SimpleNamespace(id=1, role="user", username="u")
+    with pytest.raises(HTTPException) as exc_info:
+        run(emby_router.library_all(item_type=None, status=None, user=_user))
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail["code"] == "emby_not_configured"
+
+
+def test_router_library_all_unreachable_503(monkeypatch):
+    from types import SimpleNamespace
+    from fastapi import HTTPException
+    from app.routers import emby as emby_router
+
+    async def _fake(item_type=None, status=None):
+        raise EmbyUnavailable("Emby 请求失败: connection refused")
+
+    monkeypatch.setattr(emby_router, "list_all_library", _fake)
+    _user = SimpleNamespace(id=1, role="user", username="u")
+    with pytest.raises(HTTPException) as exc_info:
+        run(emby_router.library_all(item_type=None, status=None, user=_user))
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail["code"] == "emby_unreachable"

@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.models import User
 from app.routers.deps import get_current_user
-from app.services.emby import EmbyUnavailable, list_library, list_library_folders
+from app.services.emby import EmbyUnavailable, list_all_library, list_library, list_library_folders
 
 router = APIRouter(prefix="/emby", tags=["emby"])
 
@@ -43,6 +43,27 @@ async def library(
     status=continuing 在更 / ended 完结（仅对剧集生效）。"""
     try:
         items = await list_library(library_id, item_type, status)
+    except EmbyUnavailable as exc:
+        raise _to_http_exc(exc) from exc
+    return {
+        "items": items,
+        "total": len(items),
+        "item_type": item_type,
+    }
+
+
+@router.get("/library/all")
+async def library_all(
+    item_type: Literal["movie", "series"] | None = Query(default=None),
+    status: Literal["continuing", "ended"] | None = Query(default=None),
+    user: User = Depends(get_current_user),  # 登录用户可调
+) -> dict:
+    """全部影视类库聚合查询：一次请求遍历全部影视类库，按 emby_id 去重返回。
+
+    参数/响应/错误契约与 /library 一致（item_type/status 可选；item_type 回显）。
+    """
+    try:
+        items = await list_all_library(item_type, status)
     except EmbyUnavailable as exc:
         raise _to_http_exc(exc) from exc
     return {
