@@ -365,9 +365,9 @@ async function subscribeAll() {
         <span class="lc-muted count-text">共 {{ filteredItems.length }} 部</span>
       </div>
       <div class="right">
-        <!-- D11：当前筛选结果存在未纳入条目时出现 -->
+        <!-- D11：管理员可见——当前筛选结果存在未纳入条目时出现（guest 只读浏览不显示订阅入口） -->
         <el-button
-          v-if="pendingItems.length > 0 && !store.loading && !store.error"
+          v-if="auth.isAdmin && pendingItems.length > 0 && !store.loading && !store.error"
           type="primary"
           size="small"
           :loading="batchRunning"
@@ -491,9 +491,9 @@ async function subscribeAll() {
                 </span>
               </div>
               <div class="row">
-                <!-- 未收录条目一键订阅；@click.stop 阻止冒泡触发 openInEmby -->
+                <!-- 管理员可见：未收录条目一键订阅；@click.stop 阻止冒泡触发 openInEmby（guest 只读不显示） -->
                 <el-button
-                  v-if="!m.in_media"
+                  v-if="auth.isAdmin && !m.in_media"
                   size="small"
                   type="primary"
                   :loading="subscribing.has(m.emby_id)"
@@ -502,7 +502,8 @@ async function subscribeAll() {
                 >
                   {{ m.tmdb_id ? '加入订阅' : '匹配 TMDB 后订阅' }}
                 </el-button>
-                <span v-else class="subscribed-hint">
+                <!-- 已订阅状态提示：对访客同样保留只读状态信息（v-else-if 避免 guest 未收录条目落入此分支） -->
+                <span v-else-if="m.in_media" class="subscribed-hint">
                   <el-icon style="vertical-align: -2px"><CircleCheckFilled /></el-icon>
                   已订阅
                 </span>
@@ -543,7 +544,8 @@ async function subscribeAll() {
       </div>
       <template #footer>
         <el-button @click="tmdbDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="tmdbSubmitting" :disabled="!tmdbSelected" @click="submitTmdbSubscribe">
+        <!-- 仅管理员可见：订阅提交（guest 无入口触达对话框，纵深防御） -->
+        <el-button v-if="auth.isAdmin" type="primary" :loading="tmdbSubmitting" :disabled="!tmdbSelected" @click="submitTmdbSubscribe">
           加入订阅
         </el-button>
       </template>

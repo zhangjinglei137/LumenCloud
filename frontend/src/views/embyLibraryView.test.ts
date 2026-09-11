@@ -2,6 +2,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
+import { reactive } from 'vue'
 import EmbyLibraryView from './EmbyLibraryView.vue'
 import { useEmbyStore } from '../stores/emby'
 import { listEmbyLibrariesApi, listEmbyLibraryApi, listAllEmbyLibraryApi } from '../api'
@@ -17,8 +18,11 @@ vi.mock('../api', () => ({
 
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }) }))
 
+// ---------- 可变 auth store mock（reactive：按角色切换后模板可响应更新） ----------
+const authState = reactive({ isAdmin: true })
+
 vi.mock('../stores/auth', () => ({
-  useAuthStore: () => ({ isAdmin: true }),
+  useAuthStore: () => authState,
 }))
 
 const mockedList = vi.mocked(listEmbyLibrariesApi)
@@ -76,6 +80,7 @@ beforeEach(() => {
   document.body.innerHTML = ''
   vi.clearAllMocks()
   setActivePinia(createPinia())
+  authState.isAdmin = true // 默认管理员态（既有用例不感知权限）
 })
 
 afterEach(() => {
@@ -132,5 +137,44 @@ describe('EmbyLibraryView 去分页数据流', () => {
     expect(mockedListLibrary).toHaveBeenCalledTimes(1)
     expect(useEmbyStore().items).toHaveLength(30)
     expect(wrapper.findAll('.lc-media-card')).toHaveLength(30)
+  })
+})
+
+describe('Emby 订阅按钮按角色可见（fix-online-issues）', () => {
+  /** 2 条未收录条目：一条有 tmdb_id（单条按钮文案「加入订阅」），一条无（「匹配 TMDB 后订阅」） */
+  function mockUnincludedItems() {
+    const libs = [makeLib('m1', 'movies')]
+    mockedList.mockResolvedValue({ libraries: libs, total: 1 })
+    const items = [
+      { ...makeItem('i1', '片一'), tmdb_id: 123, emby_web_url: 'https://emby.example/i1' },
+      { ...makeItem('i2', '片二'), tmdb_id: null, emby_web_url: 'https://emby.example/i2' },
+    ]
+    mockedListAll.mockResolvedValue({ items, total: items.length, item_type: null })
+  }
+
+  it('admin：渲染批量「全部加入订阅」与单条订阅按钮', async () => {
+    mockUnincludedItems()
+    wrapper = mountView()
+    await flushPromises()
+
+    const text = wrapper.text()
+    expect(text).toContain('全部加入订阅（2）') // 批量入口（pendingItems=2）
+    expect(text).toContain('加入订阅') // 有 tmdb_id 条目的单条按钮
+    expect(text).toContain('匹配 TMDB 后订阅') // 无 tmdb_id 条目的单条按钮
+    expect(text).toContain('在 Emby 中打开') // 只读入口
+  })
+
+  it('guest：不渲染订阅按钮，仅保留只读入口', async () => {
+    authState.isAdmin = false
+    mockUnincludedItems()
+    wrapper = mountView()
+    await flushPromises()
+
+    const text = wrapper.text()
+    expect(text).not.toContain('全部加入订阅')
+    expect(text).not.toContain('加入订阅')
+    expect(text).not.toContain('匹配 TMDB 后订阅')
+    expect(text).toContain('在 Emby 中打开') // 只读入口保留
+    expect(text).toContain('刷新') // 只读操作保留
   })
 })
