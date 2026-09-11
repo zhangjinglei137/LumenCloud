@@ -128,7 +128,7 @@ git commit -m "refactor(emby): 抽取 _build_library_params 统一 /Items 参数
 - Consumes: `list_library_folders()`（已存在）、`_build_library_params`（Task 1）、`_fetch_items`（已存在）、`_normalize_library_item`（已存在，Task 5 将改 poster_url）、`_attach_tmdb_series_status` / `_attach_in_media_flag`（已存在）
 - Produces: `list_all_library(item_type: Optional[str] = None, status: Optional[str] = None) -> list[dict[str, Any]]` — 全部影视类库聚合去重结果；配置缺失抛 `EmbyUnavailable`；全部库失败抛 `EmbyUnavailable`；部分失败返回成功部分
 
-- [ ] **Step 1: 写失败测试**（新建 `backend/tests/test_emby_library_all.py`）
+- [x] **Step 1: 写失败测试**（新建 `backend/tests/test_emby_library_all.py`）
 
 ```python
 """list_all_library（全部影视类库聚合 / GET /api/emby/library/all 服务层）测试。
@@ -304,12 +304,12 @@ def test_all_not_configured_raises(monkeypatch, _db_maker):
         run(list_all_library())
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cd backend && python -m pytest tests/test_emby_library_all.py -v`
 Expected: FAIL（`ImportError: cannot import name 'list_all_library'`）
 
-- [ ] **Step 3: 实现 `list_all_library`**
+- [x] **Step 3: 实现 `list_all_library`**
 
 在 `backend/app/services/emby.py` 中 `list_library` 之后新增模块级常量与函数：
 
@@ -386,12 +386,12 @@ async def list_all_library(
 
 > 说明：上方案中 `_normalize_library_item` 先以 `server_id=None` 归一化（poster_url/基础字段），随后统一附加 `emby_web_url`，避免逐条触发 `_get_server_id` 的重复逻辑；`list_library` 既有「一次获取批量复用」语义保持不变（其内部仍传 server_id）。
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `cd backend && python -m pytest tests/test_emby_library_all.py -v`
 Expected: PASS（6 条全绿）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add backend/app/services/emby.py backend/tests/test_emby_library_all.py
