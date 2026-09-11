@@ -2,6 +2,8 @@
 comet_change: emby-library-all-poster
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-09-11-emby-library-all-poster
+status: final
 ---
 
 # Design Doc: Emby「全部」聚合浏览修复 + 封面代理加载

@@ -3,6 +3,7 @@
   "openspec_design": "docs/openspec/changes/emby-library-all-poster/design.md",
   "openspec_tasks": "docs/openspec/changes/emby-library-all-poster/tasks.md",
   "openspec_delta_spec": "docs/openspec/changes/emby-library-all-poster/specs/emby-library-browse/spec.md",
-  "handoff_context": "docs/openspec/changes/emby-library-all-poster/.comet/handoff/design-context.json",
-  "handoff_markdown": "docs/openspec/changes/emby-library-all-poster/.comet/handoff/design-context.md"
+  "handoff_context": "docs/openspec/changes/archive/2026-09-11-emby-library-all-poster/.comet/handoff/design-context.json",
+  "handoff_markdown": "docs/openspec/changes/archive/2026-09-11-emby-library-all-poster/.comet/handoff/design-context.md",
+  "archive_directory": "docs/openspec/changes/archive/2026-09-11-emby-library-all-poster"
 }

@@ -2,6 +2,7 @@
 change: emby-library-all-poster
 design-doc: docs/superpowers/specs/2026-09-11-emby-library-all-poster-design.md
 base-ref: 926957f91c6937bc17fd3fb333079f06c2445ff0
+archived-with: 2026-09-11-emby-library-all-poster
 ---
 
 # Emby「全部」聚合浏览修复 + 封面代理加载 实施计划
