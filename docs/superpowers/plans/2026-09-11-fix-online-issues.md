@@ -2,6 +2,7 @@
 change: fix-online-issues
 design-doc: docs/superpowers/specs/2026-09-11-fix-online-issues-design.md
 base-ref: 3caf18807f6ecc987fc5518bec2da69a921477aa
+archived-with: 2026-09-12-fix-online-issues
 ---
 
 # fix-online-issues 实施计划

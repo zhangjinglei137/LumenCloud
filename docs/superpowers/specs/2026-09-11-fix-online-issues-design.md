@@ -2,6 +2,8 @@
 comet_change: fix-online-issues
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-09-12-fix-online-issues
+status: final
 ---
 
 # 深度技术设计：fix-online-issues
