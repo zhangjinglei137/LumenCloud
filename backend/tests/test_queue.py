@@ -286,6 +286,7 @@ def test_list_download_flat_type_download(db, env):
     assert rows[0]["media_title"] == "测试剧"
     assert rows[0]["status"] == "downloading" and rows[0]["enqueued_at"] is not None
     assert rows[0]["node_attempt"] == 0
+    assert rows[0]["size_estimated"] is False
 
 
 def test_list_share_code_admin_vs_guest(db, env):
@@ -659,15 +660,20 @@ def test_add_task_existing_resets_pending(db, env):
 
 
 def test_progress_aggregates_tell_status_and_degrades(db, env):
-    """progress：downloading 行 tellStatus 聚合（speed/progress）；失败行降级 null。"""
+    """progress：downloading 行 tellStatus 聚合（speed/progress/total）；失败行与 0 值降级 null。"""
     mid = run(seed_media(db))
     dq_id = run(seed_dq(db, mid, status="downloading", aria2_gid="gid-1"))
     run(seed_dq(db, mid, episode="S01E02", status="downloading", aria2_gid="gid-2"))
+    run(seed_dq(db, mid, episode="S01E03", status="downloading", aria2_gid="gid-3"))
 
     async def _fake_tell(gid):
         if gid == "gid-1":
             return {"gid": gid, "totalLength": "1000", "completedLength": "250",
                     "downloadSpeed": "500"}
+        if gid == "gid-3":
+            # tell_status 成功但 totalLength=0（Design Doc §4 边界）：total 降级 None
+            return {"gid": gid, "totalLength": "0", "completedLength": "0",
+                    "downloadSpeed": "0"}
         raise RuntimeError("aria2 任务不存在")
 
     env["aria2"].client.tell_status = _fake_tell
@@ -677,7 +683,7 @@ def test_progress_aggregates_tell_status_and_degrades(db, env):
             return await queue_mod.download_progress(admin=_admin(), session=s)
     rows = run(_progress())
 
-    assert len(rows) == 2
+    assert len(rows) == 3
     by_gid = {r["gid"]: r for r in rows}
     assert by_gid["gid-1"]["progress"] == 25.0 and by_gid["gid-1"]["speed"] == 500
     # 失败行降级：gid/字段保留，speed/progress 为 null
@@ -685,6 +691,8 @@ def test_progress_aggregates_tell_status_and_degrades(db, env):
     # total：totalLength>0 → 真实字节；失败行降级 None
     assert by_gid["gid-1"]["total"] == 1000
     assert by_gid["gid-2"]["total"] is None
+    # 0 值成功响应（totalLength=0 不显示 0 字节，Design Doc §4 边界条件）
+    assert by_gid["gid-3"]["total"] is None and by_gid["gid-3"]["speed"] == 0
 
 
 # ---------------------------------------------------------------------------
