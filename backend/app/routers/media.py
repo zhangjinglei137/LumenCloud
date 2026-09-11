@@ -7,6 +7,7 @@
 - DELETE /api/media/{id}    admin 删除（级联子表）
 - POST   /api/media/{id}/scan  admin 手动触发巡检（§9.1 写操作鉴权）
 """
+import asyncio
 from datetime import date, datetime, timezone
 import logging
 import re
@@ -395,6 +396,31 @@ async def list_media(
             elif rank == 3:
                 entry["in_progress"] += 1
 
+    # episode-status-and-detail-polish：「已有」口径升级为 Emby 入库 ∪ 本系统完成（去重）。
+    # 仅对 tv + tmdb_id 存在 + 有缺失（total > done）的影视触发 Emby 聚合；
+    # asyncio.gather 并发（TTL 缓存命中时零网络开销）；任一部失败降级为空集。
+    done_codes_by_media: dict[int, set[str]] = {
+        media_id: {ep for ep, rank in ep_map.items() if rank == 1}
+        for media_id, ep_map in _rank.items()
+    }
+    ingested_by_media: dict[int, set[str]] = {}
+
+    async def _fetch_ingested(m: Media) -> tuple[int, set[str]]:
+        try:
+            return m.id, await emby.get_ingested_episode_codes(m.tmdb_id, m.title)
+        except Exception as exc:  # noqa: BLE001  含 EmbyUnavailable：降级为空集，不阻断列表
+            logger.warning("[media] list Emby 已入库集查询降级 media=%s: %s", m.id, exc)
+            return m.id, set()
+
+    emby_targets = [
+        m for m in media_rows
+        if (m.media_type or "").strip().lower() != "movie" and m.tmdb_id is not None
+        and (tmdb_totals.get(m.tmdb_id) or 0) > len(done_codes_by_media.get(m.id, set()))
+    ]
+    if emby_targets:
+        results = await asyncio.gather(*(_fetch_ingested(m) for m in emby_targets))
+        ingested_by_media = dict(results)
+
     # 最近一条 task_run（按时间倒序，取每条 media 首条）
     latest: dict[int, dict] = {}
     for row in await session.execute(
@@ -426,15 +452,19 @@ async def list_media(
         tmid = m.tmdb_id
         if tmid and tmid in tmdb_totals:
             total = max(total, tmdb_totals[tmid])
+        done_codes = done_codes_by_media.get(m.id, set())
+        ingested = ingested_by_media.get(m.id, set())
+        available = len(done_codes | ingested)
         return {
             "total": total,
             "done": ep["done"],
             "failed": ep["failed"],
             "in_progress": ep["in_progress"],
-            # 前端契约别名（§8 影视列表「已有/总集数」）
-            "available": ep["done"],
+            # 前端契约别名（§8 影视列表「已有/总集数」）：
+            # 「已有」= Emby 实际入库 ∪ 本系统完成（去重）；缺失防负
+            "available": available,
             "downloaded": ep["done"],
-            "missing": total - ep["done"],
+            "missing": max(0, total - available),
         }
 
     return [
