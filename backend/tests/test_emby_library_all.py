@@ -195,16 +195,22 @@ def test_all_not_configured_raises(monkeypatch, _db_maker):
         run(list_all_library())
 
 
-def test_all_partial_failure_success_empty_not_raises(monkeypatch, _db_maker, caplog):
+def test_all_partial_failure_success_empty_not_raises(monkeypatch, _db_maker):
     """部分失败边界：1 库成功但返回 0 条 + 2 库失败 → 返回 [] 且不抛（warn）。
 
     旧判据 `if errors and not items` 会误抛（成功库无条目时 items 为空）；
     契约「部分失败返回成功部分」要求仅当全部库失败（len(errors) == len(folders)）才上抛。
+
+    断言改用 monkeypatch logger.warning（对齐 test_config_store 约定）：
+    其他测试触发 FastAPI lifespan 时 app/main.py 顶层 basicConfig 会使 pytest
+    caplog 的 LogCaptureHandler 失效，跨测试环境污染下 caplog 断言不可靠。
     """
     _reset_user_id(monkeypatch)
     _reset_server_id(monkeypatch)
     _use_test_db(monkeypatch, _db_maker)
     _set_cache(monkeypatch)
+    warned: list = []
+    monkeypatch.setattr(emby_mod.logger, "warning", lambda *args, **kwargs: warned.append(args))
 
     def _h(path, params):
         if path == "/Users":
@@ -226,7 +232,8 @@ def test_all_partial_failure_success_empty_not_raises(monkeypatch, _db_maker, ca
     _install_get(monkeypatch, _h)
     result = run(list_all_library())  # 部分失败 + 成功库 0 条 → 不抛，返回空
     assert result == []
-    assert "部分库失败" in caplog.text  # warn 日志
+    assert warned, "部分失败应记录 warning 日志"
+    assert any("部分库失败" in str(a) for a in warned)
 
 
 # ---- 端点级（路由直调，对齐 test_poster_proxy 约定；鉴权由 Depends 注入，不经鉴权测试）----
