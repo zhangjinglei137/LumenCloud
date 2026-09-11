@@ -184,6 +184,17 @@ describe('QueueView 巡检队列 Tab（queue-inspection-rework）', () => {
     expect(html).toContain('约 1.00 GB')
   })
 
+  it('巡检队列大小列：file_size=0 显示「—」，精确值无「约」', async () => {
+    storeState.items = [makeTask({ file_size: 0, size_estimated: false })]
+    wrapper = mountView()
+    await flushPromises()
+    // 大小单元格只渲染一次且为「—」（0 值语义，Task 3 的 formatFileSize）
+    const text = wrapper.text()
+    expect(text).toContain('—')
+    expect(text).not.toContain('0 B')
+    expect(text).not.toContain('约')
+  })
+
   it('任务 Tab 分享码列：admin 可见明文，guest 隐藏', async () => {
     storeState.items = [{ ...makeTask({ id: 1 }), share_code: 'TASKCODE' }]
     storeState.total = 1
