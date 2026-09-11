@@ -935,7 +935,7 @@ git commit -m "feat(frontend): 新增 ActiveTask 类型与 episodeSummaryText �
 **Interfaces:**
 - Consumes: `episodeSummaryText`（Task 5 产物）
 
-- [ ] **Step 1: 修改 `episodeText`**
+- [x] **Step 1: 修改 `episodeText`**
 
 将 `MediaListView.vue` 中 `episodeText` 函数体替换为：
 
@@ -947,12 +947,12 @@ function episodeText(m: MediaItem): string {
 
 并在 `<script setup>` 的 import 列表（`../utils/format` 中）追加 `episodeSummaryText`。
 
-- [ ] **Step 2: 构建与既有测试验证**
+- [x] **Step 2: 构建与既有测试验证**
 
 Run: `cd frontend && npx vue-tsc --noEmit && npx vitest run`
 Expected: 类型检查通过、既有测试全绿（MediaListView 无独立测试文件，靠类型 + 现有测试回归）
 
-- [ ] **Step 3: 提交**
+- [x] **Step 3: 提交**
 
 ```bash
 git add frontend/src/views/MediaListView.vue
