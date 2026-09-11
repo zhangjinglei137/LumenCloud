@@ -2,8 +2,8 @@
 
 ## 1. 缺失集判定修正（D1）
 
-- [ ] 1.1 后端 media.py `_stats()` 计算「已开播集数」：复用 tmdb.get_episode_info 的 air_date（≤ today）计数作为缺失基数，missing = 已开播集数 − available，total 仍返回 TMDB 全集数；外部服务故障降级为现状口径（total − available），验证 `pytest` 列表统计用例通过
-- [ ] 1.2 补充后端测试：未开播集不计入缺失（air_date 未来）、Emby 未配置回退、混合已开播/未开播场景，验证 `pytest` 新增用例通过
+- [x] 1.1 后端 media.py `_stats()` 计算「已开播集数」：复用 tmdb.get_episode_info 的 air_date（≤ today）计数作为缺失基数，missing = 已开播集数 − available，total 仍返回 TMDB 全集数；外部服务故障降级为现状口径（total − available），验证 `pytest` 列表统计用例通过
+- [x] 1.2 补充后端测试：未开播集不计入缺失（air_date 未来）、Emby 未配置回退、混合已开播/未开播场景，验证 `pytest` 新增用例通过
 - [ ] 1.3 前端核对 `episodeSummaryText`：缺失文案与后端新口径一致（无未开播集计入），验证 `vitest` format 用例通过
 
 ## 2. 影视详情状态收敛两值（D2）

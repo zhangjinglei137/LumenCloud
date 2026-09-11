@@ -36,7 +36,7 @@ base-ref: 3caf18807f6ecc987fc5518bec2da69a921477aa
 - Consumes: `tmdb.get_episode_info(tmdb_id: int) -> list[dict]`（已存在，返回 `[{season, episode, name, air_date}]`，空缓存返回 `[]`）
 - Produces: `_stats(m)` 新增字段 `aired_total`（内部用），`missing = max(0, aired_total - available)`；`total` 保持 TMDB 全集数
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `test_media_list_emby_stats.py` 追加（mock `tmdb.get_episode_info` 返回含未来 air_date 的集）：
 
@@ -56,12 +56,12 @@ async def test_missing_excludes_unaired(monkeypatch, ...):
     # ... 构造 media + 断言 stats["missing"] 不含未来集
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cd backend && .venv/bin/python -m pytest -q tests/test_media_list_emby_stats.py -x`
 Expected: FAIL（当前 missing = total - available 含未开播集）
 
-- [ ] **Step 3: 实现 `_stats()` 修正**
+- [x] **Step 3: 实现 `_stats()` 修正**
 
 在 `media.py` `list_media` 的 Emby 聚合区（L408-L423 附近）并行收集每部 tv 的已开播集数：
 
@@ -89,12 +89,12 @@ base = aired_total if aired_total >= 0 else total
 "missing": max(0, base - available),
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `cd backend && .venv/bin/python -m pytest -q tests/test_media_list_emby_stats.py -x`
 Expected: PASS（含既有用例回归）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add backend/app/routers/media.py backend/tests/test_media_list_emby_stats.py
