@@ -1072,7 +1072,7 @@ git commit -m "feat(frontend): 详情页新增「当前进行中任务」区块�
 - Modify: `frontend/src/views/MediaDetailView.vue`（第 255 行 `el-select`）
 - Test: `frontend/src/views/MediaDetailView.test.ts`（追加断言）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `frontend/src/views/MediaDetailView.test.ts` 追加：
 
@@ -1088,12 +1088,12 @@ describe('状态下拉宽度', () => {
 })
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cd frontend && npx vitest run src/views/MediaDetailView.test.ts`
 Expected: FAIL（当前无 style 属性）
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 第 255 行：
 
@@ -1101,12 +1101,12 @@ Expected: FAIL（当前无 style 属性）
             <el-select v-model="form.status" size="small" style="min-width: 132px">
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `cd frontend && npx vitest run src/views/MediaDetailView.test.ts`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add frontend/src/views/MediaDetailView.vue frontend/src/views/MediaDetailView.test.ts
