@@ -296,25 +296,25 @@ git commit -m "fix(frontend): Emby 库订阅按钮仅管理员可见，访客只
 - Consumes: `get_current_user`（deps.py）
 - Produces: `GET /queue/download/state` 登录用户可读
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 队列测试追加：guest 访问 `GET /queue/download/state` 期望 200；写操作仍 403。
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `cd backend && .venv/bin/python -m pytest -q tests/test_queue.py -x`（或实际测试文件）
 Expected: FAIL（guest 403）
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `queue.py` L287：`admin: User = Depends(get_current_admin)` → `user: User = Depends(get_current_user)`。
 
-- [ ] **Step 4: 运行确认通过**
+- [x] **Step 4: 运行确认通过**
 
 Run: `cd backend && .venv/bin/python -m pytest -q tests/test_queue.py -x`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add backend/app/routers/queue.py backend/tests/test_queue.py

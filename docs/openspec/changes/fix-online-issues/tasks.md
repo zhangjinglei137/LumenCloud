@@ -28,8 +28,8 @@
 
 ## 6. 队列页访客权限语义（D6）
 
-- [ ] 6.1 后端 queue.py `GET /queue/download/state` 降为 get_current_user（登录即可读暂停状态），验证 pytest 队列状态接口用例（admin/guest 均可读）
-- [ ] 6.2 前端 QueueView.vue：onMounted 对 guest 不触发 403（状态接口登录可读后自然修复），控制按钮维持 auth.isAdmin 禁用/隐藏，验证前端构建通过且 guest 打开无权限弹窗
+- [x] 6.1 后端 queue.py `GET /queue/download/state` 降为 get_current_user（登录即可读暂停状态），验证 pytest 队列状态接口用例（admin/guest 均可读）
+- [x] 6.2 前端 QueueView.vue：onMounted 对 guest 不触发 403（状态接口登录可读后自然修复），控制按钮维持 auth.isAdmin 禁用/隐藏，验证前端构建通过且 guest 打开无权限弹窗
 
 ## 7. 安全审查（D7）
 
