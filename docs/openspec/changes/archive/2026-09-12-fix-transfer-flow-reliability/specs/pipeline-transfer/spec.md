@@ -1,9 +1,6 @@
-# pipeline-transfer Specification
+# pipeline-transfer Delta Specification
 
-## Purpose
-为影视下载提供转移与入库闭环：下载完成后交给 NasTools 转移整理，以 Webhook 完成信号触发 Emby 媒体库扫描，确认入库后标记完成并释放容量，继续消费下载队列等待任务。
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: 下载完成进入转移
 
@@ -25,29 +22,7 @@
 - **WHEN** 任务由转移阶段推进到入库确认阶段
 - **THEN** 系统重置该任务在转移阶段的失败计数与诊断字段，避免旧计数影响后续节点判定
 
-### Requirement: 转移完成后触发 Emby 扫描
-
-系统 SHALL 在判定转移完成后调用 Emby 媒体库扫描（对应媒体库文件夹），确保新文件被 Emby 及时收录。
-
-#### Scenario: 转移完成触发扫描
-- **WHEN** NasTools 报告某影视转移完成
-- **THEN** 系统调用 Emby 扫描媒体库接口触发该媒体库刷新
-
-#### Scenario: 扫描失败回退轮询确认
-- **WHEN** Emby 扫描调用失败或不可达
-- **THEN** 系统保留任务在入库确认状态，由后续轮询兜底再扫描并确认
-
-### Requirement: 入库确认与容量释放
-
-任务在 Emby 确认收录后 SHALL 标记完成，删除夸克中转文件并释放容量预留，随后继续消费下载队列等待任务（重复容量判断流程）。
-
-#### Scenario: 入库成功完成闭环
-- **WHEN** Emby 已确认收录该集/该片
-- **THEN** 任务标记完成、删除夸克中转、释放容量预留，并触发下载队列继续按序取件
-
-#### Scenario: 入库超时处理
-- **WHEN** 任务在入库确认状态停留超过超时阈值仍未被 Emby 收录
-- **THEN** 系统按回退策略处理（重试或失败），不永久卡驻队列
+## ADDED Requirements
 
 ### Requirement: 转存提交冲突时清理夸克残留
 

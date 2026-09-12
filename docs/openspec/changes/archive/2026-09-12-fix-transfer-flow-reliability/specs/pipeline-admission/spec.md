@@ -1,9 +1,6 @@
-# pipeline-admission Specification
+# pipeline-admission Delta Specification
 
-## Purpose
-为下载队列提供容量感知的准入控制：以网盘容量为唯一准入约束，在途下载与新任务合计不超网盘容量的任务才能开始下载，否则进入等待队列，容量释放后按序续跑。
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: 容量判断准入
 
@@ -41,17 +38,7 @@
 - **WHEN** 等待队列存在大量积压任务且容量仍不足
 - **THEN** 系统避免每轮对全部等待任务执行唤醒-回置与重复容量统计，控制写放大与外部调用量
 
-### Requirement: 转存完成后再格式化落盘名称
-
-系统 SHALL 在转存成功完成后依据命名规则格式化落盘名称（影视名 - SxxExx），后续下载以该格式化名称落盘；不得在推送 aria2 下载时才临时格式化。
-
-#### Scenario: 转存后即格式化
-- **WHEN** 转存成功落盘
-- **THEN** 系统立即按规则生成格式化名称并用于后续 aria2 下载
-
-#### Scenario: 格式化名称贯穿下载入库
-- **WHEN** 下载任务以格式化名称落盘
-- **THEN** 后续下载跟踪、转移、入库确认均沿用该名称，命名全程一致
+## ADDED Requirements
 
 ### Requirement: 转存来源校验与逃生
 

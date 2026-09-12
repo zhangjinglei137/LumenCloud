@@ -2,6 +2,8 @@
 comet_change: fix-transfer-flow-reliability
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-09-12-fix-transfer-flow-reliability
+status: final
 ---
 
 # 转存下载流程可靠性修复 — 深度技术设计

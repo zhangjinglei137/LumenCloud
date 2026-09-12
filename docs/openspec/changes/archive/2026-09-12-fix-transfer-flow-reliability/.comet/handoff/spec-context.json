@@ -1,0 +1,35 @@
+{
+  "change": "fix-transfer-flow-reliability",
+  "phase": "design",
+  "mode": "beta",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "d762c091e44a277a3435316661ef9bd43a6b8e8e7d9684fd94e827596ff2224e",
+  "files": [
+    {
+      "path": "docs/openspec/changes/fix-transfer-flow-reliability/proposal.md",
+      "sha256": "5ad3f82e08c22874f0d96fb6774001e8358e54bdd831de759de72f38050a6277",
+      "role": "supporting"
+    },
+    {
+      "path": "docs/openspec/changes/fix-transfer-flow-reliability/design.md",
+      "sha256": "7f2bad87f8face6745aaf2c1b23ad058341f042b5f3a1e0edcb7147b40161125",
+      "role": "supporting"
+    },
+    {
+      "path": "docs/openspec/changes/fix-transfer-flow-reliability/tasks.md",
+      "sha256": "1d0f027b3ced86854f52f227a7a819a1710f8c15d2fefe5e60460ce8705def2e",
+      "role": "supporting"
+    },
+    {
+      "path": "docs/openspec/changes/fix-transfer-flow-reliability/specs/pipeline-admission/spec.md",
+      "sha256": "8c4edfee91333cf0fe0cee2d64587e712bf7ae7df0c12a3bbe5fc191899f9579",
+      "role": "spec"
+    },
+    {
+      "path": "docs/openspec/changes/fix-transfer-flow-reliability/specs/pipeline-transfer/spec.md",
+      "sha256": "929d52aba686af2d905f1a68e9242d503f41a0d09359b579fe50c4a4f60598ca",
+      "role": "spec"
+    }
+  ]
+}
