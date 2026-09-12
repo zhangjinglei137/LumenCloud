@@ -19,13 +19,13 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
 import app.models  # noqa: F401
 from app.database import Base
-from app.models import Media, TaskQueue
+from app.models import DownloadQueue, Media, TaskQueue
 
 
 def run(coro):
@@ -69,6 +69,20 @@ async def _seed_media(db, *, title="渗透", tmdb_id=999):
         s.add(media)
         await s.commit()
         return media.id
+
+
+async def _seed_download_queue(db, media_id, *, episode, file_name, status="pending"):
+    """预置 download_queue 行（同 task_queue 的 episode 形态：SxxExx 或 文件名）。"""
+    async with db() as s:
+        s.add(DownloadQueue(
+            media_id=media_id,
+            episode=episode,
+            file_name=file_name,
+            file_size=1_000_000,
+            share_code="share123",
+            status=status,
+        ))
+        await s.commit()
 
 
 def _payload():
@@ -147,3 +161,46 @@ def test_enqueue_different_media_same_file_returns_enqueued(db, monkeypatch):
     assert r1 == "enqueued"
     r2 = run(_enqueue_once(scan_mod, mid2, "S01E05", "渗透 - 第05集.mp4"))
     assert r2 == "enqueued"
+
+
+def test_enqueue_skips_when_download_queue_has_same_episode(db, monkeypatch):
+    """T8.8：download_queue 已有同 media 同集（跨文件名）→ existing 不入队。
+
+    全量模式防重：同一集以不同文件名在两轮巡检被识别（Emby 收录状态变化 / 不同
+    资源文件名），download_queue 已存在该集任意状态 → 视为已存在，task_queue 不新增。
+    """
+    scan_mod = _patch_enqueue_env(monkeypatch, db)
+    mid = run(_seed_media(db))
+
+    run(_seed_download_queue(db, mid, episode="S01E01", file_name="甲.mkv"))
+    r = run(_enqueue_once(scan_mod, mid, "S01E01", "乙.mkv"))
+    assert r == "existing"
+
+    async def _count_task_queue():
+        async with db() as s:
+            return (await s.execute(select(func.count()).select_from(TaskQueue))).scalar_one()
+
+    assert run(_count_task_queue()) == 0
+
+
+def test_enqueue_normalizes_episode_key_for_dedup(db, monkeypatch):
+    """T8.8 归一化：download_queue 'S1E1' 与请求键 'S01E01'（不同文件名）→ 防重命中。
+
+    覆盖集号多种表示（SxxExx 季+集任意位数 / 第N集 / 独立数字），归一化后比较。
+    """
+    scan_mod = _patch_enqueue_env(monkeypatch, db)
+    mid = run(_seed_media(db))
+
+    run(_seed_download_queue(db, mid, episode="S1E1", file_name="甲.mkv"))
+    r = run(_enqueue_once(scan_mod, mid, "S01E01", "乙.mkv"))
+    assert r == "existing"
+
+
+def test_enqueue_not_blocked_by_download_queue_other_episode(db, monkeypatch):
+    """T8.8 不误伤：download_queue 已有 S01E01，入队的是同 media 不同集 → 正常入队。"""
+    scan_mod = _patch_enqueue_env(monkeypatch, db)
+    mid = run(_seed_media(db))
+
+    run(_seed_download_queue(db, mid, episode="S01E01", file_name="甲.mkv"))
+    r = run(_enqueue_once(scan_mod, mid, "S01E06", "乙.mkv"))
+    assert r == "enqueued"
