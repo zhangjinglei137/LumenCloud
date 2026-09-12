@@ -698,6 +698,52 @@ def test_gid_check_failure_blocks_round(db, env, monkeypatch):
     assert any(e.event_type == "flow_error" for e in env["notifier"].events)
 
 
+def test_gid_whitelist_includes_non_downloading_rows(db, env, monkeypatch):
+    """白名单口径放宽（design T2）：非 downloading 但 aria2_gid 非空的行也在白名单。
+
+    recovery 回退 downloading→pending 且 aria2.remove 失败的场景下，gid 残留于
+    pending 行（回退中/在库任务）——旧实现白名单只收 status='downloading' 会把
+    该 gid 判陌生并整批跳过（自锁）；放宽为「DB 中 aria2_gid 非空全部行」后不再
+    误判（无告警、不跳过，准入循环正常续跑）。
+    """
+    patch_db(monkeypatch, db)
+    # 回退中的任务：status='pending' 但 aria2_gid 仍残留（recovery 回退未清 gid）
+    async def seed():
+        async with db() as s:
+            media = Media(title="测试剧", media_type="tv", tmdb_id=None, status="tracking")
+            s.add(media)
+            await s.flush()
+            mid = media.id
+            s.add(DownloadQueue(
+                media_id=mid, episode="S01E01", file_name="a.mkv", file_size=1,
+                share_code="sc", stoken="stoken-x", receive_code="提取码占位",
+                fids='["f1"]', fid_tokens='["ft1"]', folder_id="folder-1",
+                status="pending", aria2_gid="gid-pending-row",
+                enqueued_at=_now(), updated_at=_now(),
+            ))
+            # 真正的 pending 任务（保证 has_pending → 走到 GID 校验段）
+            s.add(DownloadQueue(
+                media_id=mid, episode="S01E02", file_name="b.mkv", file_size=1,
+                share_code="sc", stoken="stoken-x", receive_code="提取码占位",
+                fids='["f1"]', fid_tokens='["ft1"]', folder_id="folder-1",
+                status="pending", enqueued_at=_now(), updated_at=_now(),
+            ))
+            await s.commit()
+    run(seed())
+    env["aria2"].actives = [{"gid": "gid-pending-row", "status": "active"}]
+    # 骨架修正（协调者裁定）：取件与准入循环短路，避免触发真实转存链——
+    # 本轮只验证「白名单口径」：该 pending 残留 gid 不被判陌生（不告警）。
+    monkeypatch.setattr(transfer_mod, "_fetch_from_task_queue", AsyncMock(return_value=0))
+    monkeypatch.setattr(transfer_mod, "_try_admit_one", AsyncMock(return_value="no_pending"))
+    record_alert = AsyncMock()
+    monkeypatch.setattr(transfer_mod, "_record_alert", record_alert)
+
+    run(transfer_mod._admit_batch())
+
+    # 未告警 = 白名单命中（旧实现 status='downloading' 过滤会把该 gid 判陌生 → 告警）
+    record_alert.assert_not_awaited()
+
+
 def test_no_pending_is_skipped(db, env, monkeypatch):
     """空队列 → 不写 task_run（空跑静默），无副作用。"""
     patch_db(monkeypatch, db)
