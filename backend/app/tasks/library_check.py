@@ -85,6 +85,16 @@ _SCRAPE_BACKOFF_SECONDS = 600.0
 # media_id → 退避截止 monotonic 时间戳（seconds）；仅本次进程有效
 _scrape_backoff: dict[int, float] = {}
 
+# T8.3（design 8.3）：集级确认 fail-open 延迟复核——遗漏集为空（Emby 刚建条目/
+# 扫描中，遗漏集暂不可信）时不再直接返回 False（立即放行）：进程内记录最近放行
+# 时间戳，至少间隔 _RECENT_EMPTY_RECHECK_SECONDS 才放行一次，窗口内返回 True
+# （等待下一轮复核）。与 _scrape_backoff 同模式：进程内共享 dict + monotonic
+# 时间戳；单 worker 部署可靠（重启即失，影响有限：至多多等一轮复核）。
+_RECENT_EMPTY_RECHECK_SECONDS = 60.0
+# key = f"{media_id}:{episode}"（media_id 为 None 时退化为 episode）→ 最近一次
+# 放行的 monotonic 时间戳（seconds）；仅本次进程有效
+_recent_empty_check: dict[str, float] = {}
+
 
 def _media_in_scrape_backoff(media_id: int) -> bool:
     """该 media 是否处于刮削退避期（退避期内不参与本轮同步尝试）。
@@ -330,17 +340,37 @@ _fmt_episode = fmt_episode
 _ep_num = parse_episode_num
 
 
-def _episode_in_missing(episode: str, missing_codes: set[str]) -> bool:
+def _episode_in_missing(episode: str, missing_codes: set[str],
+                        media_id: int | None = None) -> bool:
     """当前集是否仍属 Emby 遗漏集（集级入库确认的判定核心）。
 
     返回 True  → 该集在遗漏列表（Emby 尚未收录）→ 本轮不 finalize，保持等待；
-    返回 False → 该集不在遗漏列表（Emby 已收录 / 无遗漏集）→ 可 finalize。
+    返回 False → 该集不在遗漏列表（Emby 已收录 / 延迟复核窗口已过放行）→ 可 finalize。
 
-    盲匹配策略：遗漏集列表为空 / episode 为空时返回 False（宁可 finalize 给
-    done——find_emby_id 已确认剧集入库，此时才按集级确认放行）。
+    T8.3 fail-open 延迟复核：遗漏集为空不再直接返回 False（立即放行）——Emby 刚
+    建条目/扫描中时遗漏集会短暂为空，立即放行可能在 Emby 尚未收录时误删夸克中转
+    文件；改为进程内延迟复核：记录最近放行时间戳，至少间隔
+    _RECENT_EMPTY_RECHECK_SECONDS（60s）才放行一次，窗口内返回 True（等待下一
+    轮复核）。key 含 media_id（media_id 为 None 时退化为 episode，兼容 recovery.py
+    的低频回退确认路径——该路径无此参数，节流粒度退化为 episode 级，可接受）。
+
+    盲匹配策略：episode 为空时返回 False（无可比对的集级信息，直接放行）。
     """
     episode = (episode or "").strip()
-    if not episode or not missing_codes:
+    if not episode:
+        return False
+    if not missing_codes:
+        # T8.3：fail-open 延迟复核——遗漏集为空 → 至少间隔 60s 才放行一次
+        key = f"{media_id}:{episode}" if media_id is not None else episode
+        now_m = _time.monotonic()
+        last = _recent_empty_check.get(key)
+        if last is None:
+            # 首次遇到遗漏集为空 → 记录并等待一轮复核（60s 内不放行）
+            _recent_empty_check[key] = now_m
+            return True
+        if now_m - last < _RECENT_EMPTY_RECHECK_SECONDS:
+            return True  # 复核窗口内 → 继续等待（不重复放行）
+        _recent_empty_check[key] = now_m  # 窗口已过 → 放行一次并重置计时
         return False
     # 1) episode 本身就是遗漏 key（如 dq.episode='S01E10'，含大小写/季集位差）
     if episode in missing_codes:
@@ -359,6 +389,31 @@ def _episode_in_missing(episode: str, missing_codes: set[str]) -> bool:
     return False
 
 
+# T8.3：电影入库确认前文件大小合理性下限（字节）。
+#
+# Emby 侧无法可靠获取文件大小字段：find_emby_id 仅请求 Fields=ProviderIds 并返回
+# 条目 Id（文件大小在 MediaSources[].Size / Path，现有查询未携带）；get_missing_
+# episodes / list_episodes / list_library 均不返回大小 → 「与 Emby 侧大小偏离过大」
+# 的比对无法可靠实施，按 design 8.3 降级跳过（记录于此，不阻塞主修复）；保留最无
+# 歧义的本地下限校验：0 字节空文件为下载失败/空文件的强信号，明显不合理 → 不
+# finalize + 告警记录。
+_MOVIE_MIN_FILE_SIZE_BYTES = 1  # file_size > 0 视为合理；0 = 空文件异常
+
+
+def _movie_file_size_plausible(file_size: int | None) -> tuple[bool, str]:
+    """电影文件大小合理性校验（T8.3）：返回 (是否合理, 不合理原因)。
+
+    仅做最无歧义的本地下限校验：0 字节空文件明显不合理；file_size 缺失/非法
+    （None 或 ≤0）同样拦截。Emby 侧无可靠文件大小字段（见模块级注释），
+    「与 Emby 侧预期偏离过大」的外部比对降级跳过（design 允许）。
+    """
+    if file_size is None:
+        return False, "file_size 缺失"
+    if file_size < _MOVIE_MIN_FILE_SIZE_BYTES:
+        return False, f"file_size={file_size}（0 字节空文件，疑似下载失败）"
+    return True, ""
+
+
 async def library_check() -> None:
     """入库轮询：轮询全部 status='library' 的 download_queue，Emby 命中 → done+删夸克；
     超时 → failed。"""
@@ -371,6 +426,7 @@ async def library_check() -> None:
                         DownloadQueue.media_id,
                         DownloadQueue.episode,
                         DownloadQueue.file_name,
+                        DownloadQueue.file_size,  # T8.3：电影文件大小合理性校验依据
                         DownloadQueue.quark_path,
                         DownloadQueue.node_started_at,
                     ).where(DownloadQueue.status == "library")
@@ -385,7 +441,7 @@ async def library_check() -> None:
 
     timeout_seconds = await _read_timeout_seconds()
     now = _now()
-    for dq_id, media_id, episode, file_name, quark_path, started_at in rows:
+    for dq_id, media_id, episode, file_name, file_size, quark_path, started_at in rows:
         # 1) media 校验：不存在/已删除 → 直接清理解除（孤儿 download_queue）
         async with async_session() as s:
             media = await s.get(Media, media_id)
@@ -415,7 +471,23 @@ async def library_check() -> None:
             # P1-2 集级入库确认：剧集在 find_emby_id 命中后仍需确认「当前集不在
             # Emby 遗漏集」才 finalize——追更新集刚刮削完仍是遗漏集，立即判入库会
             # 误删夸克中转文件（G6 决策的入库确认在集级粒度成立）。
-            if (media.media_type or "").strip().lower() != "movie":
+            # T8.3：电影入库确认前校验文件大小合理性（0 字节空文件明显不合理 →
+            # 不 finalize + 告警记录，并纳入超时窗口防无限等待）。
+            if (media.media_type or "").strip().lower() == "movie":
+                plausible, size_reason = _movie_file_size_plausible(file_size)
+                if not plausible:
+                    await transfer_mod._record_alert(
+                        media_id,
+                        f"电影入库确认：文件大小异常（{size_reason}），暂不 finalize",
+                        category="movie_size",
+                    )
+                    await _mark_timeout_if_expired(
+                        dq_id, media_id, episode, quark_path, started_at,
+                        timeout_seconds, now,
+                        cause="电影文件大小异常（0 字节空文件）",
+                    )
+                    continue
+            else:
                 try:
                     missing = await emby.get_missing_episodes(emby_id)
                 except Exception as exc:  # noqa: BLE001  含 EmbyUnavailable（Emby 故障）
@@ -427,7 +499,7 @@ async def library_check() -> None:
                 missing_codes: set[str] = {
                     str(ep.get("code")) for ep in missing if ep.get("code")
                 }
-                if _episode_in_missing(episode, missing_codes):
+                if _episode_in_missing(episode, missing_codes, media_id):
                     # 卡死修复：遗漏集路径同样受超时窗口约束 —— 追更新集长期在遗漏集
                     # （Emby 刮削一直不收录）不再无限等待，超时走 failed 并记录原因。
                     await _mark_timeout_if_expired(
