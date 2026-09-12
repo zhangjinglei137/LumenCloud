@@ -371,6 +371,12 @@ async def cancel_task(
             .where(TaskQueue.media_id == dq.media_id, TaskQueue.episode == dq.episode)
             .values(status="done", updated_at=now)
         )
+        # Task 7（design T4）：置 DQ 终态（failed）后同一事务调用 _sync_media_status——
+        # media 无任何在途（_ACTIVE_STATUSES）任务时条件回落 tracking（WHERE
+        # media.status='downloading'，不覆盖用户 paused）；有在途任务返回 0 不动。
+        # 延迟导入防循环；传入 session 复用外部事务，由下方 commit 统一提交。
+        from app.tasks.transfer import _sync_media_status  # noqa: PLC0415 延迟导入
+        await _sync_media_status(dq.media_id, session)
         await session.commit()
         await _cleanup_cancel_side_effects(dq)
         return {"ok": True}
@@ -469,6 +475,12 @@ async def skip_task(
             .where(TaskQueue.media_id == dq.media_id, TaskQueue.episode == dq.episode)
             .values(status="done", updated_at=now)
         )
+        # Task 7（design T4）：置 DQ 终态（skipped）后同一事务调用 _sync_media_status——
+        # media 无任何在途（_ACTIVE_STATUSES）任务时条件回落 tracking（WHERE
+        # media.status='downloading'，不覆盖用户 paused）；有在途任务返回 0 不动。
+        # 延迟导入防循环；传入 session 复用外部事务，由下方 commit 统一提交。
+        from app.tasks.transfer import _sync_media_status  # noqa: PLC0415 延迟导入
+        await _sync_media_status(dq.media_id, session)
         await session.commit()
         return {"ok": True}
 
