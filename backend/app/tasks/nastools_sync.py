@@ -35,6 +35,26 @@ _COOLDOWN_MIN_KEY = "nastools_sync_cooldown_minutes"
 # 并发调用（下载完成事件触发 + job 兜底）不会造成 NasTools 双重启
 _sync_lock = asyncio.Lock()
 
+# T8.4（council）：flow_error 通知节流窗（秒）。同步失败由兜底 job / 下载完成
+# 事件重复触发，同一失败 10 分钟内只 notify 一次，防通知刷屏（task_run(error)
+# 仍每次记录，仅通知节流）。对齐 transfer._alert_cooldown 模式（模块级 dict + TTL）。
+_ALERT_COOLDOWN_SECONDS = 600.0
+# T8.4：告警节流表。key = f"sync:{bucket[:40]}"；值 = (最近 notify 的
+# monotonic 时间戳, 上次消息指纹)。同一 key 在窗口内重复触发且指纹相同 → 跳过
+# notify（消息根因变化视为新告警，必须通知）。
+_sync_alert_cooldown: dict[str, tuple[float, str]] = {}
+
+
+def _sync_alert_bucket(message: str) -> str:
+    """告警节流指纹：消息固定前缀（去掉 ': <exc>' 变量尾巴）。
+
+    对齐 transfer._alert_bucket（M4）：exc 文本随网络抖动变化（超时/拒连/解析
+    失败…），直接整条比较会让节流对变量尾巴失效（每次失败都算「新消息」刷屏）；
+    取冒号前固定前缀作比较指纹，使「NasTools 同步失败」这类同根因消息共享同一
+    指纹；不同前缀 = 不同根因，照常放行通知。
+    """
+    return (message or "").split(": ", 1)[0]
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
@@ -86,19 +106,48 @@ async def nastools_sync(force: bool = False) -> None:
             await nastools.client.login()  # 重启后重新登录
             await nastools.client.run_directory_sync([])  # [] = 全部分目录
         except Exception as exc:  # noqa: BLE001  NasToolsUnavailable 统一失败路径（N2）
-            logger.error("[sync_nastools] NasTools 同步失败: %s", exc)
-            await notifier.notify(NotifyEvent(
-                event_type=EVENT_FLOW_ERROR,
-                title="NasTools 目录同步失败",
-                body=f"同步失败，请检查 NasTools 服务与凭据（N2）: {exc}",
-                recipient=None,
-            ))
+            message = f"NasTools 同步失败: {exc}"
+            logger.error("[sync_nastools] %s", message)
             async with async_session() as s:
                 await record_task_run(  # Q8①：真实耗时
-                    s, "sync_nastools", "error", f"NasTools 同步失败: {exc}",
+                    s, "sync_nastools", "error", message,
                     duration_seconds=time.monotonic() - t0,
                 )
                 await s.commit()
+            # T8.4：失败通知节流（复用 transfer._record_alert 模式）——task_run(error)
+            # 每次记录；notify 仅按指纹（冒号前固定前缀，_sync_alert_bucket）在
+            # _ALERT_COOLDOWN_SECONDS 窗口内去重，防兜底 job/事件重复触发刷屏。
+            # 无 media 维度 → 类别级指纹 key（"sync:..."）；不同根因消息（前缀不同）
+            # 照常放行。notify 为 best-effort：发送失败只记日志，不阻断主流程
+            # （task_run 已落库；force 路径仍向上 re-raise，刮削执行器靠异常感知失败）。
+            bucket = _sync_alert_bucket(message)
+            key = f"sync:{bucket[:40]}"
+            now_m = time.monotonic()
+            # TTL 清理（对齐 transfer._record_alert）：停留超 2 倍窗口的条目不可能
+            # 再被命中（此后任何触发都走「新告警」分支重写时间戳），遍历删除防
+            # dict 随异常类别变化长期无界增长。每次入口 O(n) 清理一次。
+            for _key, (_ts, _b) in list(_sync_alert_cooldown.items()):
+                if now_m - _ts > 2 * _ALERT_COOLDOWN_SECONDS:
+                    _sync_alert_cooldown.pop(_key, None)
+            last_ts, last_bucket = _sync_alert_cooldown.get(key, (0.0, None))
+            if last_bucket == bucket and (now_m - last_ts) < _ALERT_COOLDOWN_SECONDS:
+                logger.info(
+                    "[sync_nastools] flow_error 通知节流（%ds 内同类重复告警 %s）",
+                    _ALERT_COOLDOWN_SECONDS, key,
+                )
+            else:
+                _sync_alert_cooldown[key] = (now_m, bucket)
+                try:
+                    await notifier.notify(NotifyEvent(
+                        event_type=EVENT_FLOW_ERROR,
+                        title="NasTools 目录同步失败",
+                        body=f"同步失败，请检查 NasTools 服务与凭据（N2）: {exc}",
+                        recipient=None,
+                    ))
+                except Exception as notify_exc:  # noqa: BLE001  best-effort 通知
+                    logger.warning(
+                        "[sync_nastools] flow_error 通知发送失败: %s", notify_exc,
+                    )
             if force:
                 # L3（刮削执行器专用）：force 路径（下载完成立即刮削）失败必须向上
                 # 暴露——调用方（library_check.scrape_runner）凭异常做节点级重试
