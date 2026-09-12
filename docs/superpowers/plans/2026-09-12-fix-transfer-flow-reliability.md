@@ -1156,7 +1156,7 @@ git commit -m "fix(library_check): 集级确认遗漏集为空延迟复核并校
 
 **改造目标（design T8.4）**：`nastools_sync` 失败通知复用 `_alert_cooldown` 模式（模块级 dict + TTL）；节流后不重复通知。
 
-- [ ] **Step 1: 追加测试**
+- [x] **Step 1: 追加测试**
 
 ```python
 async def test_nastools_sync_failure_notify_throttled(db, monkeypatch):
@@ -1164,28 +1164,28 @@ async def test_nastools_sync_failure_notify_throttled(db, monkeypatch):
     # 触发两次相同失败 → notifier.notify 只被调用一次（第二次节流跳过）
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cd backend && python -m pytest tests/test_nastools_notify.py -v`
 Expected: FAIL（现无节流）
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `nastools_sync.py` 模块级增加 `_sync_alert_cooldown: dict[str, tuple[float, str]] = {}` + TTL 常量（复用 transfer `_ALERT_COOLDOWN_SECONDS` 语义，如 600s）；失败通知点按 (media_id/类别) 节流：窗口内同指纹跳过 `notifier.notify`，`task_run` 记录保留。可显式传入节流指纹使不同消息共享同一指纹。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `cd backend && python -m pytest tests/test_nastools_notify.py -v`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add backend/app/tasks/nastools_sync.py backend/tests/test_nastools_notify.py
 git commit -m "fix(nastools_sync): 失败通知接入进程内节流防刷屏"
 ```
 
-- [ ] **Step 6: 勾选 tasks.md 8.4**
+- [x] **Step 6: 勾选 tasks.md 8.4**
 
 ---
 
