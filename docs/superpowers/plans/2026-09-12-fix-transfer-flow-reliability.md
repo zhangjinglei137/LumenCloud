@@ -520,7 +520,7 @@ git commit -m "fix(transfer): 陌生 gid 连续跳过哨兵解除转存自锁"
 
 **改造目标（design T3）**：现批量推进 `WHERE media_id=? AND status='scrape'` 全部行；改为从载荷提取文件名/集号（`SxxExx` / `第N集` / 文件名），与 scrape 行 `file_name`/`download_name`/`episode` 匹配，CAS 单行推进 `WHERE id=? AND status='scrape'`；无法定位 → 零推进，仅触发轮询。
 
-- [ ] **Step 1: 更新 webhook 测试（test_nastools_notify.py）**
+- [x] **Step 1: 更新 webhook 测试（test_nastools_notify.py）**
 
 先查看现有 `test_nastools_notify.py` 结构与既有断言，追加：
 
@@ -536,12 +536,12 @@ async def test_webhook_cannot_locate_file_advances_nothing(db, monkeypatch):
     """载荷无法定位文件名 → 0 推进 + 触发 library_check 轮询（_check_library_background 被调用）。"""
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cd backend && python -m pytest tests/test_nastools_notify.py -v`
 Expected: FAIL（现实现批量推进全部 scrape 行）
 
-- [ ] **Step 3: 实现文件级推进**
+- [x] **Step 3: 实现文件级推进**
 
 `_advance_scrape_to_library(media_id, file_name=None)`：
 
@@ -551,19 +551,19 @@ Expected: FAIL（现实现批量推进全部 scrape 行）
 
 `_handle_transfer_finished`：从 `data` 提取文件名（`data.get("file_name")` / `data.get("name")` / `media_info` 内文件名字段，兼容旧版载荷缺失 → None），传入 `_advance_scrape_to_library(media, file_name)`；`advanced == 0` 时仍触发 `_check_library_background(media)` 轮询加速（不丢任务）。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `cd backend && python -m pytest tests/test_nastools_notify.py -v`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add backend/app/routers/nastools_notify.py backend/tests/test_nastools_notify.py
 git commit -m "fix(nastools): webhook 推进改为文件级单行定位，无法定位退化为轮询加速"
 ```
 
-- [ ] **Step 6: 勾选 tasks.md 3.1**
+- [x] **Step 6: 勾选 tasks.md 3.1**
 
 ---
 

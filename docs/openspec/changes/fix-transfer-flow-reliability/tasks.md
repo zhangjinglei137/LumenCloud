@@ -10,7 +10,7 @@
 
 ## 3. P1-1/P1-3 webhook 文件级推进与节点重置（nastools_notify.py）
 
-- [ ] 3.1 `_advance_scrape_to_library` 改为从载荷提取文件名/集号定位单行推进；无法定位时仅触发 library_check 轮询加速，不再批量推进，并验证新增 webhook 推进测试通过
+- [x] 3.1 `_advance_scrape_to_library` 改为从载荷提取文件名/集号定位单行推进；无法定位时仅触发 library_check 轮询加速，不再批量推进，并验证新增 webhook 推进测试通过
 - [ ] 3.2 推进 UPDATE 补齐 `node_attempt=0 / node_finished_at=now / node_error=None`，并验证断言节点字段重置的测试通过
 
 ## 4. P1-4 cancel/skip 同步 media 状态（routers/queue.py）
