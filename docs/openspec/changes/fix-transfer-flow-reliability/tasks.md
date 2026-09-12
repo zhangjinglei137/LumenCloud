@@ -23,7 +23,7 @@
 
 ## 6. P1-6 取件-创建原子化（transfer.py）
 
-- [ ] 6.1 `_fetch_from_task_queue` 改为单语句条件 INSERT（`INSERT ... SELECT ... WHERE NOT EXISTS`）实现取件与 DQ 创建原子一致，并验证新增测试覆盖「撞 UNIQUE 时源行不误标 done」
+- [x] 6.1 `_fetch_from_task_queue` 改为单语句条件 INSERT（`INSERT ... SELECT ... WHERE NOT EXISTS`）实现取件与 DQ 创建原子一致，并验证新增测试覆盖「撞 UNIQUE 时源行不误标 done」
 
 ## 7. P1-7 容量记账漏计窗口（capacity.py + transfer.py）
 

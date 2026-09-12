@@ -803,7 +803,7 @@ git commit -m "fix(transfer): 转存提交冲突时清理夸克残留文件"
 
 **改造目标（design T6）**：现实现先 CAS `ready→done`（L1322-1328）再保存点 INSERT DQ（L1343-1360）；撞 UNIQUE 时保存点回滚但 done 已在外层事务提交。改为单语句条件 INSERT + 命中行同事务置 done。
 
-- [ ] **Step 1: 更新取件测试（test_transfer_queue.py）**
+- [x] **Step 1: 更新取件测试（test_transfer_queue.py）**
 
 ```python
 async def test_fetch_conflict_keeps_source_row_ready(db, monkeypatch):
@@ -815,12 +815,12 @@ async def test_fetch_conflict_keeps_source_row_ready(db, monkeypatch):
     #        download_queue 行数不变
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cd backend && python -m pytest tests/test_transfer_queue.py -v`
 Expected: FAIL（旧实现 CAS 先置 done）
 
-- [ ] **Step 3: 实现单语句原子取件**
+- [x] **Step 3: 实现单语句原子取件**
 
 `_fetch_from_task_queue` 改为：对候选 rows（保留 L1298-1316 的 NOT EXISTS 预筛），对每行执行：
 
@@ -866,12 +866,12 @@ if res.rowcount == 1:
 
 说明：`INSERT ... SELECT ... WHERE NOT EXISTS` 在 SQLite 与 Postgres 均支持（design T6 边界）。条件内嵌 `TaskQueue.status='ready'` 保证源行未被并发取件；`NOT EXISTS` 保证同键无 DQ。影响行数 0 = 撞 UNIQUE 或源行已取 → 不置 done、保持 ready，由下轮或并发路径处理。不再需要 `begin_nested()` 保存点（单语句原子）。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `cd backend && python -m pytest tests/test_transfer_queue.py -v`
 Expected: PASS
 
-- [ ] **Step 5: 回归 + 提交**
+- [x] **Step 5: 回归 + 提交**
 
 Run: `cd backend && python -m pytest tests/test_fix_p0_recovery_cleanup_transfer.py tests/test_p1_fixes.py -q`
 Expected: PASS
@@ -881,7 +881,7 @@ git add backend/app/tasks/transfer.py backend/tests/test_transfer_queue.py
 git commit -m "fix(transfer): 取件与 DQ 创建改为单语句条件 INSERT 原子化"
 ```
 
-- [ ] **Step 6: 勾选 tasks.md 6.1**
+- [x] **Step 6: 勾选 tasks.md 6.1**
 
 ---
 
