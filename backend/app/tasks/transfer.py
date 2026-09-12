@@ -934,6 +934,16 @@ async def _commit_downloading(dq_id, media_id, episode, file_name, out_name, gid
             await aria2.client.remove(gid)
         except Exception as exc:  # noqa: BLE001
             logger.warning("[transfer] 清理孤儿 aria2 任务失败 %s: %s", gid, exc)
+        # design T5（fix-transfer-flow-reliability Task 8）：转存已落盘（且可能已被
+        # _get_link_wait_visible 改名）——冲突回滚后夸克文件成残留（无 downloading 行
+        # 指引后续清理），以 quark_path（final_quark_path）拆分调用 alist.remove
+        # best-effort 清理，失败仅告警不阻断（后续转存重试会重新 save/覆盖）。
+        try:
+            dir_part, names = _split_quark_path(quark_path)
+            if names:
+                await alist.remove(names, dir_part)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[transfer] 清理夸克残留失败 %s: %s", quark_path, exc)
         async with async_session() as s:
             await record_task_run(
                 s, "transfer", "error",
