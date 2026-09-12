@@ -423,6 +423,78 @@ def test_cancel_unknown_404(db, env):
 
 
 # ---------------------------------------------------------------------------
+# Task 7（fix-transfer-flow-reliability T4）：cancel/skip 终态后同事务回落 media 状态
+# ---------------------------------------------------------------------------
+
+async def _set_media_status(db, mid, status):
+    async with db() as s:
+        media = await s.get(Media, mid)
+        media.status = status
+        media.updated_at = _now()
+        await s.commit()
+
+
+def test_cancel_last_task_rolls_back_media_to_tracking(db, env):
+    """Task 7：取消 media 最后一个在途任务 → media.status 回落 tracking。
+
+    cancel 置 DQ failed 后同一事务调用 _sync_media_status：media 无任何
+    _ACTIVE_STATUSES 任务时条件回落 tracking（WHERE media.status='downloading'，
+    不覆盖用户 paused）。
+    """
+    mid = run(seed_media(db))
+    run(_set_media_status(db, mid, "downloading"))
+    dq_id = run(seed_dq(db, mid, status="downloading"))
+
+    async def _cancel():
+        async with db() as s:
+            return await queue_mod.cancel_task(task_id=dq_id, admin=_admin(), session=s)
+    assert run(_cancel()) == {"ok": True}
+
+    async def _media():
+        async with db() as s:
+            return await s.get(Media, mid)
+    assert run(_media()).status == "tracking"
+
+
+def test_skip_last_task_rolls_back_media_to_tracking(db, env):
+    """Task 7：跳过 media 最后一个在途任务 → media.status 回落 tracking。
+
+    skip 置 DQ skipped 后同一事务调用 _sync_media_status：无其他在途任务 → tracking。
+    """
+    mid = run(seed_media(db))
+    run(_set_media_status(db, mid, "downloading"))
+    dq_id = run(seed_dq(db, mid, status="downloading"))
+
+    async def _skip():
+        async with db() as s:
+            return await queue_mod.skip_task(task_id=dq_id, admin=_admin(), session=s)
+    assert run(_skip()) == {"ok": True}
+
+    async def _media():
+        async with db() as s:
+            return await s.get(Media, mid)
+    assert run(_media()).status == "tracking"
+
+
+def test_cancel_with_other_inflight_keeps_downloading(db, env):
+    """Task 7：media 仍有其他在途任务时取消 → media.status 保持 downloading。"""
+    mid = run(seed_media(db))
+    run(_set_media_status(db, mid, "downloading"))
+    dq_id = run(seed_dq(db, mid, episode="S01E01", status="downloading"))
+    run(seed_dq(db, mid, episode="S01E02", status="downloading"))  # 另一集在途
+
+    async def _cancel():
+        async with db() as s:
+            return await queue_mod.cancel_task(task_id=dq_id, admin=_admin(), session=s)
+    assert run(_cancel()) == {"ok": True}
+
+    async def _media():
+        async with db() as s:
+            return await s.get(Media, mid)
+    assert run(_media()).status == "downloading"
+
+
+# ---------------------------------------------------------------------------
 # prioritize / skip / sort（§8.2）
 # ---------------------------------------------------------------------------
 
