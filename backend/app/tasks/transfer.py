@@ -1105,12 +1105,17 @@ async def _try_admit_one(t0) -> str:
     原子性（§5.1「读 reserved + 记预留」）：
       - reserved 是 DB 实时聚合（无独立账本），「记预留」= CAS 抢占本身
         （pending→transferring 条件更新，原子）——同一任务绝不重复准入；
-      - 准入段（读 reserved → 容量 check → 抢占）由进程内 _admission_lock 串行化
+      - 准入段（P0-1/T1 三段式：短事务 A 取快照 → 锁外容量 check → 短事务 B
+        锁行 + 重读 reserved + 复判 + CAS）由进程内 _admission_lock 串行化
         （单 worker 部署可靠）；
-      - 事务级锁兜底：事务内先对 system_config 锁行做写（SQLite 单写者下即持
+      - 事务级锁兜底：事务 B 内先对 system_config 锁行做写（SQLite 单写者下即持
         排他写锁，等价 BEGIN IMMEDIATE）再 SELECT SUM——多进程下准入段也串行，
         读到的 reserved 恒为最新已提交 in-flight；Postgres 部署需预置锁行，
-        用 SELECT ... FOR UPDATE 同效（dialect 分支）。
+        用 SELECT ... FOR UPDATE 同效（dialect 分支）；
+      - 容量 check 在执行**无外层事务上下文**（短事务 A 已提交、事务 B 未开始），
+        网络 IO 与快照落库不再嵌套进事务；锁外 check 只是预判，事务 B 内重读
+        reserved 后以「usage 缓存快照 + reserved_新 + file_size ≤ quota」复判为
+        最终判定（不重复调 get_usage，避免事务内网络 IO 回潮）。
     """
     # 1) 取最早 pending（enqueued_at, id 排序 FIFO）+ 快照全字段（防重权威源 = download_queue）
     async with async_session() as s:
@@ -1137,6 +1142,9 @@ async def _try_admit_one(t0) -> str:
         download_name, quark_path = dq.download_name, dq.quark_path
         retry_snapshot = dq.retry_count or 0
         node_attempt_snapshot = dq.node_attempt or 0
+        # P0-1（T1）：reserved 快照与 pending 快照同一短事务读取（已提交值，
+        # detached），供锁外容量 check 预判（check 不再进入任何外层事务）。
+        reserved_snapshot = await _read_reserved_in_tx(s)
 
     # 2) L5 /quark 挂载预检（容量门槛之前；失败 → 该任务节点级失败计数，本批停止）
     preflight = await _preflight_quark_mount(
@@ -1145,88 +1153,124 @@ async def _try_admit_one(t0) -> str:
     if preflight is not None:
         return preflight
 
-    # 3) 准入原子段：读 reserved + 容量 check + CAS 抢占（fail-closed）
+    # 3) 准入原子段（P0-1/T1 三段式）：锁外容量 check（网络 IO + 快照落库脱离
+    #    外层事务上下文，杜绝事务内嵌套提交回潮）+ 短事务 B（锁行 + 重读 reserved
+    #    + 内存 usage 快照复判 + CAS 抢占 / 置 quota_wait），仍由 _admission_lock
+    #    串行化整段（锁外 check 只是预判，check 与 CAS 间的容量竞态由事务 B 内
+    #    重读 reserved + 复判兜底）。
     conflict = False
     capacity_error: Exception | None = None
     capacity_ok = True
+    final_capacity_ok = True
     quota_count = 0
     async with _admission_lock:
         now = _now()
-        async with async_session() as s:
-            async with s.begin():
-                # 事务级锁：SQLite 单写者下「先写锁行」触发排他写锁（等价 BEGIN
-                # IMMEDIATE）→ 本事务内 SELECT SUM 读到最新已提交 in-flight，准入
-                # 段跨进程串行化；PG 多 worker 用锁行 FOR UPDATE（需预置该行）。
-                try:
-                    if s.bind.dialect.name == "postgresql":
-                        await s.execute(
-                            select(SystemConfig)
-                            .where(SystemConfig.key == _ADMISSION_LOCK_KEY)
-                            .with_for_update()
-                        )
-                    else:
-                        await s.execute(
-                            update(SystemConfig)
-                            .where(SystemConfig.key == _ADMISSION_LOCK_KEY)
-                            .values(updated_at=now)
-                        )
-                except Exception as exc:  # noqa: BLE001  锁行不可用 → 退回 CAS 兜底
-                    logger.debug("[transfer] 准入锁行不可用（依赖 CAS 兜底）: %s", exc)
-                # 读 reserved（含本事务之前的已提交 in-flight；自身抢占后自动计入）
-                reserved = await _read_reserved_in_tx(s)
-                # 容量模型 B + reserved 聚合（§5.1）：used + reserved + 本集 + margin ≤ quota
-                try:
-                    capacity_ok = await capacity.provider.check(reserved + file_size)
-                except Exception as exc:  # noqa: BLE001  CapacityUnavailable → fail-closed
-                    capacity_error = exc
-                if capacity_error is not None:
-                    pass  # 事务无状态变更（锁行写无害），锁外告警
-                elif not capacity_ok:
-                    # 容量不足（议会验证 P1-1 落地）：置 quota_wait 幽灵态（§4.2）。
-                    # 条件更新 status='pending'→'quota_wait' + quota_reject_count++
-                    # （CAS 门控 rowcount 防并发）；quota_wait 后不再被取件命中
-                    # （取件只认 pending），由 _admit_batch 入口的「释放唤醒」统一唤醒。
-                    # wait_since 语义（P2-1 修复）：记录「首次进入等待」的起点——
-                    # COALESCE(现有值, now)：首次置 now，后续唤醒-置回循环保留原起点，
-                    # 使 >24h 告警基于真实持续等待时长触发（此前每轮清空/刷新永不达标）。
-                    # 准入成功（pending→transferring）时才清除 wait_since。
-                    # 绝不消耗 retry/node_attempt（§4.5）。
-                    r_q = await s.execute(
-                        update(DownloadQueue)
-                        .where(DownloadQueue.id == dq_id, DownloadQueue.status == "pending")
-                        .values(
-                            status="quota_wait",
-                            wait_since=func.coalesce(DownloadQueue.wait_since, now),
-                            quota_reject_count=DownloadQueue.quota_reject_count + 1,
-                            node_error="等待容量释放（已用+预留+本集超配额），置 quota_wait 排队（不消耗 node_attempt）",
-                            updated_at=now,
-                        )
-                    )
-                    if r_q.rowcount == 1:
-                        quota_count = (
-                            await s.scalar(
-                                select(DownloadQueue.quota_reject_count).where(DownloadQueue.id == dq_id)
+        # 3a) 锁外容量预判：check(reserved_snapshot + file_size)（reserved 快照来自
+        #     短事务 A，已提交值）；异常（CapacityUnavailable）→ fail-closed 锁外告警。
+        #     同时取 usage 快照供事务 B 复判——get_usage 走 30s 进程内缓存（check
+        #     内部复用同一缓存，不增加网络 IO 次数）；provider 缺 get_usage
+        #     （如测试 fake）或调用异常时 usage 缺失 → 复判退化为信任锁外 check。
+        usage_snap = None
+        try:
+            usage_snap = await capacity.provider.get_usage()
+        except Exception as exc:  # noqa: BLE001  复判参数不可用 → 以锁外 check 为准
+            logger.debug("[transfer] 容量复判参数不可用（依赖锁外 check 预判）: %s", exc)
+        try:
+            capacity_ok = await capacity.provider.check(reserved_snapshot + file_size)
+        except Exception as exc:  # noqa: BLE001  CapacityUnavailable → fail-closed
+            capacity_error = exc
+        if capacity_error is None:
+            # 3b) 短事务 B（写）：锁行 → 重读 reserved → 容量复判 → CAS/置 quota_wait
+            async with async_session() as s:
+                async with s.begin():
+                    # 事务级锁：SQLite 单写者下「先写锁行」触发排他写锁（等价 BEGIN
+                    # IMMEDIATE）→ 本事务内 SELECT SUM 读到最新已提交 in-flight，准入
+                    # 段跨进程串行化；PG 多 worker 用锁行 FOR UPDATE（需预置该行）。
+                    try:
+                        if s.bind.dialect.name == "postgresql":
+                            await s.execute(
+                                select(SystemConfig)
+                                .where(SystemConfig.key == _ADMISSION_LOCK_KEY)
+                                .with_for_update()
                             )
-                        ) or 0
-                else:
-                    # CAS 抢占：记预留 = 抢占本身（status→transferring 即计入 in-flight 聚合）
-                    # wait_since 清除（P2-1）：准入成功 = 等待结束，重置起点；
-                    # 唤醒/置回循环保留原起点仅让 >24h 告警覆盖真实持续等待
-                    r = await s.execute(
-                        update(DownloadQueue)
-                        .where(DownloadQueue.id == dq_id, DownloadQueue.status == "pending")
-                        .values(status="transferring", node_started_at=now,
-                                wait_since=None, updated_at=now)
-                    )
-                    if r.rowcount != 1:
-                        conflict = True  # 并发方已抢占（同一任务绝不被重复准入）
+                        else:
+                            await s.execute(
+                                update(SystemConfig)
+                                .where(SystemConfig.key == _ADMISSION_LOCK_KEY)
+                                .values(updated_at=now)
+                            )
+                    except Exception as exc:  # noqa: BLE001  锁行不可用 → 退回 CAS 兜底
+                        logger.debug("[transfer] 准入锁行不可用（依赖 CAS 兜底）: %s", exc)
+                    # 锁行后重读 reserved（读到最新已提交 in-flight；与锁外快照的
+                    # 差额由复判兜底——防多进程下 check 与 CAS 间的容量竞态）
+                    reserved_new = await _read_reserved_in_tx(s)
+                    if capacity_ok:
+                        # 容量复判（P0-1/T1 边界）：usage 缓存快照 + reserved_新 + 本集
+                        # ≤ quota（锁外 check 只是预判，此处为最终判定；**不重复调用
+                        # get_usage**，避免事务内网络 IO 回潮）
+                        recheck_ok = True
+                        if (
+                            usage_snap is not None
+                            and usage_snap.used_gb is not None
+                            and usage_snap.total_gb
+                        ):
+                            recheck_ok = (
+                                usage_snap.used_gb
+                                + (reserved_new + file_size) / (1024 ** 3)
+                                <= usage_snap.total_gb
+                            )
+                        if not recheck_ok:
+                            final_capacity_ok = False
                     else:
-                        # P3-6：media.status → downloading（条件更新不覆盖 paused）
-                        await s.execute(
-                            update(Media)
-                            .where(Media.id == media_id, Media.status == "tracking")
-                            .values(status="downloading", updated_at=now)
+                        final_capacity_ok = False
+                    if final_capacity_ok:
+                        # CAS 抢占：记预留 = 抢占本身（status→transferring 即计入
+                        # in-flight 聚合）；wait_since 清除（P2-1）：准入成功 = 等待
+                        # 结束，重置起点；唤醒/置回循环保留原起点仅让 >24h 告警覆盖
+                        # 真实持续等待
+                        r = await s.execute(
+                            update(DownloadQueue)
+                            .where(DownloadQueue.id == dq_id, DownloadQueue.status == "pending")
+                            .values(status="transferring", node_started_at=now,
+                                    wait_since=None, updated_at=now)
                         )
+                        if r.rowcount != 1:
+                            conflict = True  # 并发方已抢占（同一任务绝不被重复准入）
+                        else:
+                            # P3-6：media.status → downloading（条件更新不覆盖 paused）
+                            await s.execute(
+                                update(Media)
+                                .where(Media.id == media_id, Media.status == "tracking")
+                                .values(status="downloading", updated_at=now)
+                            )
+                    else:
+                        # 容量不足（锁外预判 False）或复判不满足（reserved 并发增大）：
+                        # 置 quota_wait 幽灵态（议会验证 P1-1 落地，§4.2）。
+                        # 条件更新 status='pending'→'quota_wait' + quota_reject_count++
+                        # （CAS 门控 rowcount 防并发）；quota_wait 后不再被取件命中
+                        # （取件只认 pending），由 _admit_batch 入口的「释放唤醒」统一唤醒。
+                        # wait_since 语义（P2-1 修复）：记录「首次进入等待」的起点——
+                        # COALESCE(现有值, now)：首次置 now，后续唤醒-置回循环保留原起点，
+                        # 使 >24h 告警基于真实持续等待时长触发（此前每轮清空/刷新永不达标）。
+                        # 准入成功（pending→transferring）时才清除 wait_since。
+                        # 绝不消耗 retry/node_attempt（§4.5）。
+                        r_q = await s.execute(
+                            update(DownloadQueue)
+                            .where(DownloadQueue.id == dq_id, DownloadQueue.status == "pending")
+                            .values(
+                                status="quota_wait",
+                                wait_since=func.coalesce(DownloadQueue.wait_since, now),
+                                quota_reject_count=DownloadQueue.quota_reject_count + 1,
+                                node_error="等待容量释放（已用+预留+本集超配额），置 quota_wait 排队（不消耗 node_attempt）",
+                                updated_at=now,
+                            )
+                        )
+                        if r_q.rowcount == 1:
+                            quota_count = (
+                                await s.scalar(
+                                    select(DownloadQueue.quota_reject_count).where(DownloadQueue.id == dq_id)
+                                )
+                            ) or 0
     if conflict:
         return "conflict"
     if capacity_error is not None:
@@ -1235,7 +1279,7 @@ async def _try_admit_one(t0) -> str:
             category="capacity", bucket="capacity",
         )
         return "capacity_unavailable"
-    if not capacity_ok:
+    if not final_capacity_ok:
         async with async_session() as s2:
             await record_task_run(
                 s2, "transfer", "skipped", f"容量不足等待释放: {file_name}", media_id,
