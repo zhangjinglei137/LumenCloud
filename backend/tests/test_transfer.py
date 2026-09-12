@@ -501,6 +501,9 @@ def test_save_success_commits_download(db, env, monkeypatch):
     assert uri == env["alist"].link
     assert kwargs["out"] == "测试剧 - S01E01 - 第 1 集.mkv"  # 落盘后按媒体信息生成
     assert kwargs["comment"] == "lumencloud:1:S01E01"
+    # T8.2：add_uri 显式携带覆盖/禁重命名 options（防同名自动重命名 → 落盘名失配必败重试）
+    assert kwargs["options"]["allow-overwrite"] == "true"
+    assert kwargs["options"]["auto-file-renaming"] == "false"
 
     dq = run(read_row(db, DownloadQueue, dq_id))
     assert dq.status == "downloading"

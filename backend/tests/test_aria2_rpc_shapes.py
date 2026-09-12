@@ -59,6 +59,41 @@ def test_add_uri_and_remove_params_shapes():
     assert p_rm == ["gid123"]
 
 
+def test_add_uri_options_merged_into_rpc_params():
+    """add_uri 传入 options → RPC params[1] 合并 allow-overwrite / auto-file-renaming。
+
+    背景（T8.2）：下载重试时若 aria2 默认自动重命名已存在同名文件（auto-file-renaming），
+    落盘名与 dq.download_name 失配 → 完成态校验/local_path 定位错位 → 必败重试。
+    要求每次 add_uri 显式携带 allow-overwrite=true + auto-file-renaming=false。
+    """
+    calls: list[tuple] = []
+
+    async def fake_rpc(method, params):
+        calls.append((method, params))
+        return "gid456"
+
+    client = Aria2Client()
+    client._rpc = fake_rpc  # 实例级覆盖，直达参数形态断言
+
+    asyncio.run(client.add_uri(
+        "http://example/x.mkv",
+        out="x.mkv",
+        comment="lumencloud:1:S01E01",
+        options={"allow-overwrite": "true", "auto-file-renaming": "false"},
+    ))
+
+    assert calls, "add_uri 应发起 RPC 调用"
+    method, params = calls[0]
+    assert method == "aria2.addUri"
+    assert params[0] == ["http://example/x.mkv"]  # 首参是 URI 数组
+    opts = params[1]
+    assert opts["out"] == "x.mkv"
+    assert opts["comment"] == "lumencloud:1:S01E01"
+    # 两个覆盖/禁重命名键必须进入 RPC wire 参数
+    assert opts["allow-overwrite"] == "true"
+    assert opts["auto-file-renaming"] == "false"
+
+
 # ---------------------------------------------------------------------------
 # token 前缀归一化回归（下载队列卡驻修复）
 # ---------------------------------------------------------------------------
