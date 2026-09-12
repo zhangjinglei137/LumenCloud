@@ -898,7 +898,7 @@ git commit -m "fix(transfer): 取件与 DQ 创建改为单语句条件 INSERT �
 
 **改造目标（design T7）**：`CapacityProvider` 新增 `invalidate_usage_cache()`；`_commit_downloading` 成功（返回 'admitted'）后调用——文件已落盘 downloading，立即使下一轮准入反映真实 used（downloading 仍不计 reserved，防双计）。
 
-- [ ] **Step 1: 追加测试（test_capacity.py）**
+- [x] **Step 1: 追加测试（test_capacity.py）**
 
 ```python
 async def test_invalidate_usage_cache_forces_recount(db, monkeypatch):
@@ -919,12 +919,12 @@ async def test_commit_downloading_invalidates_cache(db, monkeypatch):
     # 断言 provider.invalidate_usage_cache 被 await 一次（'admitted' 路径）
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cd backend && python -m pytest tests/test_capacity.py -v`
 Expected: FAIL（invalidate_usage_cache 不存在）
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 capacity.py `CapacityProvider` 增加：
 
@@ -944,19 +944,19 @@ except Exception as exc:  # noqa: BLE001  缓存失效失败不影响主流程
     logger.debug("[transfer] 容量缓存失效失败: %s", exc)
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `cd backend && python -m pytest tests/test_capacity.py -v`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add backend/app/services/capacity.py backend/app/tasks/transfer.py backend/tests/test_capacity.py
 git commit -m "fix(capacity): 转存提交后失效 used 缓存消除漏计窗口"
 ```
 
-- [ ] **Step 6: 勾选 tasks.md 7.1**
+- [x] **Step 6: 勾选 tasks.md 7.1**
 
 ---
 

@@ -27,7 +27,7 @@
 
 ## 7. P1-7 容量记账漏计窗口（capacity.py + transfer.py）
 
-- [ ] 7.1 `CapacityProvider` 新增 `invalidate_usage_cache()`，准入提交成功后调用失效 used 缓存，并验证新增测试覆盖「刚落盘 downloading 文件计入下一轮准入」
+- [x] 7.1 `CapacityProvider` 新增 `invalidate_usage_cache()`，准入提交成功后调用失效 used 缓存，并验证新增测试覆盖「刚落盘 downloading 文件计入下一轮准入」
 
 ## 8. P2 有界性修复
 
