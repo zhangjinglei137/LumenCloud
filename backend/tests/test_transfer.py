@@ -837,10 +837,17 @@ def test_link_wait_timeout_constant_and_default():
 # ---------------------------------------------------------------------------
 
 def test_link_timeout_clears_save_task_id_for_retry(db, env, monkeypatch):
-    """save 返回 task_id 但文件始终不落盘（get_link 持续失败超时）→ 失败重试路径清空。
+    """save 返回 task_id 但文件始终不落盘（get_link 持续失败超时）→ 失败重试路径。
 
-    P0-1 关键断言：失败回退后 DownloadQueue.save_task_id 被清空为 NULL——
-    下一轮重试会重新 save（打破「已受理即跳过 save」的盲等死循环到重试上限）。
+    T8.7 语义变更（fix-transfer-flow-reliability）：_node_failure 清 save_task_id
+    条件化——仅 status != 'transferring' 时清空。转存链失败发生在 transferring
+    （save 刚受理、save_attempt_at 新鲜），故保留 't1' 由下一轮直接等落盘（避免
+    重复转存）；「已受理未落盘」盲等死循环的 P0-1 安全网由 test_stale_save_attempt_
+    forces_resave（同文件）验证的 600s stale 强制 resave + 本路径 retry 上限 3
+    （转 failed）双重兜底，P0-1 意图未被稀释。
+    效率取舍（设计接受）：transferring 失败不清 → 下一轮会「跳过 save → 无谓
+    get_link 超时」多耗一轮，第二轮失败后 status 才转 pending（后续若非 transferring
+    状态失败即清空，或 stale 超时强制 resave，或 retry 达上限转 failed）。
 
     同时验证超时诊断：抛错前会列 /quark 目录记录实际内容；异常消息含 folderId
     与 alist 管理 API /api/admin/storage/list 核对提示。
@@ -859,12 +866,14 @@ def test_link_timeout_clears_save_task_id_for_retry(db, env, monkeypatch):
 
     env["alist"].get_link = always_fail
 
-    # 第一轮：save 受理并把 task_id 落库 → get_link 超时 → 失败回退 + 清空 save_task_id
+    # 第一轮：save 受理并把 task_id 落库 → get_link 超时 → 失败回退。
+    # T8.7 关键断言：transferring 状态下失败**不清** save_task_id（保留 't1'）——
+    # transferring 说明 save 刚受理，保留由下轮直接等落盘，避免重复转存。
     run(transfer_mod.process_transfer_queue())
     dq = run(read_row(db, DownloadQueue, dq_id))
     assert len(env["cloudsaver"].save_calls) == 1
     assert dq.status == "pending"
-    assert dq.save_task_id is None                    # 关键：失败重试路径清空幂等标记
+    assert dq.save_task_id == "t1"                    # T8.7：transferring 失败不清 save_task_id
     assert dq.retry_count == 1
     assert dq.node_attempt == 1
     assert dq.error is not None
@@ -872,11 +881,14 @@ def test_link_timeout_clears_save_task_id_for_retry(db, env, monkeypatch):
     assert "/api/admin/storage/list" in dq.error      # 含配置核对提示
     assert env["alist"].list_dir_calls == ["/quark"]  # 抛错前列目录（诊断）
 
-    # 第二轮：save_task_id 已清空 → 重新 save（防死循环的核心行为，而非跳过 save 盲等）
+    # 第二轮：save_task_id='t1' 仍存在且 save_attempt_at 未超 600s（stale 兜底不触发）
+    # → 幂等跳过 save（save_calls 仍为 1）→ get_link 又超时 → 转存链失败时状态仍为
+    # transferring → save_task_id 继续保留；仅非 transferring 状态失败 / stale 超时
+    # 强制 resave / retry 达上限转 failed 时才会清空或终结（防盲等安全网见 docstring）。
     run(transfer_mod.process_transfer_queue())
     dq = run(read_row(db, DownloadQueue, dq_id))
-    assert len(env["cloudsaver"].save_calls) == 2
-    assert dq.save_task_id is None
+    assert len(env["cloudsaver"].save_calls) == 1     # 跳过 save（幂等，未 stale）
+    assert dq.save_task_id == "t1"                    # transferring 失败继续保留
     assert dq.retry_count == 2
 
 
