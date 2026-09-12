@@ -1407,17 +1407,21 @@ async def _fetch_from_task_queue(num: int = 10) -> int:
             if not rows:
                 return 0
             for r in rows:
-                # Minor#2：ready 行凭据本应完整（enqueue 探测收集），兜底真实触发
-                # 即数据缺陷，告警留痕便于排查。
-                file_name = r.file_name or ""
-                file_size = r.file_size or 0
-                share_code = r.share_code or ""
-                if not (r.file_name and r.file_size and r.share_code):
-                    logger.warning(
-                        "[transfer] task_queue id=%s media=%s episode=%s 凭据快照不完整"
-                        "（file_name/file_size/share_code 缺失），按空值兜底拷贝",
-                        r.id, r.media_id, r.episode,
+                # T8.6（Task 16）：取件凭据完整性校验——ready 行凭据本应完整
+                # （enqueue 探测收集），缺失即数据缺陷；不完整 → 不建注定失败的
+                # DQ：保持源行 ready（不置 done、不建 DQ），_record_alert 告警留痕，
+                # 由下轮重试或上游探测路径补全凭据。校验在前，不完整行根本不进入
+                # 下方单语句 INSERT；SQL 层 coalesce 兜底（from_select 的 NOT NULL
+                # 目标列）仅保证落库类型合法，不代表凭据可转存。
+                if not (r.file_name and (r.file_size or 0) > 0 and r.share_code):
+                    await _record_alert(
+                        r.media_id,
+                        f"task_queue id={r.id} media={r.media_id} episode={r.episode} "
+                        f"转存凭据不完整（file_name/file_size/share_code 缺失），"
+                        f"保持 ready 不建注定失败的 DQ",
+                        category="transfer",
                     )
+                    continue  # 不置 done、不建 DQ；下轮重试（或由上游探测路径补全凭据）
                 # T6 原子化：单语句条件 INSERT（INSERT...SELECT...WHERE NOT EXISTS）在
                 # 同一条语句内完成「源行 status='ready' 校验 + 同键 NOT EXISTS 排除 +
                 # DQ 创建」——影响行数 1 → 同事务置源行 done；影响行数 0（撞 UNIQUE=
