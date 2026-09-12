@@ -12,7 +12,9 @@ fixture/模式参照 test_transfer.py 既有体系：独立 in-memory SQLite（S
 连接），不连任何真实外部服务/数据库。
 """
 import asyncio
+import types
 from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import Select, insert, select, update
@@ -106,6 +108,11 @@ async def seed_dq(db, mid, *, episode="S01E01", status="pending", task_queue_id=
 async def read_tq(db, tq_id):
     async with db() as s:
         return await s.get(TaskQueue, tq_id)
+
+
+async def read_dq(db, dq_id):
+    async with db() as s:
+        return await s.get(DownloadQueue, dq_id)
 
 
 async def count_dq(db, *, media_id=None):
@@ -217,3 +224,72 @@ def test_fetch_generates_pending_and_done_fifo(db, monkeypatch, transfer_env):
     # 幂等：二次取件无新行、无新状态变更
     assert run(transfer_mod._fetch_from_task_queue()) == 0
     assert run(count_dq(db, media_id=mid)) == 2
+
+
+# ---------------------------------------------------------------------------
+# T8.5：quota_wait 唤醒后容量预查（design §T8.5，Task 15）
+# ---------------------------------------------------------------------------
+
+def test_quota_wake_with_zero_room_skips_admission_loop(db, monkeypatch, transfer_env):
+    """T8.5 主路径：唤醒 quota_wait 后容量余量=0 → 不进入准入循环。
+
+    预置 quota_wait 行；mock capacity.provider.get_usage 返回 used_gb == quota_gb
+    （余量 0）。_admit_batch 唤醒 quota_wait→pending 后容量预查直接 return——不再
+    走取件之后的 GID 校验 / 准入循环。旧实现会进准入循环把刚唤醒的 pending 行逐
+    个容量 check 拒绝再置回 quota_wait：N×UPDATE + 容量查询的写放大（T8.5 优化目标）。
+
+    RED（无预查）：_try_admit_one 被调用 ≥1 次（call_count 断言失败）；
+    GREEN（有预查）：_try_admit_one 调用 0 次，quota_wait 行被唤醒后保持 pending。
+    """
+    mid = run(seed_media(db))
+    dq_id = run(seed_dq(db, mid, status="quota_wait"))
+
+    # 容量余量 = 0：used_gb == quota_gb（margin 0）
+    provider = types.SimpleNamespace(
+        get_usage=AsyncMock(return_value=types.SimpleNamespace(
+            total_gb=100.0, used_gb=100.0, source="alist")),
+        _load_quota_gb=AsyncMock(return_value=100.0),
+        _load_margin_gb=AsyncMock(return_value=0.0),
+    )
+    monkeypatch.setattr(transfer_mod, "capacity", types.SimpleNamespace(provider=provider))
+    # RED 路径需让 GID 校验通过（空活动队列）→ 才能走到准入循环证明旧行为
+    monkeypatch.setattr(transfer_mod, "aria2", types.SimpleNamespace(
+        client=types.SimpleNamespace(tell_active=AsyncMock(return_value=[])),
+    ))
+    try_admit = AsyncMock(return_value="no_pending")
+    monkeypatch.setattr(transfer_mod, "_try_admit_one", try_admit)
+
+    run(transfer_mod._admit_batch())
+
+    # 余量 0 → 唤醒后直接返回，不进入准入循环
+    assert try_admit.call_count == 0
+    # 唤醒段已把 quota_wait → pending；未进准入循环 → 保持 pending（不回 quota_wait）
+    assert run(read_dq(db, dq_id)).status == "pending"
+
+
+def test_quota_wake_precheck_failure_falls_back_to_admission_loop(db, monkeypatch, transfer_env):
+    """T8.5 失败兜底：容量预查异常 → 不阻断，由准入循环 fail-closed 兜底。
+
+    预查是优化不是新硬门：get_usage 抛异常时不得 return——仍进准入循环
+    （_try_admit_one 被调用），与改造前行为一致（容量不可用由 _try_admit_one 内
+    的 fail-closed 语义处理：保持 pending + 告警）。
+    """
+    mid = run(seed_media(db))
+    run(seed_dq(db, mid, status="quota_wait"))
+
+    provider = types.SimpleNamespace(
+        get_usage=AsyncMock(side_effect=RuntimeError("alist 不可用")),
+        _load_quota_gb=AsyncMock(return_value=100.0),
+        _load_margin_gb=AsyncMock(return_value=0.0),
+    )
+    monkeypatch.setattr(transfer_mod, "capacity", types.SimpleNamespace(provider=provider))
+    monkeypatch.setattr(transfer_mod, "aria2", types.SimpleNamespace(
+        client=types.SimpleNamespace(tell_active=AsyncMock(return_value=[])),
+    ))
+    try_admit = AsyncMock(return_value="no_pending")
+    monkeypatch.setattr(transfer_mod, "_try_admit_one", try_admit)
+
+    run(transfer_mod._admit_batch())
+
+    # 预查失败不阻断 → 准入循环仍被调用（fail-closed 语义在 _try_admit_one 内兜底）
+    assert try_admit.call_count >= 1
