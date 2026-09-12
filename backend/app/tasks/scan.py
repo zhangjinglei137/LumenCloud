@@ -1224,9 +1224,12 @@ async def _enqueue(media_id: int, episode_key: str, file_name: str, file_size: i
     share-list 不返回单文件 size，_walk_share 估算后置标记）。取件/promote 全链路
     拷贝该标记，下载完成用 aria2 totalLength 回填真实大小后清除（Task 2）。
 
-    幂等：事务内先查 task_queue 同键记录，命中则跳过；写入撞
-    UNIQUE(media_id, episode) 则捕获 IntegrityError 判定为并发冲突。
-    返回 'enqueued' / 'existing' / 'conflict'。
+    幂等：事务内先查 task_queue 同键记录，命中则跳过；再查同 media 同 file_name
+    记录（跨键防重，2026-09 重复下载事故修复：Emby 收录状态变化导致同一物理文件
+    在两轮巡检产生不同防重键——全量模式文件名键 vs 标准模式 SxxExx 键——绕过
+    UNIQUE(media_id, episode) 重复入队；同一文件无论以哪种键入队，第二次一律
+    existing）；写入撞 UNIQUE(media_id, episode) 则捕获 IntegrityError 判定为
+    并发冲突。返回 'enqueued' / 'existing' / 'conflict'。
     """
     async with async_session() as tx:
         async with tx.begin():
@@ -1239,6 +1242,19 @@ async def _enqueue(media_id: int, episode_key: str, file_name: str, file_size: i
                 )
             ).first()
             if has:
+                return "existing"
+
+            # 跨键防重：同 media 下已有同 file_name 记录 → 视为已存在（同一物理文件，
+            # 无论此前以文件名键还是 SxxExx 键入队，均不重复入队）。
+            has_file = (
+                await tx.execute(
+                    select(TaskQueue.id).where(
+                        TaskQueue.media_id == media_id,
+                        TaskQueue.file_name == file_name,
+                    )
+                )
+            ).first()
+            if has_file:
                 return "existing"
 
             tx.add(TaskQueue(
