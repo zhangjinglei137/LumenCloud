@@ -744,6 +744,69 @@ def test_gid_whitelist_includes_non_downloading_rows(db, env, monkeypatch):
     record_alert.assert_not_awaited()
 
 
+def test_unknown_gid_removed_after_three_strikes(db, env, monkeypatch):
+    """孤儿 gid 连续 3 轮未命中白名单 → 触发 aria2.remove + 告警，仍跳过本轮；移除后自动恢复。
+
+    design T2 哨兵（fix-transfer-flow-reliability Task 4）：白名单未命中（不在 DB
+    任何行）的 aria2 活动任务每轮 strikes += 1；连续 _GID_STRIKE_LIMIT(3) 轮 →
+    best-effort aria2.remove + 告警并清计数；此后 actives 不再含该 gid → 下一轮
+    自动恢复转存（孤儿 gid 不再永久阻断转存，解除自锁）。
+    """
+    patch_db(monkeypatch, db)
+    run(seed_pending(db))
+    env["aria2"].actives = [{"gid": "orphan-gid", "status": "active"}]
+    # 骨架修正（Task 3 同款）：取件与准入循环短路，聚焦 GID 校验段的哨兵行为
+    monkeypatch.setattr(transfer_mod, "_fetch_from_task_queue", AsyncMock(return_value=0))
+    try_admit_one = AsyncMock(return_value="no_pending")
+    monkeypatch.setattr(transfer_mod, "_try_admit_one", try_admit_one)
+    record_alert = AsyncMock()
+    monkeypatch.setattr(transfer_mod, "_record_alert", record_alert)
+    # conftest 只清 _alert_cooldown，不涉及哨兵计数 dict（模块级共享状态）——用例内自行清空
+    transfer_mod._unknown_gid_strikes.clear()
+
+    for _ in range(2):
+        run(transfer_mod._admit_batch())
+    # 前两轮：计数未到 3 → 仅告警 + 跳过本轮（fail-closed 拦截保持：不 remove、不进准入）
+    assert env["aria2"].removed == []
+    try_admit_one.assert_not_awaited()
+    assert record_alert.await_count == 2
+
+    run(transfer_mod._admit_batch())
+    # 第 3 轮：触发一次 best-effort remove + 告警 + 清计数，仍跳过本轮
+    assert env["aria2"].removed == ["orphan-gid"]
+    assert "orphan-gid" not in transfer_mod._unknown_gid_strikes
+    try_admit_one.assert_not_awaited()
+    assert record_alert.await_count == 3
+
+    # 清理成功后（actives 不再含孤儿 gid）下一轮自动恢复转存
+    env["aria2"].actives = []
+    run(transfer_mod._admit_batch())
+    try_admit_one.assert_awaited_once()
+
+
+def test_known_gid_never_strikes(db, env, monkeypatch):
+    """在库 gid（含非 downloading 行）不进入哨兵计数：命中白名单 → 计数清零，不告警不拦截。"""
+    patch_db(monkeypatch, db)
+    run(seed_downloading(db, gid="in-db-gid", file_name="已知剧集.mkv"))
+    run(seed_pending(db))
+    env["aria2"].actives = [{"gid": "in-db-gid", "status": "active"}]
+    monkeypatch.setattr(transfer_mod, "_fetch_from_task_queue", AsyncMock(return_value=0))
+    try_admit_one = AsyncMock(return_value="no_pending")
+    monkeypatch.setattr(transfer_mod, "_try_admit_one", try_admit_one)
+    record_alert = AsyncMock()
+    monkeypatch.setattr(transfer_mod, "_record_alert", record_alert)
+    transfer_mod._unknown_gid_strikes.clear()
+    transfer_mod._unknown_gid_strikes["in-db-gid"] = 2  # 预置残留计数 → 命中白名单应清零
+
+    for _ in range(5):
+        run(transfer_mod._admit_batch())
+
+    assert env["aria2"].removed == []                       # 从未触发 remove
+    record_alert.assert_not_awaited()                      # 从未告警
+    assert "in-db-gid" not in transfer_mod._unknown_gid_strikes  # 白名单命中清零
+    assert try_admit_one.await_count == 5                  # 每轮均进入准入循环（不拦截）
+
+
 def test_no_pending_is_skipped(db, env, monkeypatch):
     """空队列 → 不写 task_run（空跑静默），无副作用。"""
     patch_db(monkeypatch, db)
