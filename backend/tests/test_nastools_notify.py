@@ -7,6 +7,8 @@
 - transfer.finished → 推进该 media 的 scrape→library + 触发 library_check（fire-and-forget）
 - transfer.fail / download.fail → flow_error 通知
 - 其它事件 → 200 忽略
+- nastools_sync 失败通知节流（design T8.4）：同一失败在节流窗口内只 notify 一次，
+  task_run(error) 每次记录；窗口流逝后可再通知；notify 失败不阻断主流程。
 
 测试方式：仅挂载 nastools_notify.router 的最小 FastAPI app（无 lifespan），
 TestClient 走真实 HTTP 层。DB 相关路径用 monkeypatch 替换模块内 async_session 为
@@ -28,9 +30,10 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import Base
 import app.models  # noqa: F401  注册全部 ORM 模型
-from app.models import DownloadQueue, Media
+from app.models import DownloadQueue, Media, TaskRun
 import app.routers.nastools_notify as nn_mod
 import app.tasks.library_check as lc_mod  # trigger_emby_refresh 的宿主模块（monkeypatch 用）
+import app.tasks.nastools_sync as ns_mod  # nastools_sync 失败通知节流（design T8.4）
 
 _TOKEN = "test-nastools-token-0123456789abcdef"
 _ENDPOINT = "/internal/nastools/notify"
@@ -523,3 +526,111 @@ def test_advance_resets_node_fields(db, monkeypatch):
 @pytest.fixture()
 def dbless_client(monkeypatch):
     return make_client(_TOKEN, monkeypatch)
+
+
+# ---------------------------------------------------------------------------
+# nastools_sync 失败通知节流（design T8.4：复用 transfer._alert_cooldown 模式）
+# ---------------------------------------------------------------------------
+
+def _reset_sync_alert_cooldown():
+    """防跨用例污染：模块级节流表是进程级共享状态，每用例开头自行清空。"""
+    table = getattr(ns_mod, "_sync_alert_cooldown", None)
+    if table is not None:
+        table.clear()
+
+
+async def _read_task_run_records(db):
+    """读取全部 task_run → [(task_type, status)]（断言 task_run 记录保留）。"""
+    async with db() as s:
+        rows = (
+            await s.execute(select(TaskRun).order_by(TaskRun.id))
+        ).scalars().all()
+        return [(r.task_type, r.status) for r in rows]
+
+
+def _make_nastools_fail_env(db, monkeypatch, *, notify_fail=False):
+    """构造 nastools_sync 失败环境：login 抛错（失败发生在 sleep(30) 之前，测试快）。
+
+    返回 AsyncMock notify（notify_fail=True 时改为同步抛异常的普通函数，模拟
+    PushPlus 不可达——验证「通知失败不阻断主流程」）。
+    """
+    monkeypatch.setattr(
+        ns_mod.nastools.client, "login",
+        AsyncMock(side_effect=RuntimeError("NasTools 服务不可用（模拟）")),
+    )
+    monkeypatch.setattr(ns_mod.nastools.client, "restart", AsyncMock())
+    monkeypatch.setattr(
+        ns_mod.nastools.client, "run_directory_sync", AsyncMock(return_value={}),
+    )
+    if notify_fail:
+        def _boom(event):
+            raise ConnectionError("PushPlus 不可达（模拟）")
+
+        monkeypatch.setattr(ns_mod.notifier, "notify", _boom)
+        return None
+    notify = AsyncMock()
+    monkeypatch.setattr(ns_mod.notifier, "notify", notify)
+    return notify
+
+
+def test_nastools_sync_failure_notify_throttled(db, monkeypatch):
+    """同一失败类别在节流窗口（600s）内只 notify 一次；task_run(error) 每次记录。
+
+    design T8.4：nastools_sync 失败通知复用 transfer._alert_cooldown 模式——
+    窗口内同指纹重复失败跳过 notifier.notify（防兜底 job/事件重复触发刷屏），
+    task_run(error) 记录保留（每次失败都入库）。
+    """
+    _reset_sync_alert_cooldown()
+    notify = _make_nastools_fail_env(db, monkeypatch)
+    monkeypatch.setattr(ns_mod, "async_session", db)
+
+    run(ns_mod.nastools_sync())
+    run(ns_mod.nastools_sync())
+
+    # 第二次失败与首次同指纹且在窗口内 → notify 被节流跳过（只通知一次）
+    assert notify.await_count == 1
+    # task_run(error) 每次失败都记录（2 条）
+    runs = run(_read_task_run_records(db))
+    assert runs.count(("sync_nastools", "error")) == 2
+
+
+def test_nastools_sync_failure_notify_after_window_elapses(db, monkeypatch):
+    """节流窗口流逝（>600s）后，同一失败类别可再次通知。"""
+    _reset_sync_alert_cooldown()
+    notify = _make_nastools_fail_env(db, monkeypatch)
+    monkeypatch.setattr(ns_mod, "async_session", db)
+
+    run(ns_mod.nastools_sync())
+    run(ns_mod.nastools_sync())
+    # 窗口内第二次重复失败 → 被节流（仍只通知一次）
+    assert notify.await_count == 1
+
+    # 模拟窗口流逝：把节流表时间戳回拨超过 _ALERT_COOLDOWN_SECONDS
+    table = getattr(ns_mod, "_sync_alert_cooldown", {})
+    window = getattr(ns_mod, "_ALERT_COOLDOWN_SECONDS", 600.0)
+    for key in list(table):
+        ts, bucket = table[key]
+        table[key] = (ts - window - 1, bucket)
+
+    run(ns_mod.nastools_sync())
+    # 窗口流逝后同指纹失败 → 重新通知
+    assert notify.await_count == 2
+
+
+def test_nastools_sync_notify_failure_does_not_block_flow(db, monkeypatch):
+    """notifier.notify 失败不阻断主流程：task_run(error) 仍记录，force 路径仍 re-raise。
+
+    协调者裁定 5：notify 属 best-effort 通知，失败不得吞掉 task_run 记录与
+    force 路径向上暴露异常的语义（刮削执行器依赖异常感知失败推进 node_attempt）。
+    """
+    _reset_sync_alert_cooldown()
+    _make_nastools_fail_env(db, monkeypatch, notify_fail=True)
+    monkeypatch.setattr(ns_mod, "async_session", db)
+
+    # force=True（刮削执行器专用）：失败必须向上 re-raise，而非被 notify 异常替换
+    with pytest.raises(RuntimeError, match="NasTools 服务不可用"):
+        run(ns_mod.nastools_sync(force=True))
+
+    # task_run(error) 记录保留（notify 失败不影响）
+    runs = run(_read_task_run_records(db))
+    assert ("sync_nastools", "error") in runs
