@@ -1,0 +1,3 @@
+schema: spec-driven
+created: 2026-09-12
+goal: 恢复巡检按 per-media scan_interval_minutes 到期过滤调度（方案 a）
