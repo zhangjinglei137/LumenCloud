@@ -1552,6 +1552,26 @@ async def _admit_batch() -> None:
             category="capacity", bucket="capacity",
         )
 
+    # T8.5 容量预查（fix-transfer-flow-reliability Task 15）：唤醒 quota_wait 后先查
+    # 容量余量，余量 ≤ 0 直接返回——不进入后续取件/GID 校验/准入循环。旧行为会在
+    # 准入循环内对每行做容量 check、拒绝后置回 quota_wait：N×UPDATE + 容量查询的
+    # 写放大（容量已满时每轮白做）。预查是优化不是新硬门：容量不可用（异常）→
+    # 不 return，由准入循环内的 fail-closed 语义兜底（_try_admit_one 容量 check
+    # 失败 → 保持 pending + 告警，见 _try_admit_one capacity_unavailable 分支）。
+    try:
+        usage = await capacity.provider.get_usage()
+        quota_gb = await capacity.provider._load_quota_gb()
+        margin_gb = await capacity.provider._load_margin_gb(quota_gb)
+        if usage.used_gb is None:
+            # 同 capacity.check 的 fail-closed：无 used_gb 视为容量不可用 → 交给准入循环兜底
+            raise capacity.CapacityUnavailable("get_usage 返回 used_gb=None（预查视为容量不可用）")
+        remaining_gb = max(0.0, quota_gb - usage.used_gb - margin_gb)
+        if remaining_gb <= 0:
+            logger.info("[transfer] 容量余量不足（%.2fG），唤醒后直接返回不进入准入循环", remaining_gb)
+            return
+    except Exception as exc:  # noqa: BLE001  容量不可用 → 交给准入循环 fail-closed 处理
+        logger.debug("[transfer] 唤醒后容量预查失败（由准入循环 fail-closed 兜底）: %s", exc)
+
     # 1) 取件 → pending（queue-flow-rework Task 4，阶段 1 前置）：TaskQueue(ready)
     #    按 (created_at, id) FIFO 生成 DownloadQueue(pending)，源行同事务置 done
     #    （防重复取件）。先取件再查 pending：ready 任务先转 pending 再走准入——
