@@ -12,6 +12,7 @@ fixture/模式参照 test_transfer.py 既有体系：独立 in-memory SQLite（S
 连接），不连任何真实外部服务/数据库。
 """
 import asyncio
+import time as _time
 import types
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
@@ -340,3 +341,131 @@ def test_fetch_incomplete_credentials_keeps_source_ready(
     alert_call = alert.await_args
     assert alert_call is not None
     assert alert_call.kwargs.get("category") == "transfer"
+
+
+# ---------------------------------------------------------------------------
+# T8.7：save_task_id 条件化清理（design §T8.7，Task 17）
+# ---------------------------------------------------------------------------
+
+async def seed_dq_failure(db, mid, *, status, save_task_id=None, save_attempt_at=None,
+                          retry_count=0, node_attempt=0):
+    """预置 _node_failure 条件化清理测试用 DownloadQueue 行（显式计数，CAS 快照可控）。"""
+    async with db() as s:
+        dq = DownloadQueue(
+            media_id=mid, episode="S01E01", task_queue_id=None,
+            file_name="ep.mkv", file_size=1024, share_code="DqAaBbCcDdEe",
+            pwd_id="pwd", stoken="st", receive_code="rc", fids="[]",
+            fid_tokens="[]", folder_id="fd", status=status,
+            save_task_id=save_task_id, save_attempt_at=save_attempt_at,
+            retry_count=retry_count, node_attempt=node_attempt,
+            enqueued_at=_now(), updated_at=_now(),
+        )
+        s.add(dq)
+        await s.flush()
+        await s.commit()
+        return dq.id
+
+
+def test_node_failure_keeps_save_id_when_transferring(db, monkeypatch, transfer_env):
+    """T8.7 主路径：并发方已将行置 transferring 并新 save（save_task_id='new-save'）
+    → _node_failure(clear_save=True) 不得抹掉该新 task_id（否则下一轮跳过 save 重复转存）。
+
+    构造：转移链失败时序下，另一条 save 提交路径先行落库（WHERE status='transferring'，
+    不改 retry_count/node_attempt），随后的 _node_failure 主 UPDATE CAS 仍命中——
+    无条件清空会抹掉 'new-save'（RED）；条件化后保留（GREEN）。
+    """
+    mid = run(seed_media(db))
+    dq_id = run(seed_dq_failure(
+        db, mid, status="transferring",
+        save_task_id="new-save", save_attempt_at=_now(),
+        retry_count=0, node_attempt=0,
+    ))
+
+    out = run(transfer_mod._node_failure(
+        dq_id, mid, "S01E01", "ep.mkv", 0, 0, "转存失败: 模拟直链超时",
+        clear_save=True, t0=_time.monotonic(),
+    ))
+
+    assert out == "retry"                  # 非终态回退语义不变
+    dq = run(read_dq(db, dq_id))
+    assert dq.save_task_id == "new-save"   # 关键：并发新 save 不被无条件清空
+    assert dq.save_attempt_at is not None
+    # 回退动作照常执行（仅清空被条件化）
+    assert dq.status == "pending"
+    assert dq.node_attempt == 1
+    assert dq.retry_count == 1
+
+
+def test_node_failure_clears_save_id_when_not_transferring(db, monkeypatch, transfer_env):
+    """T8.7 对照：非 transferring（无并发新 save，如孤立的旧 save_task_id）
+    → _node_failure(clear_save=True) 正常清空，保持 P0-1 防盲等语义。"""
+    mid = run(seed_media(db))
+    dq_id = run(seed_dq_failure(
+        db, mid, status="pending",
+        save_task_id="old-save", save_attempt_at=_now(),
+        retry_count=0, node_attempt=0,
+    ))
+
+    out = run(transfer_mod._node_failure(
+        dq_id, mid, "S01E01", "ep.mkv", 0, 0, "模拟失败",
+        clear_save=True, t0=_time.monotonic(),
+    ))
+
+    assert out == "retry"
+    dq = run(read_dq(db, dq_id))
+    assert dq.save_task_id is None         # 非 transferring 正常清空
+    assert dq.save_attempt_at is None
+    assert dq.status == "pending"
+    assert dq.node_attempt == 1
+
+
+def test_node_failure_cas_conflict_keeps_save_id_when_transferring(
+    db, monkeypatch, transfer_env
+):
+    """T8.7 CAS 冲突兜底分支：主 UPDATE rowcount=0（并发方已推进计数）走兜底 UPDATE
+    → 行仍 transferring 且已新 save 时，兜底分支同样不得抹掉 'new-save'。
+
+    构造：预置 retry_count/node_attempt=5，快照传 0,0 → 主 UPDATE CAS 不命中 → 兜底
+    分支执行。旧实现兜底无条件清空（RED）；条件化后保留（GREEN）。
+    """
+    mid = run(seed_media(db))
+    dq_id = run(seed_dq_failure(
+        db, mid, status="transferring",
+        save_task_id="new-save", save_attempt_at=_now(),
+        retry_count=5, node_attempt=5,
+    ))
+
+    out = run(transfer_mod._node_failure(
+        dq_id, mid, "S01E01", "ep.mkv", 0, 0, "转存失败: 模拟",
+        clear_save=True, t0=_time.monotonic(),
+    ))
+
+    assert out == "retry"                  # CAS 冲突分支返回语义不变
+    dq = run(read_dq(db, dq_id))
+    assert dq.save_task_id == "new-save"   # 兜底分支同样条件化保留
+    assert dq.save_attempt_at is not None
+    # CAS 冲突语义：不计数、不转移状态
+    assert dq.retry_count == 5 and dq.node_attempt == 5
+    assert dq.status == "transferring"
+
+
+def test_node_failure_cas_conflict_clears_save_id_when_not_transferring(
+    db, monkeypatch, transfer_env
+):
+    """T8.7 CAS 冲突兜底分支对照：非 transferring 时兜底分支仍正常清空（P0-1 防盲等）。"""
+    mid = run(seed_media(db))
+    dq_id = run(seed_dq_failure(
+        db, mid, status="quota_wait",
+        save_task_id="old-save", save_attempt_at=_now(),
+        retry_count=5, node_attempt=5,
+    ))
+
+    out = run(transfer_mod._node_failure(
+        dq_id, mid, "S01E01", "ep.mkv", 0, 0, "模拟失败",
+        clear_save=True, t0=_time.monotonic(),
+    ))
+
+    assert out == "retry"
+    dq = run(read_dq(db, dq_id))
+    assert dq.save_task_id is None         # 兜底分支非 transferring 清空
+    assert dq.save_attempt_at is None
