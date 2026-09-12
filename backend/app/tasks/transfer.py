@@ -965,6 +965,14 @@ async def _commit_downloading(dq_id, media_id, episode, file_name, out_name, gid
         ))
     except Exception as exc:  # noqa: BLE001
         logger.warning("[transfer] download_started 通知失败（不阻断主流程）: %s", exc)
+
+    # design T7（fix-transfer-flow-reliability Task 10）：转存提交成功（文件已落盘
+    # downloading）→ 立即使 30s 进程内 used 缓存失效，下一轮准入 re-count 反映真实
+    # used（downloading 仍不计 reserved，防双计，消除容量记账漏计窗口）。
+    try:
+        capacity.provider.invalidate_usage_cache()
+    except Exception as exc:  # noqa: BLE001  缓存失效失败不影响主流程
+        logger.debug("[transfer] 容量缓存失效失败: %s", exc)
     return "admitted"
 
 

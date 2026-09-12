@@ -180,6 +180,17 @@ class CapacityProvider:
         self._usage_cached_at = time.monotonic()
         return snap
 
+    def invalidate_usage_cache(self) -> None:
+        """准入提交成功后使 used 缓存失效（downloading 落盘立即反映真实 used）。
+
+        design T7：转存提交成功（文件已落盘 downloading）后调用，立即使 30s 进程内
+        used 缓存失效——下一轮准入 get_usage 重新递归统计，used 覆盖 downloading，
+        不再等 TTL 到期（消除容量记账漏计窗口）。downloading 仍不计 reserved（防双计），
+        仅失效缓存，不改变 used 计算逻辑。缓存失效失败不影响主流程（调用方捕获告警）。
+        """
+        self._usage_cache = None
+        self._usage_cached_at = 0.0
+
     async def _total_used_bytes(self, root: str) -> tuple[float, bool]:
         """递归统计 root 下所有文件 size（字节）。
 
