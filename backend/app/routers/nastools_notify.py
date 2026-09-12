@@ -11,9 +11,13 @@
 - `transfer.fail` / `download.fail`：flow_error 通知（节流沿用）。
 - 其它事件：记录后忽略（返回 ok）。
 
-鉴权：静态 token（设计 §12.2，旧版插件 POST 不支持自定义 Header）：
-- query `?token=`（旧版插件 Webhook 地址带 token）
+鉴权：静态 token（T8.9 起仅 header 通道）：
 - header `X-NaSTools-Token` / `Authorization`（新版「消息通知→Webhook」渠道）
+- `?token=` query 通道已移除（2026-09-12 实施前核对：部署配置/docker-compose/
+  README/运维手册均无 query 通道依赖证据；token 经 URL query 传输会泄露到日志与
+  反向代理，属攻击面收窄。注意设计 §12.2 记载旧版 Webhook 插件 POST 不支持自定义
+  Header——若部署仍使用旧版插件，需升级到支持 Authorization Header 的新版
+  「消息通知→Webhook」渠道，否则 webhook 将 401）
 secret 来源：system_config `internal_nastools_webhook_token` 优先，env/settings
 `NASTOOLS_WEBHOOK_SECRET` fallback；未配置 → 503（fail-closed）。
 
@@ -76,10 +80,7 @@ async def _secret() -> Optional[str]:
 
 
 def _token_from_request(request: Request) -> Optional[str]:
-    """query `?token=` → header `X-NaSTools-Token` → header `Authorization`。"""
-    token = request.query_params.get("token")
-    if token:
-        return token
+    """header `X-NaSTools-Token` → header `Authorization`（T8.9 起仅 header 通道）。"""
     token = request.headers.get("X-NaSTools-Token")
     if token:
         return token
@@ -272,7 +273,7 @@ async def nastools_notify(request: Request) -> JSONResponse:
     """接收 NaSTools Webhook 事件推送（§12.3）。
 
     body: {"type": "<event_type>", "data": {...}}（旧版插件 POST 原文）
-    鉴权：query/header 静态 token；secret 未配置 503，不匹配 401。
+    鉴权：header 静态 token（仅 X-NaSTools-Token / Authorization）；secret 未配置 503，不匹配 401。
     """
     secret = await _secret()
     if not secret:
