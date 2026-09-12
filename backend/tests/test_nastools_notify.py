@@ -473,6 +473,52 @@ def test_webhook_transfer_finished_cannot_locate_still_polls(db, monkeypatch):
     assert triggered == [mid]
 
 
+def test_advance_resets_node_fields(db, monkeypatch):
+    """推进 scrape→library 时重置节点字段：node_attempt=0 / node_finished_at=now / node_error=None。
+
+    预置一条处于「失败态」的 scrape 行（node_attempt=2, node_error='旧错误'），
+    调用 _advance_scrape_to_library 推进后断言：status='library'、node_attempt=0、
+    node_finished_at 非空、node_error is None（重试计数归零、失败诊断清空）。
+    """
+    mid = run(seed_media_and_scrape(db, tmdb_id=47, rows=[
+        ("S01E01", "测试剧.S01E01.ReEnc-1080p.mkv", None),
+    ]))
+
+    # 把行改造成失败态（模拟多次重试失败后残留 node_attempt / node_error）
+    async def _preset_failure():
+        async with db() as s:
+            row = (
+                await s.execute(
+                    select(DownloadQueue).where(DownloadQueue.media_id == mid)
+                )
+            ).scalars().first()
+            row.node_attempt = 2
+            row.node_error = "旧错误"
+            row.node_finished_at = None
+            await s.commit()
+
+    run(_preset_failure())
+    monkeypatch.setattr(nn_mod, "async_session", db)
+
+    n = run(nn_mod._advance_scrape_to_library(mid, file_name="测试剧.S01E01.mkv"))
+
+    assert n == 1
+
+    async def _read_row():
+        async with db() as s:
+            return (
+                await s.execute(
+                    select(DownloadQueue).where(DownloadQueue.media_id == mid)
+                )
+            ).scalars().first()
+
+    row = run(_read_row())
+    assert row.status == "library"
+    assert row.node_attempt == 0
+    assert row.node_finished_at is not None
+    assert row.node_error is None
+
+
 # fixture：无 DB 访问路径的 client（token 校验/非 JSON 分支）
 @pytest.fixture()
 def dbless_client(monkeypatch):
