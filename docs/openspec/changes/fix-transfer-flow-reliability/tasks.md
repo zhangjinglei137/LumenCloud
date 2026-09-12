@@ -36,7 +36,7 @@
 - [x] 8.3 集级确认 fail-open：Emby 遗漏集为空时延迟一轮复核；电影入库确认前校验文件大小合理性，并验证对应测试更新
 - [x] 8.4 nastools_sync 失败通知接入节流（复用 `_alert_cooldown` 模式），并验证节流后不重复通知的测试通过
 - [x] 8.5 quota_wait 唤醒后先查容量余量，余量不足直接返回（减少写放大与容量查询），并验证测试覆盖「积压时不进入准入循环」
-- [ ] 8.6 取件凭据完整性校验：file_name/file_size/share_code 缺失保持源行 ready + 告警，不建注定失败的 DQ，并验证测试覆盖
+- [x] 8.6 取件凭据完整性校验：file_name/file_size/share_code 缺失保持源行 ready + 告警，不建注定失败的 DQ，并验证测试覆盖
 - [ ] 8.7 `_node_failure` 无条件清 save_task_id 改为 `WHERE status != 'transferring'` 条件化，并验证测试覆盖「不抹掉并发方新 save 的 task_id」
 - [ ] 8.8 全量模式防重：`_enqueue` 对 download_queue 补集号归一化防重（跨文件名同集），并验证测试覆盖「同集不同命名不再重复入队」
 - [ ] 8.9 NaSTools webhook token 移除 `?token=` query 通道（或经确认保留并补文档说明），并验证鉴权测试更新

@@ -1263,7 +1263,7 @@ git commit -m "fix(transfer): quota_wait 唤醒后先查容量余量减少写放
 
 **改造目标（design T8.6）**：取件时校验 file_name/file_size/share_code 非空，缺失保持源行 ready + 告警。
 
-- [ ] **Step 1: 追加测试**
+- [x] **Step 1: 追加测试**
 
 ```python
 async def test_fetch_incomplete_credentials_keeps_source_ready(db, monkeypatch):
@@ -1274,12 +1274,12 @@ async def test_fetch_incomplete_credentials_keeps_source_ready(db, monkeypatch):
     #        _record_alert 被调用
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cd backend && python -m pytest tests/test_transfer_queue.py -v`
 Expected: FAIL（现实现空值兜底拷贝继续建 DQ）
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `_fetch_from_task_queue` 循环内、单语句 INSERT 之前：对 `file_name`/`file_size`/`share_code` 缺失的行：
 
@@ -1296,19 +1296,19 @@ if not (r.file_name and (r.file_size or 0) > 0 and r.share_code):
 
 保持 `_fetch_from_task_queue` 返回计数语义。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `cd backend && python -m pytest tests/test_transfer_queue.py -v`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add backend/app/tasks/transfer.py backend/tests/test_transfer_queue.py
 git commit -m "fix(transfer): 取件校验凭据完整性拒绝建注定失败的 DQ"
 ```
 
-- [ ] **Step 6: 勾选 tasks.md 8.6**
+- [x] **Step 6: 勾选 tasks.md 8.6**
 
 ---
 
