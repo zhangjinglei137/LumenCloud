@@ -19,6 +19,7 @@ node 维度职责）。
 - P2-8：emby.list_library 分页拉取全部（Limit=500 满页按 StartIndex 翻页）
 """
 import asyncio
+import time as _t
 import types
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
@@ -623,3 +624,69 @@ def test_finalize_done_syncs_episode_state(db, env, monkeypatch):
     assert dq_status == "done"
     assert es is not None and es.state == "done"
     assert es.file_size == 2 * 1024 ** 3
+
+
+# ---------------------------------------------------------------------------
+# T8.1 刮削连坐风暴退避（NasTools 故障 → media 进程内退避 + 解耦批量计数）
+# ---------------------------------------------------------------------------
+
+def test_scrape_failure_sets_backoff_and_stops_cascade(db, env, monkeypatch):
+    """NasTools 故障：本 media 进入 10min 退避；不批量累加全部 scrape 行 node_attempt。
+
+    同 media 两行 scrape（0/0）一次同步失败：
+    - 仅一行 node_attempt++（每 media 本轮只推进一行代表，防连坐风暴）；
+    - media 被标记退避（_scrape_backoff[mid] 有值）；
+    - 第二轮立即调用 → 退避期内跳过：不再触发 force sync、node_attempt 不再变化。
+    """
+    patch_db(monkeypatch, db)
+    mid, dq1_id = run(seed_scrape(db, episode="S01E01"))
+
+    async def seed_second_row():
+        async with db() as s:
+            dq2 = DownloadQueue(
+                media_id=mid, episode="S01E02", status="scrape",
+                file_name="ep2.mkv", file_size=1024, share_code="sc123",
+                quark_path="/quark/ep2.mkv", node_attempt=0,
+                node_started_at=_now(), node_finished_at=_now(), updated_at=_now(),
+            )
+            s.add(dq2)
+            await s.commit()
+            return dq2.id
+
+    dq2_id = run(seed_second_row())
+    env["nastools"].nastools_sync = AsyncMock(side_effect=RuntimeError("NasTools 不可用"))
+
+    # 第一轮：同步失败 → 仅一行 node_attempt++（不批量）+ media 退避标记
+    run(library_check_mod.scrape_runner())
+    attempts1 = sorted([
+        run(get_dq(db, dq1_id)).node_attempt,
+        run(get_dq(db, dq2_id)).node_attempt,
+    ])
+    assert attempts1 == [0, 1], f"预期仅推进一行（防连坐），实际 {attempts1}"
+    assert library_check_mod._scrape_backoff.get(mid, 0.0) > 0.0
+
+    # 第二轮立即调用 → 退避期内跳过（不再触发 force sync、计数不再变化）
+    before = [run(get_dq(db, dq1_id)).node_attempt, run(get_dq(db, dq2_id)).node_attempt]
+    run(library_check_mod.scrape_runner())
+    after = [run(get_dq(db, dq1_id)).node_attempt, run(get_dq(db, dq2_id)).node_attempt]
+    assert after == before, f"退避期内 node_attempt 不应变化: {before} → {after}"
+    assert env["nastools"].nastools_sync.await_count == 1  # 第二轮退避跳过未触发同步
+
+
+def test_scrape_backoff_expired_resumes_round(db, env, monkeypatch):
+    """退避期内跳过 → 过期后该 media 重新参与刮削（过期条目清理 + 重新退避）。"""
+    patch_db(monkeypatch, db)
+    mid, dq_id = run(seed_scrape(db))
+    library_check_mod._scrape_backoff[mid] = _t.monotonic() + 300  # 模拟上一轮失败已标记退避
+    env["nastools"].nastools_sync = AsyncMock(side_effect=RuntimeError("NasTools 不可用"))
+
+    # 退避期内 → 跳过：不推进计数、不触发同步
+    run(library_check_mod.scrape_runner())
+    assert run(get_dq(db, dq_id)).node_attempt == 0
+    assert env["nastools"].nastools_sync.await_count == 0
+
+    # 时间流逝（monotonic 截止已过）→ 退避过期 → 重新尝试并计数、重新退避
+    library_check_mod._scrape_backoff[mid] = 0.0
+    run(library_check_mod.scrape_runner())
+    assert run(get_dq(db, dq_id)).node_attempt == 1
+    assert library_check_mod._scrape_backoff.get(mid, 0.0) > 0.0
