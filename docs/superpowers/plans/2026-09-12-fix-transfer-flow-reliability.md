@@ -1324,7 +1324,7 @@ git commit -m "fix(transfer): 取件校验凭据完整性拒绝建注定失败�
 
 **改造目标（design T8.7）**：`_node_failure` 目前无条件清 `save_task_id/save_attempt_at`（L628-631 及 CAS 冲突分支 L636-641）；改为仅在 `status != 'transferring'` 时清——`transferring` 状态说明并发方已重新 save 并落库了新 task_id，不应抹掉。
 
-- [ ] **Step 1: 追加测试**
+- [x] **Step 1: 追加测试**
 
 ```python
 async def test_node_failure_does_not_clear_fresh_save_id(db, monkeypatch):
@@ -1334,12 +1334,12 @@ async def test_node_failure_does_not_clear_fresh_save_id(db, monkeypatch):
     # 断言：save_task_id 仍为 'new-save'（未被无条件清空）
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cd backend && python -m pytest tests/test_transfer_queue.py -v`
 Expected: FAIL（现实现无条件清空）
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `_node_failure` 的两处 `save_task_id=None if clear_save else ...`（L628-631 与 CAS 冲突兜底 L636-641）改为条件化：仅在 `DownloadQueue.status != "transferring"` 时清空。实现方式：VALUES 中 `save_task_id` 用表达式区分——简单可靠做法是拆分 UPDATE 语句，或使用 `case()`：
 
@@ -1354,12 +1354,12 @@ save_task_id=(
 
 由于 UPDATE 的 WHERE 已有 `retry_count/node_attempt` CAS，实施时确认最佳实现：可改为两条条件语句，或利用 SQL 表达式 `case((DownloadQueue.status == 'transferring', DownloadQueue.save_task_id), else_=None)`。保证：`status='transferring'` 时保留；其他状态（CAS 命中回退路径）清空。CAS 冲突兜底分支（L636-641）同样条件化。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `cd backend && python -m pytest tests/test_transfer_queue.py -v`
 Expected: PASS
 
-- [ ] **Step 5: 回归 + 提交**
+- [x] **Step 5: 回归 + 提交**
 
 Run: `cd backend && python -m pytest tests/test_fix_p0_recovery_cleanup_transfer.py tests/test_p1_fixes.py -q`
 Expected: PASS
@@ -1369,7 +1369,7 @@ git add backend/app/tasks/transfer.py backend/tests/test_transfer_queue.py
 git commit -m "fix(transfer): save_task_id 清理按状态条件化防抹并发新 save"
 ```
 
-- [ ] **Step 6: 勾选 tasks.md 8.7**
+- [x] **Step 6: 勾选 tasks.md 8.7**
 
 ---
 
