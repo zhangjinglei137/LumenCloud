@@ -19,7 +19,7 @@
 
 ## 5. P1-5 转存提交冲突清理夸克残留（transfer.py）
 
-- [ ] 5.1 `_transfer_chain` 将 `final_quark_path` 传入 `_commit_downloading`，`_DownloadStateChanged` 分支追加 best-effort `alist.remove(final_quark_path)`，并验证新增测试覆盖冲突分支清理调用
+- [x] 5.1 `_transfer_chain` 将 `final_quark_path` 传入 `_commit_downloading`，`_DownloadStateChanged` 分支追加 best-effort `alist.remove(final_quark_path)`，并验证新增测试覆盖冲突分支清理调用
 
 ## 6. P1-6 取件-创建原子化（transfer.py）
 

@@ -693,7 +693,7 @@ git commit -m "fix(queue): cancel/skip 终态后同事务回落 media 状态"
 
 **改造目标（design T5）**：`_commit_downloading` 的 `_DownloadStateChanged` 冲突分支（L920-935）目前只清 aria2 gid；追加清理夸克残留 `final_quark_path`（复用 `_split_quark_path` + `alist.remove(names, dir_part)`），失败仅告警。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```python
 """P1-5 转存提交冲突清理夸克残留。"""
@@ -753,12 +753,12 @@ def test_conflict_removes_final_quark_path(db, monkeypatch):
     fake_alist.remove.assert_awaited()
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cd backend && python -m pytest tests/test_transfer_quark_cleanup.py -v`
 Expected: FAIL（现冲突分支只调 aria2.remove，不调 alist.remove）
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `_commit_downloading` 的 `_DownloadStateChanged` 分支（L920-935）在 `aria2.remove(gid)` 之后追加：
 
@@ -772,12 +772,12 @@ except Exception as exc:  # noqa: BLE001  清理失败仅告警
 
 确认 `_split_quark_path` 返回结构（transfer.py:86 从 `app.utils` 导入；按实际签名调用——若返回 `(name, dir_part)` 则 `alist.remove(name, dir_part)`）。`quark_path` 参数已由调用方传入（`_transfer_chain` L1067 已传 `quark_path=final_quark_path`——确认参数透传存在；若 `_transfer_chain` 未传则在 L1067 补上）。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `cd backend && python -m pytest tests/test_transfer_quark_cleanup.py -v`
 Expected: PASS
 
-- [ ] **Step 5: 回归 + 提交**
+- [x] **Step 5: 回归 + 提交**
 
 Run: `cd backend && python -m pytest tests/test_fix_p0_recovery_cleanup_transfer.py -q`
 Expected: PASS
@@ -787,7 +787,7 @@ git add backend/app/tasks/transfer.py backend/tests/test_transfer_quark_cleanup.
 git commit -m "fix(transfer): 转存提交冲突时清理夸克残留文件"
 ```
 
-- [ ] **Step 6: 勾选 tasks.md 5.1**
+- [x] **Step 6: 勾选 tasks.md 5.1**
 
 ---
 
