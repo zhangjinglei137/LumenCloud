@@ -1212,3 +1212,58 @@ def test_transfer_cas_miss_uses_persisted_download_name(db, env, monkeypatch):
     assert kwargs["out"] == "并发方写入名.mkv"
     # 提交阶段 CAS 冲突 → best-effort 清理已提交的孤儿 aria2 任务（P2-4 同语义）
     assert env["aria2"].removed == ["gid-1"]
+
+
+# ---------------------------------------------------------------------------
+# P1-5 / design T5（fix-transfer-flow-reliability Task 8）：转存提交冲突清理夸克残留
+# ---------------------------------------------------------------------------
+
+def test_conflict_removes_aria2_and_quark_residue(db, env, monkeypatch):
+    """_DownloadStateChanged 冲突分支（design T5）：事务回滚、返回 'conflict' 之外，
+    除清理孤儿 aria2 任务外，以 final_quark_path 拆分调用 alist.remove 清理夸克残留
+    （转存已落盘、可能已改名——清理以最终名定位，失败仅告警不阻断）。
+
+    场景构造：dq 处于 transferring（转存链中）→ 并发方（recovery 回退 / 人工 retry）
+    已变动状态 → _commit_downloading 内 UPDATE WHERE status='transferring' 命中 0 行
+    → 抛 _DownloadStateChanged。"""
+    patch_db(monkeypatch, db)
+    # 种子 transferring 行（直接构造，绕过 process_transfer_queue 长链路）
+    async def _seed_transferring():
+        async with db() as s:
+            media = Media(title="测试剧", media_type="tv", tmdb_id=None, status="tracking")
+            s.add(media)
+            await s.flush()
+            mid = media.id
+            s.add(DownloadQueue(
+                media_id=mid, episode="S01E01", file_name="a.mkv", file_size=1,
+                share_code="sc", stoken="stoken-x", receive_code="提取码占位",
+                fids='["f1"]', fid_tokens='["ft1"]', folder_id="folder-1",
+                status="transferring",
+                enqueued_at=_now(), updated_at=_now(),
+            ))
+            await s.commit()
+            return mid
+    mid = run(_seed_transferring())
+    dq = run(get_dq_by_media(db, mid))
+    dq_id = dq.id
+
+    # 并发方已变动状态 → 事务 B 内 UPDATE rowcount=0 → _DownloadStateChanged
+    async def _concurrent_revert():
+        async with db() as s:
+            await s.execute(
+                update(DownloadQueue).where(DownloadQueue.id == dq_id)
+                .values(status="pending", updated_at=_now())
+            )
+            await s.commit()
+    run(_concurrent_revert())
+
+    result = run(transfer_mod._commit_downloading(
+        dq_id, mid, "S01E01", "a.mkv", "out.mkv", "gid-1", None, 0.0,
+        quark_path="/quark/新名.mkv",  # 转存落盘后改名的最终名（final_quark_path）
+    ))
+
+    assert result == "conflict"
+    # 既有语义：清理已提交的孤儿 aria2 任务
+    assert env["aria2"].removed == ["gid-1"]
+    # 新增：alist.remove 以 final_quark_path 拆分后的 (names, dir) 清理夸克残留
+    assert env["alist"].remove_calls == [(["新名.mkv"], "/quark/")]
