@@ -438,10 +438,14 @@ class _Task6Alist:
 class _Task6Capacity:
     def __init__(self):
         self.check_calls = []
+        self.invalidate_calls = 0
 
     async def check(self, candidate_bytes):
         self.check_calls.append(candidate_bytes)
         return True  # mock 容量充足（模拟入库完成释放容量后）
+
+    def invalidate_usage_cache(self):
+        self.invalidate_calls += 1
 
 
 class _Task6Notifier:
@@ -551,3 +555,58 @@ def test_consume_trigger_lock_prevents_concurrent_rounds():
 
     assert calls == ["enter", "exit"]  # 第二轮触发被防重入跳过，未再进入消费
     assert len(calls) == 2
+
+
+# ---------------------------------------------------------------------------
+# fix-transfer-flow-reliability Task 10：容量记账漏计窗口（design T7）
+# 准入提交成功后使 used 缓存失效（downloading 落盘立即反映真实 used）
+# ---------------------------------------------------------------------------
+
+def test_invalidate_usage_cache_forces_recount():
+    """invalidate_usage_cache 后 get_usage 重新统计（__new__ 绕过 __init__，模拟已有缓存）。
+
+    design T7：转存提交成功（落盘 downloading）后立即使 30s 进程内 used 缓存失效，
+    下一轮准入 re-count 反映真实 used（downloading 仍不计 reserved，防双计）。
+    仅在具名测试中预置缓存字段，不走 __init__（避免依赖 settings/外部构造）。
+    """
+    provider = cap_mod.CapacityProvider.__new__(cap_mod.CapacityProvider)
+    provider._fallback_quota_gb = 100.0
+    provider._usage_cache = object()    # 模拟已有未过期缓存
+    provider._usage_cached_at = 9999.0  # 未过期（monotonic 不可能达到）
+
+    provider.invalidate_usage_cache()
+
+    assert provider._usage_cache is None
+    assert provider._usage_cached_at == 0.0
+
+
+def test_commit_downloading_invalidates_cache(db, task6_env, monkeypatch):
+    """_commit_downloading 成功路径（'admitted'）调用 capacity.provider.invalidate_usage_cache：
+    文件已落盘 downloading，下一轮准入立即反映真实 used（消除漏计窗口）。"""
+    monkeypatch.setattr(transfer_mod, "async_session", db)
+
+    async def _seed_transferring():
+        async with db() as s:
+            media = Media(title="测试剧", media_type="tv", tmdb_id=None, status="tracking")
+            s.add(media)
+            await s.flush()
+            dq = DownloadQueue(
+                media_id=media.id, episode="S01E01", file_name="a.mkv", file_size=1,
+                share_code="sc", stoken="stoken-x", receive_code="提取码占位",
+                fids='["f1"]', fid_tokens='["ft1"]', folder_id="folder-1",
+                status="transferring",
+                enqueued_at=_task6_now(), updated_at=_task6_now(),
+            )
+            s.add(dq)
+            await s.flush()
+            await s.commit()
+            return media.id, dq.id
+
+    mid, dq_id = run(_seed_transferring())
+
+    result = run(transfer_mod._commit_downloading(
+        dq_id, mid, "S01E01", "a.mkv", "out.mkv", "gid-1", None, 0.0,
+    ))
+
+    assert result == "admitted"
+    assert task6_env["capacity"].invalidate_calls == 1
