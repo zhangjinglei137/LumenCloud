@@ -1516,7 +1516,7 @@ async def _admit_batch() -> None:
     #    判定口径（2026-09 修订，oracle 评审）：不依赖 aria2 comment——实测 aria2
     #    1.36.0 静默丢弃 addUri 的 comment option（getOption/tellStatus 均读不到），
     #    comment 恒空会导致自家任务也被判陌生、转存永久停摆。改为 **DB gid 白名单**：
-#     aria2 活动/等待任务的 gid 必须在本系统 download_queue 已签发 gid 集合内
+    #    aria2 活动/等待任务的 gid 必须在本系统 download_queue 已签发 gid 集合内
     #    （aria2_gid 非空全部行，不限 status）；不在集合 → 判陌生拦截。
     #    权威源 = DB（_commit_downloading 落库），版本无关，不依赖 aria2 行为。
     #    口径放宽（fix-transfer-flow-reliability Task 3）：recovery 回退 downloading→
