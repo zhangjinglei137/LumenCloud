@@ -1,7 +1,8 @@
 """§十二 NaSTools Webhook 集成端点单测（POST /internal/nastools/notify）。
 
-验证（对应 docs/影视下载两队列重设计.md §12.3）：
-- token 正确（query / X-NaSTools-Token header / Authorization Bearer）→ 200 {"ok": true}
+验证（对应 docs/影视下载两队列重设计.md §12.3；design T8.9 起仅 header 鉴权）：
+- token 正确（X-NaSTools-Token header / Authorization Bearer）→ 200 {"ok": true}
+- 仅带 `?token=` query（旧版插件地址带 token 的通道）→ 401（T8.9 已移除该通道）
 - token 缺失 / 错误 → 401；secret 未配置 → 503（fail-closed）
 - body 非 JSON / 非对象 → 400
 - transfer.finished → 推进该 media 的 scrape→library + 触发 library_check（fire-and-forget）
@@ -230,12 +231,22 @@ def test_token_via_header_ok(monkeypatch, header_name, header_value):
     assert resp.json()["ok"] is True
 
 
-def test_token_via_query_ok(monkeypatch):
-    """query ?token=（旧版插件 Webhook 地址带 token）→ 200。"""
+def test_query_token_channel_removed(monkeypatch):
+    """仅带 `?token=<secret>`（旧版插件 Webhook 地址带 token 的通道）→ 401。
+
+    design T8.9：query 通道是攻击面（token 出现在 URL/日志/代理），已移除，
+    仅 header 鉴权。secret 正确也不再放行。
+    """
     cli = make_client(_TOKEN, monkeypatch)
-    media_row = make_media_row(42)
-    monkeypatch.setattr(nn_mod, "async_session", lambda: FakeSession(execute_result=FakeResult(media_row)))
-    resp = cli.post(f"{_ENDPOINT}?token={_TOKEN}", json={"type": "unrelated.event", "data": {}})
+    resp = cli.post(f"{_ENDPOINT}?token={_TOKEN}", json={"type": "x"})
+    assert resp.status_code == 401
+
+
+def test_header_token_still_works(monkeypatch):
+    """X-NaSTools-Token header 通道仍正常（无 query）→ 200。"""
+    cli = make_client(_TOKEN, monkeypatch)
+    resp = cli.post(_ENDPOINT, json={"type": "unrelated.event", "data": {}},
+                    headers={"X-NaSTools-Token": _TOKEN})
     assert resp.status_code == 200
 
 
@@ -247,22 +258,24 @@ def test_token_missing_returns_401(monkeypatch):
 
 def test_token_wrong_returns_401(monkeypatch):
     cli = make_client(_TOKEN, monkeypatch)
-    resp = cli.post(f"{_ENDPOINT}?token=wrong", json={"type": "x"})
+    resp = cli.post(_ENDPOINT, json={"type": "x"},
+                    headers={"X-NaSTools-Token": "wrong"})
     assert resp.status_code == 401
 
 
 def test_non_json_body_returns_400(monkeypatch):
     cli = make_client(_TOKEN, monkeypatch)
     resp = cli.post(
-        f"{_ENDPOINT}?token={_TOKEN}",
-        content=b"not-json", headers={"Content-Type": "text/plain"},
+        _ENDPOINT,
+        content=b"not-json",
+        headers={"Content-Type": "text/plain", "X-NaSTools-Token": _TOKEN},
     )
     assert resp.status_code == 400
 
 
 def test_non_object_body_returns_400(monkeypatch):
     cli = make_client(_TOKEN, monkeypatch)
-    resp = cli.post(f"{_ENDPOINT}?token={_TOKEN}", json=[1, 2, 3])
+    resp = cli.post(_ENDPOINT, json=[1, 2, 3], headers={"X-NaSTools-Token": _TOKEN})
     assert resp.status_code == 400
 
 
@@ -297,7 +310,8 @@ def test_transfer_finished_advances_and_triggers_library_check(monkeypatch):
     monkeypatch.setattr(nn_mod, "_advance_scrape_to_library", fake_advance)
     monkeypatch.setattr(nn_mod, "_check_library_background", fake_check_library_background)
 
-    resp = cli.post(f"{_ENDPOINT}?token={_TOKEN}", json=media_payload())
+    resp = cli.post(_ENDPOINT, json=media_payload(),
+                    headers={"X-NaSTools-Token": _TOKEN})
     assert resp.status_code == 200
     body = resp.json()
     assert body["ok"] is True
@@ -322,7 +336,8 @@ def test_transfer_finished_no_advance_still_triggers_library_check(monkeypatch):
 
     monkeypatch.setattr(nn_mod, "_check_library_background", fake_check_library_background)
 
-    resp = cli.post(f"{_ENDPOINT}?token={_TOKEN}", json=media_payload())
+    resp = cli.post(_ENDPOINT, json=media_payload(),
+                    headers={"X-NaSTools-Token": _TOKEN})
 
     assert resp.status_code == 200
     assert resp.json()["advanced"] == 0
@@ -337,7 +352,8 @@ def test_transfer_finished_tmdb_not_in_library_ignored(monkeypatch):
     # Media 查询返回 None（FakeResult.first() → None）
     monkeypatch.setattr(nn_mod, "async_session", lambda: FakeSession(
         execute_result=FakeResult(None)))
-    resp = cli.post(f"{_ENDPOINT}?token={_TOKEN}", json=media_payload(tmdb_id=999))
+    resp = cli.post(_ENDPOINT, json=media_payload(tmdb_id=999),
+                    headers={"X-NaSTools-Token": _TOKEN})
     assert resp.status_code == 200
     assert resp.json()["advanced"] == 0
 
@@ -347,7 +363,7 @@ def test_transfer_finished_missing_tmdb_ignored(monkeypatch):
     cli = make_client(_TOKEN, monkeypatch)
     payload = media_payload()
     del payload["data"]["media_info"]["tmdb_id"]
-    resp = cli.post(f"{_ENDPOINT}?token={_TOKEN}", json=payload)
+    resp = cli.post(_ENDPOINT, json=payload, headers={"X-NaSTools-Token": _TOKEN})
     assert resp.status_code == 200
     assert resp.json()["advanced"] == 0
 
@@ -363,7 +379,7 @@ def test_transfer_fail_notifies_flow_error(monkeypatch):
 
     monkeypatch.setattr(nn_mod.notifier, "notify", fake_notify)
     payload = {"type": "transfer.fail", "data": {"media_info": {"title": "某某"}}}
-    resp = cli.post(f"{_ENDPOINT}?token={_TOKEN}", json=payload)
+    resp = cli.post(_ENDPOINT, json=payload, headers={"X-NaSTools-Token": _TOKEN})
     assert resp.status_code == 200
     assert notify_call.get("event_type") == "flow_error"
 
@@ -375,7 +391,8 @@ def test_unrelated_event_ignored(monkeypatch):
     def boom():
         raise AssertionError("不应访问 DB")
     monkeypatch.setattr(nn_mod, "async_session", boom)
-    resp = cli.post(f"{_ENDPOINT}?token={_TOKEN}", json={"type": "plugin.reload", "data": {}})
+    resp = cli.post(_ENDPOINT, json={"type": "plugin.reload", "data": {}},
+                    headers={"X-NaSTools-Token": _TOKEN})
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
 
@@ -468,7 +485,7 @@ def test_webhook_transfer_finished_cannot_locate_still_polls(db, monkeypatch):
 
     payload = media_payload(tmdb_id=46)
     payload["data"]["file_name"] = "测试剧.S05E99.mkv"
-    resp = cli.post(f"{_ENDPOINT}?token={_TOKEN}", json=payload)
+    resp = cli.post(_ENDPOINT, json=payload, headers={"X-NaSTools-Token": _TOKEN})
 
     assert resp.status_code == 200
     body = resp.json()
