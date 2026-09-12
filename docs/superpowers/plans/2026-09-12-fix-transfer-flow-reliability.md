@@ -1385,7 +1385,7 @@ git commit -m "fix(transfer): save_task_id 清理按状态条件化防抹并发�
 
 **改造目标（design T8.8）**：全量模式防重——`_enqueue` 对 download_queue 补集号归一化防重（跨文件名同集不再重复入队）。现状 `_enqueue` 只查 task_queue 同键/同文件名；补查 download_queue：同 media 下已有该集（归一化集号匹配）任意状态的行 → 返回 'existing' 不入队。
 
-- [ ] **Step 1: 追加测试**
+- [x] **Step 1: 追加测试**
 
 ```python
 async def test_enqueue_skips_when_download_queue_has_same_episode(db, monkeypatch):
@@ -1399,28 +1399,28 @@ async def test_enqueue_normalizes_episode_key_for_dedup(db, monkeypatch):
     """文件名不同但归一化集号相同（'S1E1' vs 'S01E01'）→ 防重命中。"""
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cd backend && python -m pytest tests/test_scan_dedup.py -v`
 Expected: FAIL（现 _enqueue 不查 download_queue）
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `_enqueue` 幂等检查段（L1236-1258 之后）增加 download_queue 防重查询：同 media 下按归一化集号匹配（复用 `app.utils.fmt_episode`/`parse_episode_num` 规范化，覆盖 `S01E01`/`S1E1`/`第1集`/`01` 等表示），命中任意状态行 → `return "existing"`。保持 task_queue 同键/同文件名防重不变。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `cd backend && python -m pytest tests/test_scan_dedup.py -v`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add backend/app/tasks/scan.py backend/tests/test_scan_dedup.py
 git commit -m "fix(scan): 入队对 download_queue 补集号归一化防重"
 ```
 
-- [ ] **Step 6: 勾选 tasks.md 8.8**
+- [x] **Step 6: 勾选 tasks.md 8.8**
 
 ---
 
