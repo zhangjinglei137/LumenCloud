@@ -972,7 +972,7 @@ git commit -m "fix(capacity): 转存提交后失效 used 缓存消除漏计窗�
 
 **改造目标（design T8.1）**：`scrape_runner` 失败后对该 media 设置进程内退避（10min 内不再触发 force sync）；同步失败与节点重试计数解耦（不批量累加全部 scrape 行 node_attempt——仅对「本 media 本轮尝试的那个任务」计数或交由 recover）。
 
-- [ ] **Step 1: 追加测试（test_library_check.py）**
+- [x] **Step 1: 追加测试（test_library_check.py）**
 
 ```python
 async def test_scrape_failure_sets_backoff_and_stops_cascade(db, monkeypatch):
@@ -982,31 +982,31 @@ async def test_scrape_failure_sets_backoff_and_stops_cascade(db, monkeypatch):
     # 第二轮立即调用 → 退避期内跳过（node_attempt 不再变化）
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cd backend && python -m pytest tests/test_library_check.py -v`
 Expected: FAIL（现实现批量累加）
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 - 模块级 `_SCRAPE_BACKOFF_SECONDS = 600`、`_scrape_backoff: dict[int, float] = {}`。
 - `_run_scrape_once` 刮削失败的 media 处理：`_scrape_backoff[media_id] = now + 600`；`_mark_scrape_failed` 的 `pending` 参数只包含「本 media 本轮实际尝试的任务」而非该 media 全部 scrape 行。
 - `scrape_runner`/`_run_scrape_once` 入口对退避期内的 media 跳过（读取 `_scrape_backoff`，过期清理）。
 - 保持 CAS（`WHERE node_attempt == cur_attempt`）与终态转 failed 语义。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `cd backend && python -m pytest tests/test_library_check.py -v`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add backend/app/tasks/library_check.py backend/tests/test_library_check.py
 git commit -m "fix(library_check): 刮削失败按 media 进程内退避并解耦批量计数"
 ```
 
-- [ ] **Step 6: 勾选 tasks.md 8.1**
+- [x] **Step 6: 勾选 tasks.md 8.1**
 
 ---
 
