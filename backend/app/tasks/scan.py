@@ -1210,6 +1210,44 @@ def _json_dumps(v):
     return v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)
 
 
+def _episode_ref_key(episode_or_name: str) -> tuple[int | None, int] | None:
+    """归一化集引用 → (season|None, ep)；无集号返回 None。
+
+    供 download_queue 补集号防重（T8.8）使用：把多种集号表示收敛为可比元组。
+    覆盖：
+    - SxxExx / SxxExxx（'S01E01' / 'S1E1' / 'S01E100'）→ (season, ep)，与
+      app.utils.fmt_episode 规范化（S 两位 + E 两位/三位）同源口径；
+    - 第N集/第N话（'第1集'）→ (None, ep)，跨季按集号匹配；
+    - 独立数字 token（'01'、'190.mkv' 等全量模式文件名键）→ (None, ep)。
+    其余（电影键 'movie:标题' 等无集号形态）→ None（不参与集级防重）。
+    """
+    text = (episode_or_name or "").strip()
+    if not text:
+        return None
+    m = _RE_SXXEXX.search(text)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    ep = _parse_episode_number(text)
+    if ep is not None:
+        return None, ep
+    return None
+
+
+def _same_episode_ref(a: str, b: str) -> bool:
+    """两集引用是否同集（归一化比，T8.8 防重判定）。
+
+    季号均已知 → (season, ep) 全等（防 S01E01↔S02E01 误判）；
+    任一无季号 → 仅按集号跨季匹配（与 match_missing『第N集 跨季按集号』语义一致）；
+    任一侧无法识别集号 → False（不拦截）。
+    """
+    ra, rb = _episode_ref_key(a), _episode_ref_key(b)
+    if ra is None or rb is None:
+        return False
+    if ra[0] is not None and rb[0] is not None:
+        return ra == rb
+    return ra[1] == rb[1]
+
+
 async def _enqueue(media_id: int, episode_key: str, file_name: str, file_size: int,
                    share_code: str, payload: dict, *,
                    size_estimated: bool = False) -> str:
@@ -1228,8 +1266,11 @@ async def _enqueue(media_id: int, episode_key: str, file_name: str, file_size: i
     记录（跨键防重，2026-09 重复下载事故修复：Emby 收录状态变化导致同一物理文件
     在两轮巡检产生不同防重键——全量模式文件名键 vs 标准模式 SxxExx 键——绕过
     UNIQUE(media_id, episode) 重复入队；同一文件无论以哪种键入队，第二次一律
-    existing）；写入撞 UNIQUE(media_id, episode) 则捕获 IntegrityError 判定为
-    并发冲突。返回 'enqueued' / 'existing' / 'conflict'。
+    existing）；再查 download_queue 同 media 补集号归一化记录（T8.8 全量模式防重：
+    该集跨文件名已在 download_queue 任意状态 → 视为已存在，不再重复入队——
+    download_queue 为防重权威源，UNIQUE(media_id, episode)）；
+    写入撞 UNIQUE(media_id, episode) 则捕获 IntegrityError 判定为并发冲突。
+    返回 'enqueued' / 'existing' / 'conflict'。
     """
     async with async_session() as tx:
         async with tx.begin():
@@ -1255,6 +1296,20 @@ async def _enqueue(media_id: int, episode_key: str, file_name: str, file_size: i
                 )
             ).first()
             if has_file:
+                return "existing"
+
+            # 补集号归一化防重（T8.8）：同 media 下该集（归一化集号匹配，跨文件名）
+            # 已在 download_queue 任意状态 → 视为已存在，不入队。download_queue 为防重
+            # 权威源（UNIQUE(media_id, episode)），其 episode 列与 task_queue 同形态
+            # （SxxExx 或全量模式文件名键），比对前统一经 _same_episode_ref 归一化。
+            dq_eps = (
+                await tx.execute(
+                    select(DownloadQueue.episode).where(
+                        DownloadQueue.media_id == media_id,
+                    )
+                )
+            ).scalars().all()
+            if any(_same_episode_ref(episode_key, dq_ep) for dq_ep in dq_eps):
                 return "existing"
 
             tx.add(TaskQueue(
