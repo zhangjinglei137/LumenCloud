@@ -384,7 +384,7 @@ git commit -m "fix(transfer): 放宽 GID 白名单口径至全部非空 gid 行"
 
 **改造目标（design T2 双层之二）**：白名单未命中的 gid 每轮 `strikes += 1`，`≥3` 时执行一次 `aria2.client.remove(gid)` best-effort + 告警，清计数字典条目；陌生 gid 自然消失（终态）后从 dict 移除。
 
-- [ ] **Step 1: 追加哨兵测试**
+- [x] **Step 1: 追加哨兵测试**
 
 ```python
 def test_unknown_gid_removed_after_three_strikes(db, monkeypatch):
@@ -446,12 +446,12 @@ def test_known_gid_never_strikes(db, monkeypatch):
     assert fake_aria2.remove.await_count == 0
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cd backend && python -m pytest tests/test_gid_escape.py -v`
 Expected: FAIL（哨兵逻辑未实现）
 
-- [ ] **Step 3: 实现哨兵**
+- [x] **Step 3: 实现哨兵**
 
 模块级（`transfer.py` 常量区，`_alert_cooldown` 定义 L240 附近）：
 
@@ -492,19 +492,19 @@ for t in actives:
 
 注意：哨兵触发后不再 `return`（不永久阻断本批——本批其余任务继续准入；若需保持「本轮跳过」语义，按 design 边界：触发 remove 后继续循环）。任务在库有行（含 pending/回退中）不受影响。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `cd backend && python -m pytest tests/test_gid_escape.py -v`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add backend/app/tasks/transfer.py backend/tests/test_gid_escape.py
 git commit -m "fix(transfer): 陌生 gid 连续跳过哨兵解除转存自锁"
 ```
 
-- [ ] **Step 6: 勾选 tasks.md 2.2**
+- [x] **Step 6: 勾选 tasks.md 2.2**
 
 ---
 

@@ -6,7 +6,7 @@
 ## 2. P1-2 GID 白名单逃生通道（transfer.py + recovery.py）
 
 - [x] 2.1 放宽 GID 白名单口径为「DB 中 aria2_gid 非空全部行」（不再限定 downloading），并验证现有 GID 校验测试更新后通过
-- [ ] 2.2 增加陌生 gid 连续跳过哨兵：进程内计数 ≥3 轮执行一次 `aria2.remove(gid)` best-effort + 告警，并验证新增测试覆盖「孤儿 gid 不再永久阻断转存」
+- [x] 2.2 增加陌生 gid 连续跳过哨兵：进程内计数 ≥3 轮执行一次 `aria2.remove(gid)` best-effort + 告警，并验证新增测试覆盖「孤儿 gid 不再永久阻断转存」
 
 ## 3. P1-1/P1-3 webhook 文件级推进与节点重置（nastools_notify.py）
 
