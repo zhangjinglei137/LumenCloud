@@ -1201,7 +1201,7 @@ git commit -m "fix(nastools_sync): 失败通知接入进程内节流防刷屏"
 
 **改造目标（design T8.5）**：quota_wait 唤醒后先 `capacity.get_usage` 算余量，余量为 0 直接返回（减少 N×UPDATE + 容量查询）。
 
-- [ ] **Step 1: 追加测试**
+- [x] **Step 1: 追加测试**
 
 ```python
 async def test_quota_wake_with_zero_room_skips_admission_loop(db, monkeypatch):
@@ -1211,12 +1211,12 @@ async def test_quota_wake_with_zero_room_skips_admission_loop(db, monkeypatch):
     # 断言：_try_admit_one 未调用（或调用次数 0），quota_wait 行保持 pending
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cd backend && python -m pytest tests/test_transfer_queue.py -v`
 Expected: FAIL（现唤醒后直接进入准入循环）
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `_admit_batch` 唤醒段（L1430 告警之后、`_fetch_from_task_queue`/准入循环之前）：
 
@@ -1235,19 +1235,19 @@ except Exception as exc:  # noqa: BLE001  容量不可用 → 交给准入循环
 
 注意：预查失败不阻断（由准入循环内的 fail-closed 语义兜底）；预查是优化，不是新的硬门。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `cd backend && python -m pytest tests/test_transfer_queue.py -v`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add backend/app/tasks/transfer.py backend/tests/test_transfer_queue.py
 git commit -m "fix(transfer): quota_wait 唤醒后先查容量余量减少写放大"
 ```
 
-- [ ] **Step 6: 勾选 tasks.md 8.5**
+- [x] **Step 6: 勾选 tasks.md 8.5**
 
 ---
 
