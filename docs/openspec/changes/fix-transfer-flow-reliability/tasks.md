@@ -1,7 +1,7 @@
 ## 1. P0-1 准入事务边界重构（transfer.py + capacity.py）
 
 - [x] 1.1 重构 `_try_admit_one` 准入段：拆为「短事务 A 读 pending 快照 → 锁外容量 check → 短事务 B（锁行 + 重读 reserved + CAS 抢占/置 quota_wait）」，并验证 `backend/tests/` 新增事务边界回归测试通过（断言容量 check 期间无活动 DB 事务、CAS 条件更新仍生效）
-- [ ] 1.2 将容量快照落库（`_persist_snapshot`）调用移出任何外层 DB 事务上下文，并验证新增测试确认无嵌套 session 提交
+- [x] 1.2 将容量快照落库（`_persist_snapshot`）调用移出任何外层 DB 事务上下文，并验证新增测试确认无嵌套 session 提交
 
 ## 2. P1-2 GID 白名单逃生通道（transfer.py + recovery.py）
 

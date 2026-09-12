@@ -225,7 +225,7 @@ git commit -m "fix(transfer): 准入段拆分为锁外容量检查与短事务�
 
 **改造目标（design T1 验证项）**：Task 1 将 `capacity.provider.check` 移出事务后，`_persist_snapshot` 天然脱离外层事务；本任务用测试固化「无嵌套 session 提交」，并确认 `capacity.py` 无需改动。
 
-- [ ] **Step 1: 追加测试（test_admission_tx_boundary.py）**
+- [x] **Step 1: 追加测试（test_admission_tx_boundary.py）**
 
 ```python
 def test_persist_snapshot_commits_independently(db, monkeypatch):
@@ -254,19 +254,19 @@ def test_persist_snapshot_commits_independently(db, monkeypatch):
     assert snapshot_in_tx == [False], "get_usage（含 _persist_snapshot）不得在活动事务内被调用"
 ```
 
-- [ ] **Step 2: 跑测试确认通过**
+- [x] **Step 2: 跑测试确认通过**
 
 Run: `cd backend && python -m pytest tests/test_admission_tx_boundary.py -v`
 Expected: PASS（Task 1 已把 check 移出事务；若红则检查 `_try_admit_one` 内是否有残留事务包裹 check）
 
-- [ ] **Step 3: 提交**
+- [x] **Step 3: 提交**
 
 ```bash
 git add backend/tests/test_admission_tx_boundary.py
 git commit -m "test(transfer): 固化容量快照独立提交无嵌套会话"
 ```
 
-- [ ] **Step 4: 勾选 tasks.md 1.2**
+- [x] **Step 4: 勾选 tasks.md 1.2**
 
 ---
 
