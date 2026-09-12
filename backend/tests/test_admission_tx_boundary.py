@@ -183,3 +183,51 @@ def test_cas_pending_to_transferring_still_applies(db, monkeypatch):
     dq = run(_read_dq())
     assert dq.status == "transferring"
     chain.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# 边界 3：get_usage（含 _persist_snapshot 落库）无外层 DB 事务（T1 固化）
+# ---------------------------------------------------------------------------
+
+def test_persist_snapshot_commits_independently(db, monkeypatch):
+    """get_usage（其内部 _persist_snapshot 自开 session 独立提交）不在外层事务内被调用。
+
+    Task 1（design T1）下 get_usage/check 在短事务 A 已提交、事务 B 未开始的锁外
+    上下文执行；_persist_snapshot 使用自有 async_session 独立 commit，无嵌套
+    session 提交（旧实现 check 在事务 B 内，嵌套提交回潮事务内网络 IO）。
+
+    同边界 1：StaticPool 单连接共享，穿透到 driver_connection 检测物理连接
+    事务状态——get_usage 被调用时连接若处于事务中（旧实现）→ True，锁外 →
+    False。断言消息里附 _try_admit_one 的异常（若有）便于定位。
+    """
+    in_tx_flags = []
+    engine = db.engine
+
+    async def fake_get_usage():
+        async with engine.connect() as conn:
+            in_tx_flags.append(
+                conn.sync_connection.connection.driver_connection.in_transaction
+            )
+        return _fake_usage()
+
+    provider = _patch_provider(monkeypatch, check=AsyncMock(return_value=True))
+    provider.get_usage = fake_get_usage
+    monkeypatch.setattr(transfer_mod, "async_session", db)
+    monkeypatch.setattr(transfer_mod, "_preflight_quark_mount", AsyncMock(return_value=None))
+    chain = AsyncMock(return_value="admitted")
+    monkeypatch.setattr(transfer_mod, "_transfer_chain", chain)
+
+    run(_seed_pending(db))
+    error = None
+    result = None
+    try:
+        result = run(transfer_mod._try_admit_one(0.0))
+    except Exception as exc:  # noqa: BLE001
+        error = exc
+
+    assert in_tx_flags == [False], (
+        f"get_usage（含 _persist_snapshot 落库）不得在活动事务内被调用"
+        f"（实际 {in_tx_flags}，异常={error}）"
+    )
+    assert error is None, f"_try_admit_one 不应抛错: {error}"
+    assert result == "admitted"
