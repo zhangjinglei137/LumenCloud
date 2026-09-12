@@ -1,12 +1,12 @@
-# Tasks: 全量模式 episode 键归一化对齐
+# Tasks: 全量模式与标准模式跨键防重对齐
 
 ## 任务清单
 
-- [x] Task 1: 修改 `backend/app/tasks/scan.py` 全量模式 episode 键生成，
-      文件名含「第N集/第N话」时归一化为 SxxExx 集号键（缺失集同季时），
-      无法提取集号仍回退文件名键
-- [x] Task 2: 新增/更新单元测试覆盖全量模式键生成三种情形
-      （SxxExx 保持、第N集归一化、无集号回退文件名）
+- [x] Task 1: 修改 `backend/app/tasks/scan.py` 的 `_enqueue` 幂等检查，
+      新增「同 media 同 file_name」跨键防重（同一物理文件无论以文件名键
+      还是 SxxExx 键入队，第二次一律 existing，杜绝重复入队）
+- [x] Task 2: 新增单元测试 `test_scan_enqueue_dedup.py` 覆盖跨键防重
+      （正向/反向同文件场景、不同文件不受影响、不同 media 不受影响）
 - [x] Task 3: 运行 scan 相关测试与全量后端测试，确认无回归
 
 ## 生产数据人工清理（发布后执行）
