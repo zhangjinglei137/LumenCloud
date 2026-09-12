@@ -1085,7 +1085,7 @@ git commit -m "fix(transfer): aria2 add_uri 追加覆盖与禁重命名 options"
 
 **改造目标（design T8.3）**：`_episode_in_missing` 遗漏集为空时不再直接返回 False（立即放行）；增加延迟复核标记（进程内 dict，间隔 ≥60s 才放行）。电影（media_type='movie'）入库确认前校验文件大小合理性。
 
-- [ ] **Step 1: 更新测试（test_library_check.py）**
+- [x] **Step 1: 更新测试（test_library_check.py）**
 
 ```python
 async def test_episode_in_missing_empty_list_delays_recheck():
@@ -1099,12 +1099,12 @@ async def test_movie_size_check_on_confirmation(db, monkeypatch):
     """电影入库确认前校验文件大小合理性（异常大小不 finalize）。"""
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cd backend && python -m pytest tests/test_library_check.py -v`
 Expected: FAIL（现遗漏集为空直接返回 False）
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 ```python
 _RECENT_EMPTY_RECHECK_SECONDS = 60
@@ -1128,19 +1128,19 @@ def _episode_in_missing(episode, missing_codes):
 
 电影文件大小合理性：`library_check` finalize 电影前，比对 `dq.file_size` 与 Emby 侧文件/媒体大小（或配置阈值），明显不合理（如 0 字节、与预期集大小偏离过大）→ 不 finalize、告警记录。具体比对依据按 `library_check` 现有 Emby 查询结果确定（实施时确认可用字段；无法可靠获取时记录并跳过，不阻塞）。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `cd backend && python -m pytest tests/test_library_check.py -v`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add backend/app/tasks/library_check.py backend/tests/test_library_check.py
 git commit -m "fix(library_check): 集级确认遗漏集为空延迟复核并校验电影大小"
 ```
 
-- [ ] **Step 6: 勾选 tasks.md 8.3**
+- [x] **Step 6: 勾选 tasks.md 8.3**
 
 ---
 

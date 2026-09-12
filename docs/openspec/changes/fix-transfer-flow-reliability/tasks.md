@@ -33,7 +33,7 @@
 
 - [x] 8.1 刮削连坐风暴：`scrape_runner` 失败后对 media 设置进程内退避（10min），同步失败与节点重试计数解耦，并验证新增测试覆盖「NasTools 故障不批量累加全部 scrape 行 node_attempt」
 - [x] 8.2 `aria2.add_uri` 追加 `allow-overwrite=true` + `auto-file-renaming=false` options（先确认生产 aria2 启动参数，若已配置则跳过并记录），并验证 aria2 RPC shape 测试更新通过
-- [ ] 8.3 集级确认 fail-open：Emby 遗漏集为空时延迟一轮复核；电影入库确认前校验文件大小合理性，并验证对应测试更新
+- [x] 8.3 集级确认 fail-open：Emby 遗漏集为空时延迟一轮复核；电影入库确认前校验文件大小合理性，并验证对应测试更新
 - [ ] 8.4 nastools_sync 失败通知接入节流（复用 `_alert_cooldown` 模式），并验证节流后不重复通知的测试通过
 - [ ] 8.5 quota_wait 唤醒后先查容量余量，余量不足直接返回（减少写放大与容量查询），并验证测试覆盖「积压时不进入准入循环」
 - [ ] 8.6 取件凭据完整性校验：file_name/file_size/share_code 缺失保持源行 ready + 告警，不建注定失败的 DQ，并验证测试覆盖
