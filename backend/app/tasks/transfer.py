@@ -239,6 +239,15 @@ _ALERT_COOLDOWN_SECONDS = 600.0
 # **完全相同**才跳过 notify（消息变化视为根因变化的新告警，必须通知）。
 _alert_cooldown: dict[str, tuple[float, str]] = {}
 
+# fix-transfer-flow-reliability Task 4（design T2 双层之二）：陌生 gid 连续跳过哨兵。
+# 白名单未命中（不在 DB 任何行）的 aria2 活动/等待任务每轮 strikes += 1，连续
+# _GID_STRIKE_LIMIT(3) 轮未消失 → best-effort aria2.remove 清理 + 告警并清计数——
+# 防 recovery 回退时 aria2.remove 失败遗留的孤儿 gid 永久阻断转存（自锁）；remove
+# 成功后下轮 actives 不再含该 gid → 自动恢复转存。计数为进程内共享状态（单 worker
+# 部署可靠；重启即清零，重启后至多多计数 3 轮，不影响正确性）。
+_GID_STRIKE_LIMIT = 3
+_unknown_gid_strikes: dict[str, int] = {}
+
 # P5（§5 容量预算并发）：reserved 聚合口径（议会验证 P1-4 收紧）——
 # **不含 downloading**：该状态已落盘，容量由 capacity.check 内层 used（alist /quark
 # 递归）覆盖，再计入会双重计算导致假性容量不足（安全但过度保守）。reserved =
@@ -1544,14 +1553,37 @@ async def _admit_batch() -> None:
             ).all()
         }
     for t in actives:
-        if t.get("gid") not in known_gids:
+        gid = t.get("gid") or ""  # aria2 契约每项必有 gid；空/缺省按陌生计数（fail-closed 语义保持）
+        if gid in known_gids:
+            # 在库 gid（白名单命中）→ 自然清零计数，不拦截
+            _unknown_gid_strikes.pop(gid, None)
+            continue
+        # 陌生 gid（不在 DB 任何行）：每轮 strikes += 1 + 告警 + 跳过本轮
+        # （fail-closed 拦截保持，防 n8n 误启动双转存）；连续 _GID_STRIKE_LIMIT 轮
+        # 未消失 → best-effort aria2.remove 清理孤儿任务（避免该 gid 永不消失时
+        # 整批永久跳过自锁），随后仍跳过本轮，下轮 actives 不再含该 gid 自动恢复。
+        strikes = _unknown_gid_strikes.get(gid, 0) + 1
+        _unknown_gid_strikes[gid] = strikes
+        if strikes >= _GID_STRIKE_LIMIT:
+            _unknown_gid_strikes.pop(gid, None)   # 清计数防重复删除
+            try:
+                await aria2.client.remove(gid)
+            except Exception as exc:  # noqa: BLE001  best-effort
+                logger.warning("[transfer] 清理孤儿 aria2 任务失败 %s: %s", gid, exc)
             await _record_alert(
                 None,
-                "检测到非本系统 aria2 任务（gid 不在 download_queue 已签发集合中），"
-                "本轮跳过转存（下轮自动续跑），请人工确认 n8n 未误启动",
+                f"检测到非本系统 aria2 任务 gid={gid}（连续 {_GID_STRIKE_LIMIT} 轮未在 DB 白名单），"
+                f"已 best-effort 清理并告警，请人工确认 n8n 未误启动",
                 category="gid",
             )
-            return
+        else:
+            await _record_alert(
+                None,
+                f"检测到非本系统 aria2 任务 gid={gid}（第 {strikes}/{_GID_STRIKE_LIMIT} 轮，暂跳过转存），"
+                f"请人工确认 n8n 未误启动",
+                category="gid",
+            )
+        return
 
     # 3) 准入循环：无可准入任务/资源受限时停止（准入唯一约束 = 网盘容量——容量不足
     #    置 quota_wait 按空间排队，由下一轮 job/事件续跑唤醒；无并发数上限）
