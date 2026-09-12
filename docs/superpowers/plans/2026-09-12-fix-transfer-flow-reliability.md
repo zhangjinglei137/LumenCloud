@@ -1484,21 +1484,21 @@ git commit -m "fix(nastools): webhook 鉴权移除 query token 通道"
 - Consumes: Task 1-19 全部实现
 - Produces: 全量 pytest 通过证据
 
-- [ ] **Step 1: 全量运行 pytest**
+- [x] **Step 1: 全量运行 pytest**
 
 Run: `cd backend && python -m pytest tests/ -x -q 2>&1 | tail -20`
 Expected: PASS（含既有 + 新增回归测试；`test_fix_p0_recovery_cleanup_transfer.py` / `test_p1_fixes.py` / `test_oracle_fixes.py` / `test_council_fixes.py` 全绿——状态机 CAS 幂等协议无破坏）
 
 若失败：按 `systematic-debugging` 流程定位，修复后重跑（回到对应任务，不直接进 Verify）。
 
-- [ ] **Step 2: 提交（如修复产生改动）**
+- [x] **Step 2: 提交（如修复产生改动）**
 
 ```bash
 git add -A backend/
 git commit -m "test(backend): 全量回归通过修复遗留问题"
 ```
 
-- [ ] **Step 3: 勾选 tasks.md 9.1**
+- [x] **Step 3: 勾选 tasks.md 9.1**
 
 ---
 
