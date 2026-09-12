@@ -116,6 +116,7 @@ class Aria2Client:
         download_dir: Optional[str] = None,
         out: Optional[str] = None,
         comment: Optional[str] = None,
+        options: Optional[dict[str, str]] = None,
     ) -> str:
         """aria2.addUri：返回 GID，供 download_task.aria2_gid 跟踪。
 
@@ -127,18 +128,24 @@ class Aria2Client:
                           （2026-09 修订：aria2 1.36.0 会静默丢弃该 option，
                           GID 来源校验已改用 DB gid 白名单，此参数仅作未来
                           aria2 版本兼容的冗余标记）
+            options:      追加透传的 aria2 RPC options（与 download_dir/out/
+                          comment 合并为同一 options dict）。T8.2 固定传
+                          {"allow-overwrite": "true", "auto-file-renaming": "false"}
+                          防同名自动重命名导致落盘名失配（下载重试必败根因）。
         """
-        options: dict[str, str] = {}
+        rpc_options: dict[str, str] = {}
         if download_dir is not None:
-            options["dir"] = download_dir
+            rpc_options["dir"] = download_dir
         if out is not None:
-            options["out"] = out
+            rpc_options["out"] = out
         if comment is not None:
-            options["comment"] = comment
+            rpc_options["comment"] = comment
+        if options:
+            rpc_options.update(options)
 
         params: list[Any] = [[uri]]
-        if options:
-            params.append(options)
+        if rpc_options:
+            params.append(rpc_options)
 
         result = await self._rpc("aria2.addUri", params)
         return str(result)

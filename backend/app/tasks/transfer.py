@@ -1078,10 +1078,18 @@ async def _transfer_chain(dq_id, media_id, episode, file_name, share_code, stoke
         # （CAS 未命中/无可格式化名）时回退原始名。quark 原文件已在转存落盘后被
         # 改名（_get_link_wait_visible rename_to），此处 out 与 quark 新名保持一致。
         out_name = download_name or file_name
+        # T8.2：每次 add_uri 显式携带 allow-overwrite=true + auto-file-renaming=false。
+        # 背景：下载重试时若 aria2 默认对已存在同名文件自动重命名（auto-file-renaming），
+        # 落盘名与 dq.download_name 失配 → 完成态校验 / local_path 定位错位 → 重试必败。
+        # options 与启动参数重复声明无害（RPC options 与命令行参数取并集语义）。
         gid = await aria2.client.add_uri(
             link,
             out=out_name,
             comment=f"{_COMMENT_PREFIX}{media_id}:{episode}",
+            options={
+                "allow-overwrite": "true",
+                "auto-file-renaming": "false",
+            },
         )
     except Exception as exc:  # noqa: BLE001
         # 任一步失败（含转存成功但直链/aria2 提交失败）→ 节点级重试路径（L2）；
