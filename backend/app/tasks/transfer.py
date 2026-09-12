@@ -61,7 +61,7 @@ import re
 import time as _time
 from datetime import timedelta
 
-from sqlalchemy import DateTime, Text, exists, func, insert, literal, select, update
+from sqlalchemy import DateTime, Text, case, exists, func, insert, literal, select, update
 
 from app.config import settings
 from app.database import async_session
@@ -606,7 +606,11 @@ async def _node_failure(dq_id, media_id, episode, file_name, retry_snapshot,
       - 失败诊断写入 node_error（node 是权威字段，错误必须写清楚原因）。
 
     clear_save：失败路径清空 save_task_id / save_attempt_at（P2-10/P0-1 防盲等——
-    已受理未落盘时若不清空，下一轮会跳过 save 永远等不到文件，死循环到上限）；
+    已受理未落盘时若不清空，下一轮会跳过 save 永远等不到文件，死循环到上限）。
+    条件化（T8.7）：仅 status != 'transferring' 时清空——transferring 说明并发方已
+    重新 save 并落库了新 task_id（save 落库 WHERE status='transferring'，不动
+    retry_count/node_attempt，故本 CAS 仍命中），无条件清空会抹掉并发新 save；
+    用 SQL case() 单语句内读 status 旧值判定（SET 表达式基于旧行求值，无 TOCTOU 间隙）。
     clear_gid：下载失败回退时清 aria2_gid（重新转存会重新 add_uri）。
 
     返回 'retry'（非终态回退）/'terminal_failed'（终态），供调用方决定续跑策略。
@@ -633,18 +637,54 @@ async def _node_failure(dq_id, media_id, episode, file_name, retry_snapshot,
                     node_started_at=now if not terminal else DownloadQueue.node_started_at,
                     node_finished_at=now if terminal else None,
                     updated_at=now,
-                    save_task_id=None if clear_save else DownloadQueue.save_task_id,
-                    save_attempt_at=None if clear_save else DownloadQueue.save_attempt_at,
+                    # T8.7：条件化清空——status 旧值仍为 'transferring' 说明并发方已重新
+                    # save 并落库新 task_id，保留（case 读取 SET 前旧行值）；否则清空防盲等。
+                    save_task_id=(
+                        case(
+                            (DownloadQueue.status == "transferring",
+                             DownloadQueue.save_task_id),
+                            else_=None,
+                        )
+                        if clear_save
+                        else DownloadQueue.save_task_id
+                    ),
+                    save_attempt_at=(
+                        case(
+                            (DownloadQueue.status == "transferring",
+                             DownloadQueue.save_attempt_at),
+                            else_=None,
+                        )
+                        if clear_save
+                        else DownloadQueue.save_attempt_at
+                    ),
                     aria2_gid=None if clear_gid else DownloadQueue.aria2_gid,
                 )
             )
             if r.rowcount == 0:
                 # P2-5：CAS 冲突（recovery 并发已回退/已计数）→ 不重复计数、不转移状态；
-                # 仍无条件清空 save 幂等标记（P0-1：残留会让下一轮跳过 save 盲等死循环）。
+                # 仍清 save 幂等标记（P0-1：残留会让下一轮跳过 save 盲等死循环）——
+                # T8.7 条件化：仅 status != 'transferring' 时清（transferring = 并发方已
+                # 重新 save 落库新 task_id，兜底分支同样不得抹掉）。
                 await s.execute(
                     update(DownloadQueue).where(DownloadQueue.id == dq_id).values(
-                        save_task_id=None if clear_save else DownloadQueue.save_task_id,
-                        save_attempt_at=None if clear_save else DownloadQueue.save_attempt_at,
+                        save_task_id=(
+                            case(
+                                (DownloadQueue.status == "transferring",
+                                 DownloadQueue.save_task_id),
+                                else_=None,
+                            )
+                            if clear_save
+                            else DownloadQueue.save_task_id
+                        ),
+                        save_attempt_at=(
+                            case(
+                                (DownloadQueue.status == "transferring",
+                                 DownloadQueue.save_attempt_at),
+                                else_=None,
+                            )
+                            if clear_save
+                            else DownloadQueue.save_attempt_at
+                        ),
                     )
                 )
                 await record_task_run(
@@ -1107,7 +1147,8 @@ async def _fail_transfer(dq_id, media_id, episode, file_name, quark_path,
     """转存链失败（P2-10/P0-1 语义）：清理残留 + 节点级回退（pending/node_attempt++）。
 
     返回 _node_failure 的状态（'retry'/'terminal_failed'）。CAS 冲突分支由
-    _node_failure 内部处理（不重复计数 + 无条件清 save_task_id 防盲等）。
+    _node_failure 内部处理（不重复计数 + 按状态条件化清 save_task_id：非
+    transferring 才清，防抹并发新 save——T8.7）。
     """
     try:
         dir_part, names = _split_quark_path(quark_path or f"/quark/{file_name}")
