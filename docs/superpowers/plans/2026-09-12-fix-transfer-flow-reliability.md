@@ -282,7 +282,7 @@ git commit -m "test(transfer): 固化容量快照独立提交无嵌套会话"
 
 **改造目标（design T2）**：现白名单只收 `status='downloading' AND aria2_gid 非空`；放宽为「DB 中 aria2_gid 非空全部行」，使回退中/在库任务不再误判陌生。
 
-- [ ] **Step 1: 更新 GID 校验测试**
+- [x] **Step 1: 更新 GID 校验测试**
 
 ```python
 """P1-2 GID 白名单逃生通道：白名单放宽 + 陌生 gid 连续跳过哨兵。"""
@@ -337,12 +337,12 @@ def test_gid_whitelist_includes_non_downloading_rows(db, monkeypatch):
     transfer_mod._record_alert.assert_not_awaited()
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cd backend && python -m pytest tests/test_gid_escape.py -v`
 Expected: FAIL（旧白名单按 status='downloading' 过滤，pending 行 gid 不在集合 → 触发告警）
 
-- [ ] **Step 3: 放宽白名单查询（transfer.py:1481-1491）**
+- [x] **Step 3: 放宽白名单查询（transfer.py:1481-1491）**
 
 ```python
 known_gids = {
@@ -356,19 +356,19 @@ known_gids = {
 }
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `cd backend && python -m pytest tests/test_gid_escape.py -v`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add backend/app/tasks/transfer.py backend/tests/test_gid_escape.py
 git commit -m "fix(transfer): 放宽 GID 白名单口径至全部非空 gid 行"
 ```
 
-- [ ] **Step 6: 勾选 tasks.md 2.1**
+- [x] **Step 6: 勾选 tasks.md 2.1**
 
 ---
 
