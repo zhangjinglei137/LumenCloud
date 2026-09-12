@@ -61,8 +61,7 @@ import re
 import time as _time
 from datetime import timedelta
 
-from sqlalchemy import exists, func, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import DateTime, Text, exists, func, insert, literal, select, update
 
 from app.config import settings
 from app.database import async_session
@@ -1346,7 +1345,7 @@ async def _fetch_from_task_queue(num: int = 10) -> int:
     queue-flow-rework Task 4：下载队列从巡检队列取件（巡检只写 task_queue，
     DownloadQueue 由准入端按序取件生成，D2「取件源双轨」①）。
 
-    取件契约（Task 2 review Imp#1 收敛 + Task 4 review R1 裁决）：
+    取件契约（Task 2 review Imp#1 收敛 + Task 4 review R1 裁决 + T6 原子化）：
     - **只取 status='ready'**：pending/probing/error 无完整转存凭据绝不提升
       （防无凭据行 promote）；done 为源行终态不重复取件。
     - **同 (media_id, episode) 已有 DownloadQueue 行的任务直接 SQL 层排除**
@@ -1354,10 +1353,15 @@ async def _fetch_from_task_queue(num: int = 10) -> int:
       终态 / 并发取件产物；防重权威源 = download_queue UNIQUE(media_id, episode)）。
       被排除行**保持 ready、不置 done、不占 LIMIT num 名额**（FIFO 不饿死）；
       既有 DQ 行消失（入库删除/运维清理）后下轮自然补取，重试路径保留。
-    - 同事务：CAS 抢占源行（UPDATE WHERE status='ready'，rowcount=0 → 并发方已取
-      件，跳过）+ INSERT DownloadQueue(status='pending')（保存点内逐行捕获
-      IntegrityError 兜底，防御未来其他 DQ 写入路径撞 UNIQUE）；源行终态 done
-      防重复取件，与 _enqueue 的 UNIQUE 捕获协同。
+    - **单语句条件 INSERT 原子化（T6）**：逐行执行
+      `INSERT INTO download_queue ... SELECT ... FROM task_queue WHERE id=? AND
+      status='ready' AND NOT EXISTS (同键已有 DQ)`——同一条语句内同时完成「源行
+      ready 校验 + 同键排除 + DQ 创建」。影响行数 1 → 同事务置源行 done（条件更新
+      WHERE status='ready'）；影响行数 0（撞 UNIQUE 或源行已被并发取件）→ **不置
+      done、保持 ready**（由下轮或并发路径处理）。取代旧的「CAS ready→done + 保存点
+      INSERT」：CAS 置 done 与 DQ 创建原子一致，杜绝「保存点回滚但 done 已在事务
+      提交、源行误标终态」的窗口（design T6，Task 9）。SQLite 与 Postgres 均支持
+      该 INSERT...SELECT...WHERE NOT EXISTS 形态。
     - download_name 暂不填（Task 7 转存成功后置格式化，避免与分享原始名分叉）。
     - 返回本次生成的行数。
     """
@@ -1387,15 +1391,6 @@ async def _fetch_from_task_queue(num: int = 10) -> int:
             if not rows:
                 return 0
             for r in rows:
-                # CAS 抢占源行：仅 status='ready' 可置 done；rowcount=0 → 并发方已
-                # 取件（本轮跳过，其 DQ 行由并发事务负责）。
-                res = await s.execute(
-                    update(TaskQueue)
-                    .where(TaskQueue.id == r.id, TaskQueue.status == "ready")
-                    .values(status="done", updated_at=now)
-                )
-                if res.rowcount != 1:
-                    continue
                 # Minor#2：ready 行凭据本应完整（enqueue 探测收集），兜底真实触发
                 # 即数据缺陷，告警留痕便于排查。
                 file_name = r.file_name or ""
@@ -1407,27 +1402,63 @@ async def _fetch_from_task_queue(num: int = 10) -> int:
                         "（file_name/file_size/share_code 缺失），按空值兜底拷贝",
                         r.id, r.media_id, r.episode,
                     )
+                # T6 原子化：单语句条件 INSERT（INSERT...SELECT...WHERE NOT EXISTS）在
+                # 同一条语句内完成「源行 status='ready' 校验 + 同键 NOT EXISTS 排除 +
+                # DQ 创建」——影响行数 1 → 同事务置源行 done；影响行数 0（撞 UNIQUE=
+                # 其他 DQ 写入路径抢先落库 / 源行已被并发取件）→ 不置 done、保持 ready，
+                # 由下轮取件或并发路径处理。取代旧「CAS ready→done + 保存点 INSERT」：
+                # 消除保存点回滚但 done 已在外层事务提交、源行误标终态的窗口。
                 # 拷贝 Task 2 快照字段 → DQ 同名字段（pwd_id 即设计文档的 pwd）。
-                # Minor#1：保存点内逐行 INSERT，撞 UNIQUE(media_id, episode)（未来
-                # 其他 DQ 写入路径抢先）→ 跳过该行、事务继续，不影响本批其余任务。
-                try:
-                    async with s.begin_nested():
-                        s.add(DownloadQueue(
-                            media_id=r.media_id, episode=r.episode, task_queue_id=r.id,
-                            file_name=file_name, file_size=file_size,
-                            size_estimated=r.size_estimated,
-                            share_code=share_code,
-                            pwd_id=r.pwd_id, stoken=r.stoken, receive_code=r.receive_code,
-                            fids=r.fids, fid_tokens=r.fid_tokens, folder_id=r.folder_id,
-                            status="pending", enqueued_at=now, updated_at=now,
-                        ))
-                except IntegrityError:
-                    logger.warning(
-                        "[transfer] task_queue id=%s media=%s episode=%s 生成 DQ 撞"
-                        " UNIQUE（同键已存在），跳过该行",
-                        r.id, r.media_id, r.episode,
+                res = await s.execute(
+                    insert(DownloadQueue)
+                    .from_select(
+                        [
+                            DownloadQueue.media_id, DownloadQueue.episode,
+                            DownloadQueue.task_queue_id, DownloadQueue.file_name,
+                            DownloadQueue.file_size, DownloadQueue.size_estimated,
+                            DownloadQueue.share_code, DownloadQueue.pwd_id,
+                            DownloadQueue.stoken, DownloadQueue.receive_code,
+                            DownloadQueue.fids, DownloadQueue.fid_tokens,
+                            DownloadQueue.folder_id, DownloadQueue.status,
+                            DownloadQueue.enqueued_at, DownloadQueue.updated_at,
+                        ],
+                        select(
+                            # 列引用来自 task_queue（类型与列定义一致，SQLite/Postgres
+                            # 均兼容）；FILE 三字段用 coalesce 保持原「空值兜底拷贝」语义
+                            # （NOT NULL 目标列）；status/时间用常量绑定。
+                            TaskQueue.media_id, TaskQueue.episode, TaskQueue.id,
+                            func.coalesce(TaskQueue.file_name, ""),
+                            func.coalesce(TaskQueue.file_size, 0),
+                            TaskQueue.size_estimated,
+                            func.coalesce(TaskQueue.share_code, ""),
+                            TaskQueue.pwd_id, TaskQueue.stoken, TaskQueue.receive_code,
+                            TaskQueue.fids, TaskQueue.fid_tokens, TaskQueue.folder_id,
+                            literal("pending", type_=Text),
+                            literal(now, type_=DateTime), literal(now, type_=DateTime),
+                        ).where(
+                            TaskQueue.id == r.id,
+                            TaskQueue.status == "ready",
+                            ~exists(
+                                select(DownloadQueue.id).where(
+                                    DownloadQueue.media_id == r.media_id,
+                                    DownloadQueue.episode == r.episode,
+                                )
+                            ),
+                        ),
                     )
+                )
+                if res.rowcount != 1:
+                    # 影响 0 行：撞 UNIQUE（同键 DQ 已被其他路径抢先创建）或源行已被
+                    # 并发取件（不再 ready）。不置 done、保持 ready——同键 DQ 由抢先
+                    # 路径负责；源行保持 ready 由下轮取件或并发路径继续处理。
                     continue
+                # 插入成功 → 同事务置源行 done（条件更新 WHERE status='ready'，保持
+                # CAS 幂等语义），终态防重复取件，与 _enqueue 的 UNIQUE 捕获协同。
+                await s.execute(
+                    update(TaskQueue)
+                    .where(TaskQueue.id == r.id, TaskQueue.status == "ready")
+                    .values(status="done", updated_at=now)
+                )
                 fetched += 1
     return fetched
 
