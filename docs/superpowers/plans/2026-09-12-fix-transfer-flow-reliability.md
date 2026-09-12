@@ -635,7 +635,7 @@ git commit -m "fix(nastools): 推进 library 时重置节点计数与失败诊�
 
 **改造目标（design T4）**：`cancel_task`/`skip_task` 置 DQ 终态（failed/skipped）后，同一事务内调用 `_sync_media_status(media_id, session)`——media 无任何 `_ACTIVE_STATUSES` 任务时条件回落 `tracking`；多任务在途时保持 downloading。
 
-- [ ] **Step 1: 更新 queue 测试（test_queue.py）**
+- [x] **Step 1: 更新 queue 测试（test_queue.py）**
 
 ```python
 async def test_cancel_last_task_rolls_back_media_to_tracking(client, db):
@@ -649,12 +649,12 @@ async def test_cancel_with_other_inflight_keeps_downloading(client, db):
     """media 仍有其他在途任务时取消 → media.status 保持 downloading。"""
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cd backend && python -m pytest tests/test_queue.py -v`
 Expected: FAIL（现 cancel/skip 不调用 `_sync_media_status`）
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `cancel_task`（L369-374 区域）与 `skip_task`（L467-472 区域）：在 `update(DownloadQueue)...` + `update(TaskQueue)...` 之后、`await session.commit()` 之前插入：
 
@@ -665,19 +665,19 @@ await _sync_media_status(dq.media_id, session)
 
 注意 `_sync_media_status(media_id, session)` 的 `session` 参数语义（transfer.py:712-747）：传入时复用外部事务、不自行提交——与 `cancel_task`/`skip_task` 的外层 `async with session.begin()` 或显式 `commit` 协调一致（queue.py 的 session 来自 `get_session` 依赖，当前用显式 `session.commit()` 模式；插入的调用在同一事务内，commit 前生效）。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `cd backend && python -m pytest tests/test_queue.py -v`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add backend/app/routers/queue.py backend/tests/test_queue.py
 git commit -m "fix(queue): cancel/skip 终态后同事务回落 media 状态"
 ```
 
-- [ ] **Step 6: 勾选 tasks.md 4.1**
+- [x] **Step 6: 勾选 tasks.md 4.1**
 
 ---
 

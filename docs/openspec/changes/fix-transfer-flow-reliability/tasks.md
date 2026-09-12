@@ -15,7 +15,7 @@
 
 ## 4. P1-4 cancel/skip 同步 media 状态（routers/queue.py）
 
-- [ ] 4.1 `cancel_task` / `skip_task` 置 DQ 终态后同一事务调用 `_sync_media_status`，并验证新增测试覆盖「取消最后一个任务后 media 状态回落 tracking」
+- [x] 4.1 `cancel_task` / `skip_task` 置 DQ 终态后同一事务调用 `_sync_media_status`，并验证新增测试覆盖「取消最后一个任务后 media 状态回落 tracking」
 
 ## 5. P1-5 转存提交冲突清理夸克残留（transfer.py）
 
