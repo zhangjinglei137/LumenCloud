@@ -13,14 +13,22 @@ TestClient 走真实 HTTP 层。DB 相关路径用 monkeypatch 替换模块内 a
 fake sessionmaker（对齐 test_transfer.py 的 fake 风格）；library_check / notifier
 为 AsyncMock。
 """
+import asyncio
 import json
 import types
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import StaticPool
 
+from app.database import Base
+import app.models  # noqa: F401  注册全部 ORM 模型
+from app.models import DownloadQueue, Media
 import app.routers.nastools_notify as nn_mod
 import app.tasks.library_check as lc_mod  # trigger_emby_refresh 的宿主模块（monkeypatch 用）
 
@@ -31,6 +39,66 @@ _ENDPOINT = "/internal/nastools/notify"
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
+def run(coro):
+    return asyncio.run(coro)
+
+
+def _now():
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+@pytest.fixture()
+def db():
+    """独立 in-memory SQLite（StaticPool 共享连接）→ 返回 sessionmaker（对齐 test_transfer.py）。"""
+    engine = create_async_engine(
+        "sqlite+aiosqlite://",
+        poolclass=StaticPool,
+        connect_args={"check_same_thread": False},
+    )
+    maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def _create():
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    run(_create())
+    yield maker
+    run(engine.dispose())
+
+
+async def seed_media_and_scrape(db, *, tmdb_id=42, title="测试剧", rows):
+    """写入 media + 若干 download_queue(scrape) 行。rows: [(episode, file_name, download_name)]"""
+    async with db() as s:
+        media = Media(title=title, media_type="tv", tmdb_id=tmdb_id, status="tracking")
+        s.add(media)
+        await s.flush()
+        mid = media.id
+        for episode, file_name, download_name in rows:
+            dq = DownloadQueue(
+                media_id=mid, episode=episode, file_name=file_name, file_size=1024,
+                share_code="sc123", stoken="stoken-x", fids='["f1"]',
+                fid_tokens='["ft1"]', folder_id="folder-1",
+                download_name=download_name, status="scrape",
+                node_attempt=1, node_started_at=_now(), updated_at=_now(),
+            )
+            s.add(dq)
+        await s.commit()
+        return mid
+
+
+async def read_dq_rows(db, media_id):
+    """读取该 media 全部 download_queue 行 → [(episode, status, node_attempt, node_error)]"""
+    async with db() as s:
+        return [
+            (r.episode, r.status, r.node_attempt, r.node_error)
+            for r in (
+                await s.execute(
+                    select(DownloadQueue).where(DownloadQueue.media_id == media_id)
+                )
+            ).scalars()
+        ]
+
 
 class FakeSession:
     """极简 fake session：get / execute / scalar 均可配。"""
@@ -209,8 +277,9 @@ def test_transfer_finished_advances_and_triggers_library_check(monkeypatch):
     # 推进已作单元级 mock：只验证 _handle_transfer_finished 的分派（推进 + 后台触发）
     advanced_rec = {}
 
-    async def fake_advance(media_id):
+    async def fake_advance(media_id, file_name=None):
         advanced_rec["media_id"] = media_id
+        advanced_rec["file_name"] = file_name
         return 1
 
     triggered = []
@@ -230,24 +299,33 @@ def test_transfer_finished_advances_and_triggers_library_check(monkeypatch):
     body = resp.json()
     assert body["ok"] is True
     assert body["advanced"] == 1
-    assert advanced_rec == {"media_id": 88}
+    assert advanced_rec == {"media_id": 88, "file_name": None}
     assert triggered == [88]
     assert refresh_calls == [1]
 
 
-def test_transfer_finished_no_advance_skips_emby_refresh(monkeypatch):
-    """无 scrape 任务可推进 → 不触发 Emby 全库 Refresh（避免无谓全库扫描）。"""
+def test_transfer_finished_no_advance_still_triggers_library_check(monkeypatch):
+    """无 scrape 任务可推进（0 推进）→ 不触发 Emby Refresh，但仍触发 library_check 轮询加速。"""
     cli = make_client(_TOKEN, monkeypatch)
-    monkeypatch.setattr(nn_mod, "async_session", lambda: FakeSession(execute_result=FakeResult(88)))
+    async_session_fake = FakeSession(execute_result=FakeResult(88))
+    monkeypatch.setattr(nn_mod, "async_session", lambda: async_session_fake)
     monkeypatch.setattr(nn_mod, "_advance_scrape_to_library", AsyncMock(return_value=0))
     refresh_calls = []
     monkeypatch.setattr(lc_mod, "trigger_emby_refresh", lambda: refresh_calls.append(1))
+    triggered = []
+
+    async def fake_check_library_background(media_id):
+        triggered.append(media_id)
+
+    monkeypatch.setattr(nn_mod, "_check_library_background", fake_check_library_background)
 
     resp = cli.post(f"{_ENDPOINT}?token={_TOKEN}", json=media_payload())
 
     assert resp.status_code == 200
     assert resp.json()["advanced"] == 0
     assert refresh_calls == []
+    # 无法定位/无任务 → 触发 library_check 轮询加速（不丢任务，协调者裁定 4）
+    assert triggered == [88]
 
 
 def test_transfer_finished_tmdb_not_in_library_ignored(monkeypatch):
@@ -297,6 +375,102 @@ def test_unrelated_event_ignored(monkeypatch):
     resp = cli.post(f"{_ENDPOINT}?token={_TOKEN}", json={"type": "plugin.reload", "data": {}})
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# 文件级推进（T3：webhook 载荷文件名/集号定位单行，CAS 推进）
+# ---------------------------------------------------------------------------
+
+def test_single_file_webhook_advances_only_matching_row(db, monkeypatch):
+    """单文件整理完成事件只推进匹配行，其余 scrape 行保持（集号规范化定位 S01E02）。"""
+    mid = run(seed_media_and_scrape(db, tmdb_id=42, rows=[
+        ("S01E01", "测试剧.S01E01.ReEnc-1080p.mkv", None),
+        ("S01E02", "测试剧.S01E02.ReEnc-1080p.mkv", None),
+    ]))
+    monkeypatch.setattr(nn_mod, "async_session", db)
+
+    n = run(nn_mod._advance_scrape_to_library(mid, file_name="测试剧.S01E02.mkv"))
+
+    assert n == 1
+    rows = run(read_dq_rows(db, mid))
+    states = {ep: (status, node_attempt, node_error) for ep, status, node_attempt, node_error in rows}
+    # S01E02 行 → library，且节点字段重置（node_attempt=0 / node_error=None）
+    assert states["S01E02"] == ("library", 0, None)
+    # S01E01 行保持 scrape（未被误推进）
+    assert states["S01E01"][0] == "scrape"
+
+
+def test_single_file_webhook_matches_by_download_name(db, monkeypatch):
+    """载荷文件名无法提取集号（电影）→ 退化为精确文件名匹配（download_name/file_name）。"""
+    mid = run(seed_media_and_scrape(db, tmdb_id=43, rows=[
+        ("Movie-1", "原始下载名.mkv", "某某 (2024).mkv"),
+        ("S01E01", "测试剧.S01E01.ReEnc-1080p.mkv", None),
+    ]))
+    monkeypatch.setattr(nn_mod, "async_session", db)
+
+    n = run(nn_mod._advance_scrape_to_library(mid, file_name="某某 (2024).mkv"))
+
+    assert n == 1
+    rows = run(read_dq_rows(db, mid))
+    states = {ep: status for ep, status, _attempt, _err in rows}
+    assert states["Movie-1"] == "library"
+    assert states["S01E01"] == "scrape"
+
+
+def test_webhook_cannot_locate_file_advances_nothing(db, monkeypatch):
+    """载荷文件名无法定位 → 0 推进 + 仍触发 library_check 轮询（不丢任务）。"""
+    mid = run(seed_media_and_scrape(db, tmdb_id=44, rows=[
+        ("S01E01", "测试剧.S01E01.ReEnc-1080p.mkv", None),
+        ("S01E02", "测试剧.S01E02.ReEnc-1080p.mkv", None),
+    ]))
+    monkeypatch.setattr(nn_mod, "async_session", db)
+
+    n = run(nn_mod._advance_scrape_to_library(mid, file_name="测试剧.S05E99.mkv"))
+
+    assert n == 0
+    rows = run(read_dq_rows(db, mid))
+    assert all(status == "scrape" for _ep, status, _attempt, _err in rows)
+
+
+def test_advance_scrape_no_file_name_returns_zero(db, monkeypatch):
+    """载荷无文件名（旧版 webhook）→ 0 推进，不触碰任何 scrape 行。"""
+    mid = run(seed_media_and_scrape(db, tmdb_id=45, rows=[
+        ("S01E01", "测试剧.S01E01.ReEnc-1080p.mkv", None),
+    ]))
+    monkeypatch.setattr(nn_mod, "async_session", db)
+
+    n = run(nn_mod._advance_scrape_to_library(mid, file_name=None))
+
+    assert n == 0
+    rows = run(read_dq_rows(db, mid))
+    assert rows[0][1] == "scrape"
+
+
+def test_webhook_transfer_finished_cannot_locate_still_polls(db, monkeypatch):
+    """端到端：载荷无法定位 → advanced=0 且 _check_library_background 被触发（轮询兜底）。"""
+    cli = make_client(_TOKEN, monkeypatch)
+    mid = run(seed_media_and_scrape(db, tmdb_id=46, rows=[
+        ("S01E01", "测试剧.S01E01.ReEnc-1080p.mkv", None),
+    ]))
+    monkeypatch.setattr(nn_mod, "async_session", db)
+
+    triggered = []
+
+    async def fake_check_library_background(media_id):
+        triggered.append(media_id)
+
+    monkeypatch.setattr(nn_mod, "_check_library_background", fake_check_library_background)
+    monkeypatch.setattr(nn_mod, "_advance_scrape_to_library",
+                        AsyncMock(return_value=0, side_effect=None))
+
+    payload = media_payload(tmdb_id=46)
+    payload["data"]["file_name"] = "测试剧.S05E99.mkv"
+    resp = cli.post(f"{_ENDPOINT}?token={_TOKEN}", json=payload)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["advanced"] == 0
+    assert triggered == [mid]
 
 
 # fixture：无 DB 访问路径的 client（token 校验/非 JSON 分支）
