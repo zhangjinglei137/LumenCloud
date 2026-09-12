@@ -1022,11 +1022,11 @@ git commit -m "fix(library_check): 刮削失败按 media 进程内退避并解�
 
 **生产确认点（design T8.2/风险表）**：实施前核对生产 aria2 启动参数——若 aria2 已配置 `allow-overwrite=true`/`auto-file-renaming=false` 则跳过本任务并记录（不阻塞主修复）。
 
-- [ ] **Step 1: 核对生产 aria2 启动参数**
+- [x] **Step 1: 核对生产 aria2 启动参数**
 
 检查部署配置（docker-compose / systemd / 运维文档中 aria2 启动参数）。若已配置 → 在本任务记录「已配置，跳过」，勾选 tasks.md 8.2 并提交说明性 commit（或直接进入 Step 6）。若未配置 → 继续。
 
-- [ ] **Step 2: 更新 RPC shape 测试（test_aria2_rpc_shapes.py）**
+- [x] **Step 2: 更新 RPC shape 测试（test_aria2_rpc_shapes.py）**
 
 ```python
 async def test_add_uri_options_shape():
@@ -1036,12 +1036,12 @@ async def test_add_uri_options_shape():
     # 断言 options.get("auto-file-renaming") == "false"
 ```
 
-- [ ] **Step 3: 跑测试确认失败**
+- [x] **Step 3: 跑测试确认失败**
 
 Run: `cd backend && python -m pytest tests/test_aria2_rpc_shapes.py -v`
 Expected: FAIL（现 add_uri 无 options）
 
-- [ ] **Step 4: 实现**
+- [x] **Step 4: 实现**
 
 `_transfer_chain` L1055-1059：
 
@@ -1059,7 +1059,7 @@ gid = await aria2.client.add_uri(
 
 按既有 add_uri 包装的实际签名确认 options 参数名（若包装层为 `**kwargs` 透传 aria2 RPC，则按 RPC 契约 `options` dict）。
 
-- [ ] **Step 5: 跑测试确认通过 + 提交**
+- [x] **Step 5: 跑测试确认通过 + 提交**
 
 Run: `cd backend && python -m pytest tests/test_aria2_rpc_shapes.py -v`
 Expected: PASS
@@ -1069,7 +1069,7 @@ git add backend/app/tasks/transfer.py backend/tests/test_aria2_rpc_shapes.py
 git commit -m "fix(transfer): aria2 add_uri 追加覆盖与禁重命名 options"
 ```
 
-- [ ] **Step 6: 勾选 tasks.md 8.2（并记录生产核对结果）**
+- [x] **Step 6: 勾选 tasks.md 8.2（并记录生产核对结果）**
 
 ---
 
