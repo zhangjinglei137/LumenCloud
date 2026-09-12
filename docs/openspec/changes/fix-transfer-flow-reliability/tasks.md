@@ -44,4 +44,4 @@
 ## 9. 集成验证
 
 - [x] 9.1 全量运行 `backend/tests/` pytest 通过（含既有 + 新增回归测试），确认无破坏主链路状态机与 CAS 幂等协议
-- [ ] 9.2 复查 design.md Open Questions 处置记录（aria2 参数确认结果、部署 worker 数），更新至文档或另立后续 change
+- [x] 9.2 复查 design.md Open Questions 处置记录（aria2 参数确认结果、部署 worker 数），更新至文档或另立后续 change

@@ -1512,25 +1512,25 @@ git commit -m "test(backend): 全量回归通过修复遗留问题"
 - Consumes: Task 12（aria2 参数确认结果）、Task 19（NaSTools query 通道确认结果）、部署 worker 数
 - Produces: design.md Open Questions 处置记录更新
 
-- [ ] **Step 1: 复查 Open Questions**
+- [x] **Step 1: 复查 Open Questions**
 
 design.md「4. 技术风险与缓解」表 + 各任务生产确认点：
 - 8.2 aria2 参数确认结果（Task 12 记录）
 - 8.9 NaSTools query 通道确认结果（Task 19 记录）
 - 部署 worker 数（单 worker 假设是否成立）
 
-- [ ] **Step 2: 更新文档**
+- [x] **Step 2: 更新文档**
 
 将确认结果写入 design.md 对应条目（或补充「处置记录」小节）；无法确认的项标注「未确认，另立后续 change」。
 
-- [ ] **Step 3: 提交**
+- [x] **Step 3: 提交**
 
 ```bash
 git add docs/superpowers/specs/2026-09-12-transfer-flow-reliability-design.md
 git commit -m "docs(design): 记录 Open Questions 处置结果"
 ```
 
-- [ ] **Step 4: 勾选 tasks.md 9.2**
+- [x] **Step 4: 勾选 tasks.md 9.2**
 
 ---
 
