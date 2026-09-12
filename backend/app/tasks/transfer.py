@@ -1207,7 +1207,14 @@ async def _try_admit_one(t0) -> str:
                     if capacity_ok:
                         # 容量复判（P0-1/T1 边界）：usage 缓存快照 + reserved_新 + 本集
                         # ≤ quota（锁外 check 只是预判，此处为最终判定；**不重复调用
-                        # get_usage**，避免事务内网络 IO 回潮）
+                        # get_usage**，避免事务内网络 IO 回潮）。
+                        # **故意不含 margin**（design T1 边界 L38 指定，与 check() 的
+                        # used+candidate+margin≤quota 不同）：锁外 check 已含 margin，
+                        # 复判只防御「check 与事务 B 之间 reserved 并发增大」这一竞态——
+                        # check 的 margin 即该增大的容差；若 reserved 增量 ≤ margin，
+                        # 复判（无 margin 的宽松公式）必然通过，且配额预算仍被 check
+                        # 的严格公式覆盖。勿在此引入 margin 复刻 check，避免双计容差
+                        # 导致准入偏严。
                         recheck_ok = True
                         if (
                             usage_snap is not None
