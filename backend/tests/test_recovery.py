@@ -219,10 +219,15 @@ def test_recover_scrape_threshold_configurable(db, env, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_recover_library_confirmed_emby_finalizes_done(db, env, monkeypatch):
-    """library 超时但 Emby 已收录（命中且不在遗漏集）→ finalize done，不回退。"""
+    """library 超时但 Emby 已收录（命中且不在遗漏集）→ finalize done，不回退。
+
+    T8.3 语义变更：遗漏集为空改为延迟复核（recovery 低频路径同样生效）——此处
+    显式用非空遗漏集（Emby 已收录当前集、仍缺失其他集）表达「已确认不在遗漏集」。
+    """
     patch_db(monkeypatch, db)
     mid, dq_id = run(seed_dq(db, status="library", tmdb_id=42, updated_at=_now() - timedelta(hours=8)))
     env["emby"].find_emby_id = AsyncMock(return_value="emby-1")
+    env["emby"].get_missing_episodes = AsyncMock(return_value=[{"code": "S01E02"}])
 
     count = run(recovery_mod.recover_stale_tasks())
 

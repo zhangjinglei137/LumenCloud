@@ -214,11 +214,17 @@ def test_emby_fault_skips_round_without_consuming_timeout(db, env, monkeypatch):
 
 
 def test_finalize_done_normal_path_no_regression(db, env, monkeypatch):
-    """_finalize_done 正常路径不回归：Emby 收录（当前集不在遗漏集）→ done。"""
+    """_finalize_done 正常路径不回归：Emby 收录（当前集不在遗漏集）→ done。
+
+    T8.3 语义变更：遗漏集为空改为延迟复核（首轮等待 60s）——此处用非空遗漏集
+    （Emby 已收录当前集、仍缺失其他集）表达「当前集已确认不在遗漏集」的原语义。
+    """
     patch_db(monkeypatch, db)
     mid, dq_id = run(seed_library(db))
     env["emby"].find_emby_id = AsyncMock(return_value="emby-1")
-    env["emby"].get_missing_episodes = AsyncMock(return_value=[])
+    env["emby"].get_missing_episodes = AsyncMock(return_value=[
+        {"code": "S01E02", "season": 1, "episode": 2, "name": "E02"},
+    ])
 
     run(library_check_mod.library_check())
 

@@ -103,6 +103,25 @@ def _reset_scrape_backoff():
     library_check_mod._scrape_backoff.clear()
 
 
+@pytest.fixture(autouse=True)
+def _reset_recent_empty_check():
+    """T8.3：每个测试前重置遗漏集为空延迟复核表（进程级共享状态）。
+
+    与 _reset_scrape_backoff 同模式：_recent_empty_check 是模块级进程内 dict，
+    key = f"{media_id}:{episode}"（media_id 均从 1 自增 + episode 复用）——多个
+    测试会在 60s 真实时间窗口内命中同一 key，不重置会互相污染「首次等待复核 /
+    窗口流逝后放行」的时间戳语义。getattr 防御：实现加入该 dict 前（TDD RED
+    波次）属性不存在时跳过清理。
+    """
+    table = getattr(library_check_mod, "_recent_empty_check", None)
+    if table is not None:
+        table.clear()
+    yield
+    table = getattr(library_check_mod, "_recent_empty_check", None)
+    if table is not None:
+        table.clear()
+
+
 @pytest.fixture()
 def env(monkeypatch):
     """全套 fake 服务 + 替换 library_check 模块内的依赖引用。"""
@@ -253,11 +272,18 @@ def test_scrape_failure_counts_attempt_and_fails_at_limit(db, env, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_library_hit_marks_done_and_removes_quark(db, env, monkeypatch):
-    """Emby 命中（剧集：当前集不在遗漏集）→ done+删夸克+通知+media 回退+续跑。"""
+    """Emby 命中（剧集：当前集不在遗漏集）→ done+删夸克+通知+media 回退+续跑。
+
+    T8.3：遗漏集为空代表「Emby 刚建条目/扫描中，暂无法确认」，改为延迟复核
+    （首轮等待 60s）；此处用非空遗漏集（Emby 已收录当前集、仍缺失其他集）表达
+    「当前集已确认不在遗漏集」→ 直接 finalize 的既有语义。
+    """
     patch_db(monkeypatch, db)
     mid, dq_id = run(seed_library(db))
     env["emby"].find_emby_id = AsyncMock(return_value="emby-1")
-    env["emby"].get_missing_episodes = AsyncMock(return_value=[])
+    env["emby"].get_missing_episodes = AsyncMock(return_value=[
+        {"code": "S01E02", "season": 1, "episode": 2, "name": "E02"},
+    ])
 
     run(library_check_mod.library_check())
 
@@ -445,6 +471,114 @@ def test_library_movie_hit_finalizes_without_episode_check(db, env, monkeypatch)
 
 
 # ---------------------------------------------------------------------------
+# T8.3 集级确认 fail-open：遗漏集为空延迟复核 + 电影入库前文件大小校验
+# ---------------------------------------------------------------------------
+
+def test_episode_in_missing_empty_list_delays_recheck(db, env, monkeypatch):
+    """遗漏集为空：首次 → True（等待复核）；60s 窗口内再调 → 仍 True；
+    窗口流逝（时间戳前移 61s）→ False（放行一次）；放行后立即再调 → 重新等待。
+    不同 media 同一 episode 互不干扰（key 含 media_id）。
+    """
+    patch_db(monkeypatch, db)
+    # 首次：遗漏集为空（Emby 刚建条目/扫描中）→ 等待复核，不立即放行
+    assert library_check_mod._episode_in_missing("S01E01", set(), media_id=1) is True
+    # 立即再调：60s 窗口内 → 仍等待（≥60s 才放行一次的节流语义）
+    assert library_check_mod._episode_in_missing("S01E01", set(), media_id=1) is True
+    # 模拟 60s 窗口流逝（monotonic 上次时间戳前移 61s）→ 放行一次
+    library_check_mod._recent_empty_check["1:S01E01"] = _t.monotonic() - 61
+    assert library_check_mod._episode_in_missing("S01E01", set(), media_id=1) is False
+    # 放行后立即再调 → 重新进入等待窗口
+    assert library_check_mod._episode_in_missing("S01E01", set(), media_id=1) is True
+    # 不同 media 同一 episode 不受彼此时间戳影响
+    assert library_check_mod._episode_in_missing("S01E01", set(), media_id=2) is True
+
+
+def test_library_empty_missing_delays_finalize(db, env, monkeypatch):
+    """集成：剧集遗漏集为空（Emby 收录确认中）→ 本轮等待复核，不立即 finalize。"""
+    patch_db(monkeypatch, db)
+    mid, dq_id = run(seed_library(db))
+    env["emby"].find_emby_id = AsyncMock(return_value="emby-1")
+    env["emby"].get_missing_episodes = AsyncMock(return_value=[])  # 遗漏集为空
+
+    run(library_check_mod.library_check())
+
+    dq = run(get_dq(db, dq_id))
+    assert dq.status == "library"  # 未 finalize（等待复核）
+    assert dq.node_error is None
+    assert env["alist"].remove_calls == []  # 不删夸克
+    assert env["notifier"].events == []
+    assert run(get_media(db, mid)).status == "downloading"  # media 不误回退
+
+
+def test_library_empty_missing_finalize_after_window(db, env, monkeypatch):
+    """集成：遗漏集为空且 60s 复核窗口已流逝 → 放行 finalize（不无限等待）。"""
+    patch_db(monkeypatch, db)
+    mid, dq_id = run(seed_library(db))
+    env["emby"].find_emby_id = AsyncMock(return_value="emby-1")
+    env["emby"].get_missing_episodes = AsyncMock(return_value=[])
+
+    # 首轮：等待复核（写入时间戳，不 finalize）
+    run(library_check_mod.library_check())
+    assert run(get_dq(db, dq_id)).status == "library"
+    assert env["alist"].remove_calls == []
+
+    # 模拟复核窗口流逝 → 第二轮放行 finalize
+    library_check_mod._recent_empty_check[f"{mid}:S01E01"] = _t.monotonic() - 61
+    run(library_check_mod.library_check())
+
+    dq = run(get_dq(db, dq_id))
+    assert dq.status == "done"
+    assert env["alist"].remove_calls == [(["ep.mkv"], "/quark/")]
+    assert run(get_media(db, mid)).status == "tracking"
+
+
+def test_movie_file_size_plausible_rejects_empty():
+    """纯函数：0 字节空文件（下载失败强信号）视为明显不合理；正常大小视为合理。"""
+    ok, reason = library_check_mod._movie_file_size_plausible(0)
+    assert ok is False
+    assert reason  # 返回不合理原因
+    ok2, _ = library_check_mod._movie_file_size_plausible(2 * 1024 ** 3)
+    assert ok2 is True
+
+
+def test_movie_size_check_on_confirmation(db, env, monkeypatch):
+    """电影入库确认前校验文件大小合理性：0 字节空文件 → 不 finalize + 告警记录。
+
+    Emby 侧无可靠文件大小字段（find_emby_id 仅返回条目 Id，未请求 MediaSources
+    大小）→ 「与 Emby 侧偏离过大」比对跳过（design 允许降级）；保留最无歧义的
+    本地下限校验：0 字节空文件明显不合理。
+    """
+    patch_db(monkeypatch, db)
+    mid, dq_id = run(seed_library(db, episode="电影.mkv", media_type="movie",
+                                  quark_path="/quark/电影.mkv"))
+    # 置 0 字节（空文件）
+    async def zero_size():
+        async with db() as s:
+            dq = await s.get(DownloadQueue, dq_id)
+            dq.file_size = 0
+            await s.commit()
+    run(zero_size())
+    env["emby"].find_emby_id = AsyncMock(return_value="emby-movie-1")
+    # 拦截告警记录（防真实 _record_alert 的通知/DB 副作用）
+    alerted = []
+
+    async def fake_alert(media_id, message, category=None, bucket=None):
+        alerted.append((media_id, message, category))
+
+    monkeypatch.setattr(transfer_mod, "_record_alert", fake_alert)
+
+    run(library_check_mod.library_check())
+
+    dq = run(get_dq(db, dq_id))
+    assert dq.status == "library"  # 未 finalize
+    assert dq.node_error is None
+    assert env["alist"].remove_calls == []  # 未删夸克
+    assert env["notifier"].events == []
+    assert alerted and alerted[0][0] == mid and alerted[0][2] == "movie_size"  # 告警已记录
+    assert run(get_media(db, mid)).status == "downloading"  # media 未误回退
+
+
+# ---------------------------------------------------------------------------
 # P2-5 真实名匹配删除 / P1-6 超时清理
 # ---------------------------------------------------------------------------
 
@@ -454,7 +588,10 @@ def test_library_removes_quark_real_name(db, env, monkeypatch):
     mid, dq_id = run(seed_library(db))
     env["alist"].dir_entries = [{"name": "EP.MKV", "is_dir": False, "size": 1024}]
     env["emby"].find_emby_id = AsyncMock(return_value="emby-1")
-    env["emby"].get_missing_episodes = AsyncMock(return_value=[])
+    # T8.3：用非空遗漏集（当前集已确认不在遗漏集）表达可直接 finalize 的语义
+    env["emby"].get_missing_episodes = AsyncMock(return_value=[
+        {"code": "S01E02", "season": 1, "episode": 2, "name": "E02"},
+    ])
 
     run(library_check_mod.library_check())
 
