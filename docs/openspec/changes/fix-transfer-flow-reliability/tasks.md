@@ -39,7 +39,7 @@
 - [x] 8.6 取件凭据完整性校验：file_name/file_size/share_code 缺失保持源行 ready + 告警，不建注定失败的 DQ，并验证测试覆盖
 - [x] 8.7 `_node_failure` 无条件清 save_task_id 改为 `WHERE status != 'transferring'` 条件化，并验证测试覆盖「不抹掉并发方新 save 的 task_id」
 - [x] 8.8 全量模式防重：`_enqueue` 对 download_queue 补集号归一化防重（跨文件名同集），并验证测试覆盖「同集不同命名不再重复入队」
-- [ ] 8.9 NaSTools webhook token 移除 `?token=` query 通道（或经确认保留并补文档说明），并验证鉴权测试更新
+- [x] 8.9 NaSTools webhook token 移除 `?token=` query 通道（或经确认保留并补文档说明），并验证鉴权测试更新
 
 ## 9. 集成验证
 

@@ -1436,11 +1436,11 @@ git commit -m "fix(scan): 入队对 download_queue 补集号归一化防重"
 
 **生产确认点（design T8.9/风险表）**：实施前确认是否有部署依赖 query 通道（旧版 NaSTools 插件仅支持 query token 时，移除会导致 webhook 401）。有依赖 → 保留并补文档说明；无依赖 → 移除。
 
-- [ ] **Step 1: 确认部署依赖**
+- [x] **Step 1: 确认部署依赖**
 
 检查部署文档/既有 NaSTools 插件配置。若确认有 query 通道依赖 → 记录「保留 + 文档说明」，勾选 tasks.md 8.9 并提交文档性 commit。若确认无依赖 → 继续。
 
-- [ ] **Step 2: 更新鉴权测试（test_nastools_notify.py）**
+- [x] **Step 2: 更新鉴权测试（test_nastools_notify.py）**
 
 ```python
 async def test_query_token_channel_removed(client):
@@ -1452,16 +1452,16 @@ async def test_header_token_still_works(client):
     """X-NaSTools-Token header 通道仍正常。"""
 ```
 
-- [ ] **Step 3: 跑测试确认失败**
+- [x] **Step 3: 跑测试确认失败**
 
 Run: `cd backend && python -m pytest tests/test_nastools_notify.py -v`
 Expected: FAIL（现实现 query 通道放行）
 
-- [ ] **Step 4: 实现**
+- [x] **Step 4: 实现**
 
 `_token_from_request`（L68-79）删除 `request.query_params.get("token")` 分支，仅保留 `X-NaSTools-Token` → `Authorization` 顺序。
 
-- [ ] **Step 5: 跑测试确认通过 + 提交**
+- [x] **Step 5: 跑测试确认通过 + 提交**
 
 Run: `cd backend && python -m pytest tests/test_nastools_notify.py -v`
 Expected: PASS
@@ -1471,7 +1471,7 @@ git add backend/app/routers/nastools_notify.py backend/tests/test_nastools_notif
 git commit -m "fix(nastools): webhook 鉴权移除 query token 通道"
 ```
 
-- [ ] **Step 6: 勾选 tasks.md 8.9（并记录部署确认结果）**
+- [x] **Step 6: 勾选 tasks.md 8.9（并记录部署确认结果）**
 
 ---
 
