@@ -90,6 +90,19 @@ def db():
     run(engine.dispose())
 
 
+@pytest.fixture(autouse=True)
+def _reset_scrape_backoff():
+    """T8.1：每个测试前重置 library_check 刮削退避表（进程级共享状态）。
+
+    单测以独立 in-memory DB 模拟「互不相干的业务场景」，但 media_id 均从 1
+    自增，多个测试会在 10 分钟真实时间窗口内命中同一 media 的退避条目——
+    不重置会互相吞掉「退避期跳过/不批量计数」依赖的同步尝试。
+    """
+    library_check_mod._scrape_backoff.clear()
+    yield
+    library_check_mod._scrape_backoff.clear()
+
+
 @pytest.fixture()
 def env(monkeypatch):
     """全套 fake 服务 + 替换 library_check 模块内的依赖引用。"""
@@ -205,7 +218,12 @@ def test_scrape_skips_when_no_pending(db, env, monkeypatch):
 
 
 def test_scrape_failure_counts_attempt_and_fails_at_limit(db, env, monkeypatch):
-    """Nastools 同步抛异常 → node_attempt++（<3 保持 scrape 重试 / ≥3 failed 终态）。"""
+    """Nastools 同步抛异常 → node_attempt++（<3 保持 scrape 重试 / ≥3 failed 终态）。
+
+    T8.1 新语义：每次失败后该 media 进入 600s 进程内退避（同步失败与节点重试
+    计数解耦），测试将退避截止时间戳回拨（模拟 10min 窗口流逝）以验证跨退避
+    窗口的累计计数与 ≥3 转 failed 的终态语义（CAS 幂等语义不变）。
+    """
     patch_db(monkeypatch, db)
     mid, dq_id = run(seed_scrape(db))
     env["nastools"].nastools_sync = AsyncMock(side_effect=RuntimeError("NasTools 不可用"))
@@ -217,6 +235,8 @@ def test_scrape_failure_counts_attempt_and_fails_at_limit(db, env, monkeypatch):
         assert dq.status == "scrape"
         assert dq.node_attempt == expect
         assert "NasTools 不可用" in (dq.node_error or "")
+        # 模拟退避窗口流逝（monotonic 截止回拨）→ 下一轮重新参与同步尝试
+        library_check_mod._scrape_backoff[mid] = 0.0
 
     # 第 3 次失败 → node_attempt=3 ≥ 上限 → failed 终态
     run(library_check_mod.scrape_runner())

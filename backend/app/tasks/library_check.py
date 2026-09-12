@@ -49,6 +49,7 @@ node 维度的职责）。
 import asyncio
 import logging
 import re
+import time as _time
 from datetime import timedelta
 
 from sqlalchemy import delete, select, update
@@ -74,6 +75,30 @@ _RETRY_LIMIT = 3
 # 入库等待超时默认值（秒）；system_config 键 library_check_timeout_seconds 覆盖
 _LIBRARY_TIMEOUT_DEFAULT = 600
 _TIMEOUT_CONFIG_KEY = "library_check_timeout_seconds"
+
+# T8.1（design 8.1）：刮削失败退避——NasTools 故障（外部服务问题）时对该 media
+# 设置进程内退避，窗口内（10min）不再重复 force sync。参照 transfer._alert_cooldown
+# 模式：进程内共享 dict + monotonic 截止时间戳；单 worker 部署可靠（重启即失，
+# 影响有限：至多多触发一次重试）。防「刮削连坐风暴」：外部故障下 job 每 30s tick
+# 反复全量同步，若每次都批量累加 node_attempt，全部 scrape 行会快速冲刺 failed。
+_SCRAPE_BACKOFF_SECONDS = 600.0
+# media_id → 退避截止 monotonic 时间戳（seconds）；仅本次进程有效
+_scrape_backoff: dict[int, float] = {}
+
+
+def _media_in_scrape_backoff(media_id: int) -> bool:
+    """该 media 是否处于刮削退避期（退避期内不参与本轮同步尝试）。
+
+    过期条目顺带清理（惰性、每次判定 O(1)，防止 dict 随 media 增减无界增长）。
+    """
+    now_m = _time.monotonic()
+    until = _scrape_backoff.get(media_id)
+    if until is None:
+        return False
+    if until <= now_m:
+        _scrape_backoff.pop(media_id, None)  # 已过期 → 放行并清理
+        return False
+    return True
 
 # P3-3 同款：后台任务强引用集合（library_check_job 内 _spawn(scrape_runner) 用，
 # 防 asyncio.create_task 的任务被 GC 回收未执行）
@@ -169,14 +194,23 @@ async def _scrape_impl() -> None:
     if not pending:
         return
 
-    # 2) 一次 NasTools 全量目录同步服务全部待刮削集（force=True 跳过冷却；
+    # T8.1：退避过滤——退避期内的 media 本轮不参与同步尝试（10min 内不重复
+    # force sync）；「本轮实际尝试的任务」= 全部待刮削任务 − 退避中 media 的任务。
+    try_pending = [row for row in pending if not _media_in_scrape_backoff(row.media_id)]
+    if not try_pending:
+        return
+
+    # 2) 一次 NasTools 全量目录同步服务本轮实际尝试的待刮削集（force=True 跳过冷却；
     #    失败路径在 nastools_sync 内已 task_run(error) + flow_error 通知，此处
     #    re-raise（force 分支）供执行器做节点级重试计数）
     try:
         await nastools_sync.nastools_sync(force=True)
     except Exception as exc:  # noqa: BLE001  Nastools 同步失败（force 路径向上暴露）
         logger.error("[scrape] Nastools 刮削同步失败: %s", exc)
-        await _count_scrape_failure(pending, exc)
+        # T8.1：同步失败（外部服务故障）与节点重试计数解耦——pending 只收窄为
+        # 「每 media 本轮实际尝试的那一行代表」，不批量累加该 media 全部 scrape 行
+        # node_attempt（防连坐风暴：NasTools 恢复后同步成功仍可一次性推进全部行）
+        await _count_scrape_failure(_representative_rows(try_pending), exc)
         return
 
     # 3) 成功：全部当前 status='scrape' 的任务（含同步期间新进入的）→ library
@@ -201,11 +235,39 @@ async def _scrape_impl() -> None:
     trigger_emby_refresh()
 
 
+def _representative_rows(rows) -> list:
+    """每 media 只保留一行（本轮实际尝试的代表任务）。
+
+    T8.1 同步失败与节点重试计数解耦的载体：NasTools 故障是外部服务问题，不属
+    任何具体任务的过错——不批量累加该 media 全部 scrape 行 node_attempt（防连坐
+    风暴），只对每 media 一行代表计数（该 media 持续失败的信号；<3 保持重试 /
+    ≥3 转 failed 终态语义不变）。同步恢复成功后其余行仍可一次性推进 library。
+    """
+    seen: set[int] = set()
+    out = []
+    for row in rows:
+        if row.media_id in seen:
+            continue
+        seen.add(row.media_id)
+        out.append(row)
+    return out
+
+
 async def _count_scrape_failure(pending, exc) -> None:
-    """刮削同步失败 → 逐条 node_attempt++（CAS）；<3 保持 scrape 重试 / ≥3 failed 终态。"""
+    """刮削同步失败（NasTools 故障）→ 逐条 node_attempt++（CAS）并对涉及的
+    media 设置进程内退避（10min 内不再重复 force sync）；<3 保持 scrape 重试 /
+    ≥3 failed 终态。
+
+    pending 只含「每 media 本轮实际尝试的那一行代表」（_scrape_impl 已收窄），
+    外部服务故障不批量累加该 media 全部 scrape 行 node_attempt（design 8.1）。
+    """
     from app.tasks import transfer as transfer_mod  # 函数内延迟：防循环导入
 
     now = _now()
+    # T8.1：失败涉及的 media 全部设置进程内退避（monotonic 截止时间戳）
+    now_m = _time.monotonic()
+    for _dq_id, mid, _ep, _att in pending:
+        _scrape_backoff[mid] = now_m + _SCRAPE_BACKOFF_SECONDS
     detail = f"刮削同步失败（Nastools）: {exc}"
     async with async_session() as s:
         async with s.begin():
