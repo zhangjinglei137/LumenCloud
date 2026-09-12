@@ -293,3 +293,50 @@ def test_quota_wake_precheck_failure_falls_back_to_admission_loop(db, monkeypatc
 
     # 预查失败不阻断 → 准入循环仍被调用（fail-closed 语义在 _try_admit_one 内兜底）
     assert try_admit.call_count >= 1
+
+
+# ---------------------------------------------------------------------------
+# T8.6：取件凭据完整性校验（design §T8.6，Task 16）
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "missing_field,seed_kwargs",
+    [
+        ("file_name", {"file_name": ""}),
+        ("file_size", {"file_size": 0}),
+        ("share_code", {"share_code": ""}),
+    ],
+)
+def test_fetch_incomplete_credentials_keeps_source_ready(
+    db, monkeypatch, transfer_env, missing_field, seed_kwargs
+):
+    """T8.6 核心：取件时校验 file_name/file_size/share_code 完整性，任一缺失（为空/0）
+    → 源行保持 ready（不置 done、不建 DQ）+ _record_alert 告警留痕。
+
+    构造：task_queue(1) status='ready'，对应字段缺失（share_code='' 为首例目标）；
+    调用 _fetch_from_task_queue()。断言：返回计数不含该行、源行 status 保持 ready、
+    不生成 DownloadQueue、_record_alert 被调用且 category="transfer"。
+
+    RED（现实现空值兜底拷贝）：缺失行仍进单语句 INSERT 建 DQ、源行置 done、无告警
+    → n==0 / status=='ready' / count==0 / alert.assert_awaited() 全部失败；
+    GREEN（本任务校验+continue）：缺失行跳过 INSERT，源行保持 ready，告警留痕。
+    """
+    mid = run(seed_media(db))
+    tq_id = run(seed_tq(db, mid, episode="S01E01", status="ready", **seed_kwargs))
+    alert = AsyncMock()
+    monkeypatch.setattr(transfer_mod, "_record_alert", alert)
+
+    n = run(transfer_mod._fetch_from_task_queue())
+
+    tq = run(read_tq(db, tq_id))
+    # 不建注定失败的 DQ：返回计数为 0
+    assert n == 0
+    # 源行保持 ready（不置 done，下轮重试或由上游探测路径补全凭据）
+    assert tq.status == "ready"
+    # 未生成 DownloadQueue
+    assert run(count_dq(db, media_id=mid)) == 0
+    # 告警留痕（category="transfer"）
+    alert.assert_awaited_once()
+    alert_call = alert.await_args
+    assert alert_call is not None
+    assert alert_call.kwargs.get("category") == "transfer"
