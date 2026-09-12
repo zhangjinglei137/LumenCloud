@@ -579,7 +579,7 @@ git commit -m "fix(nastools): webhook 推进改为文件级单行定位，无法
 
 **改造目标（design T3）**：推进 UPDATE 从仅 `status/node_started_at/updated_at` 补齐节点重置字段，使进入 library 节点后重试计数归零、失败诊断清空。
 
-- [ ] **Step 1: 追加节点重置断言**
+- [x] **Step 1: 追加节点重置断言**
 
 ```python
 async def test_advance_resets_node_fields(db, monkeypatch):
@@ -589,12 +589,12 @@ async def test_advance_resets_node_fields(db, monkeypatch):
     # 断言：status='library', node_attempt=0, node_finished_at 非空, node_error is None
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cd backend && python -m pytest tests/test_nastools_notify.py -v`
 Expected: FAIL（现 UPDATE 不含节点重置字段）
 
-- [ ] **Step 3: 补充 UPDATE values**
+- [x] **Step 3: 补充 UPDATE values**
 
 ```python
 .values(
@@ -607,19 +607,19 @@ Expected: FAIL（现 UPDATE 不含节点重置字段）
 )
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `cd backend && python -m pytest tests/test_nastools_notify.py -v`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add backend/app/routers/nastools_notify.py backend/tests/test_nastools_notify.py
 git commit -m "fix(nastools): 推进 library 时重置节点计数与失败诊断"
 ```
 
-- [ ] **Step 6: 勾选 tasks.md 3.2**
+- [x] **Step 6: 勾选 tasks.md 3.2**
 
 ---
 
