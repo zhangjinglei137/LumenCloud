@@ -614,7 +614,7 @@ git commit -m "docs(scan): 批注偏离 queue-flow-rework 设计并处置 Open Q
 > 2. 观察一天 task_run 写入量回落至约 N×24（原为 N×1440/天）。
 > 3. 新剧发现延迟从 ≤1 分钟变为 ≤60 分钟（默认间隔；已确认可接受，可调小关注剧集间隔）。
 
-- [ ] **Step 2: 用户确认后勾选 4.2**
+- [x] **Step 2: 用户确认后勾选 4.2**
 
 用户确认验收完成后，编辑 `<classic-change-dir>/tasks.md` 勾选 `4.2`，并提交：
 
