@@ -20,6 +20,7 @@ from app.services.notifier import (
     NotifyEvent,
     notifier,
 )
+from app.services.notify_templates import approval_pending
 from app.tasks import record_task_run
 
 logger = logging.getLogger(__name__)
@@ -58,10 +59,15 @@ async def notification_scan_job() -> None:
             if await _already_notified(s, _WR_PREFIX, wr.id):
                 continue
             sent += 1
+            # 审批条文案经 approval_pending 工厂（fix-notification-templates）：
+            # title=「新的想看请求：{title}」，body=裸 title。
+            # **去重前缀保留在 body 首部**（wr#<id> 前缀格式固定，查询/写入统一
+            # 带空格，P2-4），由调用方拼接，工厂不负责。
+            nt_title, nt_body = approval_pending(wr.title)
             await notifier.notify(NotifyEvent(
                 event_type=EVENT_APPROVAL_PENDING,
-                title=f"新的想看请求: {wr.title}",
-                body=f"{_WR_PREFIX}{wr.id} {wr.title}",
+                title=nt_title,
+                body=f"{_WR_PREFIX}{wr.id} {nt_body}",
                 recipient=None,  # 全体（站内铃铛）；前端按角色过滤
                 extra={"watch_request_id": wr.id},
             ))
@@ -75,6 +81,10 @@ async def notification_scan_job() -> None:
             if await _already_notified(s, _TQ_PREFIX, tq.id):
                 continue
             sent += 1
+            # 失败转存条**保持内联文案，不入工厂**（协调者 Ruling）：body 必须以
+            # `tq#<id> {file_name}: {error}` 精确前缀查重（_already_notified 按
+            # "tq#{id} %" 匹配），格式固定；且本场景只有 file_name + error，
+            # 无媒体名/集数，与工厂族 flow_error_transfer（媒体名+集数）语义不符。
             await notifier.notify(NotifyEvent(
                 event_type=EVENT_FLOW_ERROR,
                 title="转存任务失败",

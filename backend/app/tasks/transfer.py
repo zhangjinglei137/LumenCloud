@@ -72,6 +72,7 @@ from app.services.notifier import (
     NotifyEvent,
     notifier,
 )
+from app.services.notify_templates import flow_error_alert
 from app.tasks import as_bool, record_task_run
 from app.tasks.library_check import scrape_runner
 # tasks 层公共纯函数（app.utils，仅标准库）：统一时间源与夸克路径拆分
@@ -694,6 +695,11 @@ async def _node_failure(dq_id, media_id, episode, file_name, retry_snapshot,
                 await _sync_media_status(media_id, s)
 
     if terminal:
+        # 终态失败通知**保留内联文案，不入 flow_error_transfer 工厂**（协调者 Ruling）：
+        # 工厂需媒体名参数，而本函数（_fail_transfer/_fail_download/_preflight_quark_mount
+        # 共用路径）作用域内仅 media_id（int），无现成 media 对象——接入工厂需额外
+        # 查询 Media.title。为不引入额外查询（该通知已是中文标题 + 原因 + 次数，
+        # 符合规范），保留原 notify_title 与 body 格式。
         await notifier.notify(NotifyEvent(
             event_type=EVENT_FLOW_ERROR,
             title=notify_title,
@@ -836,10 +842,13 @@ async def _record_alert(media_id, message, category=None, bucket=None) -> None:
         )
         return
     _alert_cooldown[key] = (now, bucket)
+    # 告警文案经 flow_error_alert 工厂（fix-notification-templates）：title
+    # 保留「转存流程告警」，body=message（工厂默认即 (title, message)，语义不变）。
+    a_title, a_body = flow_error_alert("转存流程告警", message)
     await notifier.notify(NotifyEvent(
         event_type=EVENT_FLOW_ERROR,
-        title="转存流程告警",
-        body=message,
+        title=a_title,
+        body=a_body,
         recipient=None,
         extra={"media_id": media_id} if media_id is not None else {},
     ))

@@ -29,6 +29,7 @@ from app.database import async_session
 from app.models import QuarkCapacityLog, SystemConfig
 from app.services import alist, config_store
 from app.services.notifier import EVENT_FLOW_ERROR, NotifyEvent, notifier
+from app.services.notify_templates import flow_error_capacity
 
 logger = logging.getLogger(__name__)
 
@@ -392,14 +393,17 @@ async def check_capacity_alert() -> bool:
 
     latest = rows[0]  # 最新快照（checked_at DESC 首位）
     rate_pct = rates[0] * 100
+    # 告警文案经 flow_error_capacity 工厂（fix-notification-templates）：
+    # 格式化 {rate_pct:.1f}% / {used_gb:.1f}G / {total_gb:.1f}G / {threshold_pct:.0f}%。
+    # threshold 在本模块为 0~1 浮点（如 0.90），工厂需要百分数值 → 传 threshold * 100。
+    c_title, c_body = flow_error_capacity(
+        rate_pct, latest.used_gb, latest.total_gb,
+        CAPACITY_ALERT_CONSECUTIVE, threshold * 100,
+    )
     await notifier.notify(NotifyEvent(
         event_type=EVENT_FLOW_ERROR,
-        title="夸克容量使用率过高",
-        body=(
-            f"夸克中转空间使用率 {rate_pct:.1f}%（used {latest.used_gb:.2f}G / "
-            f"total {latest.total_gb:.2f}G），连续 {CAPACITY_ALERT_CONSECUTIVE} 次快照"
-            f"≥ 阈值 {threshold:.0%}，请及时清理或扩容。"
-        ),
+        title=c_title,
+        body=c_body,
         recipient=None,
         extra={"source": latest.source, "checked_at": str(latest.checked_at)},
     ))

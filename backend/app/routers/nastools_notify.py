@@ -43,6 +43,7 @@ from app.config import settings
 from app.database import async_session
 from app.models import DownloadQueue, Media, SystemConfig
 from app.services.notifier import EVENT_FLOW_ERROR, NotifyEvent, notifier
+from app.services.notify_templates import flow_error_nastools_event
 from app.utils import fmt_episode, parse_episode_num
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,16 @@ router = APIRouter(tags=["nastools-webhook"])
 _EVENT_TRANSFER_FINISHED = "transfer.finished"
 _EVENT_TRANSFER_FAIL = "transfer.fail"
 _EVENT_DOWNLOAD_FAIL = "download.fail"
+
+# 事件类型 → 中文名映射（fix-notification-templates：失败事件标题/正文用中文名）。
+# 注意：transfer.finished 走 _handle_transfer_finished 成功路径（不产生失败通知），
+# 故中文名仅在失败分支（transfer.fail / download.fail）使用；含全部事件名
+# 仅为映射完整，不改变成功路径行为。
+_EVENT_CN_NAMES = {
+    "transfer.finished": "转存完成",
+    "transfer.fail": "转存失败",
+    "download.fail": "下载失败",
+}
 
 # 集号识别模式（与 tasks/library_check.py 同款：SxxExx / 第N集）
 _RE_SXXEXX = re.compile(r"[Ss](\d{1,2})[Ee](\d{1,3})")
@@ -309,11 +320,14 @@ async def nastools_notify(request: Request) -> JSONResponse:
                 media_id = (
                     await s.execute(select(Media.id).where(Media.tmdb_id == tmdb_id))
                 ).scalars().first()
-        await _notify_flow_error(
-            f"NaSTools {event_type}: {title}",
-            f"NaSTools 报告 {event_type}（文件整理/下载失败），请人工核查。",
-            media_id,
-        )
+        # 失败事件：标题/正文用中文事件名（fix-notification-templates）
+        # cn_name = _EVENT_CN_NAMES.get(event_type, event_type)（未命中回退原文）。
+        # 文案经 flow_error_nastools_event 工厂：title=「{中文事件名}：{媒体标题}」，
+        # body=「NaSTools 报告{中文事件名}，请人工核查。」。title 为媒体标题，
+        # 来自 media_info.title 或 data.name（缺失回退事件类型原文）。
+        cn_name = _EVENT_CN_NAMES.get(event_type, event_type)
+        e_title, e_body = flow_error_nastools_event(cn_name, title)
+        await _notify_flow_error(e_title, e_body, media_id)
         return JSONResponse(content={"ok": True})
 
     # 其它事件：记录后忽略

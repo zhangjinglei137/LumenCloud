@@ -501,7 +501,11 @@ def test_notification_scan_prefix_with_space(db, monkeypatch):
     wr_events = [e for e in fake.events if e.event_type == EVENT_APPROVAL_PENDING]
     tq_events = [e for e in fake.events if e.event_type == EVENT_FLOW_ERROR]
     # P2-4 修复点：wr#1 / tq#1 不被 wr#10 / tq#10 的 body 误命中
-    assert len(wr_events) == 1 and wr_events[0].body == "wr#1 想看A"
+    # 审批条文案经 approval_pending 工厂（fix-notification-templates）：
+    # title=「新的想看请求：{title}」；body=裸 title，去重前缀保留在 body 首部。
+    assert len(wr_events) == 1
+    assert wr_events[0].title == "新的想看请求：想看A"
+    assert wr_events[0].body == "wr#1 想看A"
     assert len(tq_events) == 1 and tq_events[0].body.startswith("tq#1 ")
 
     # 模拟 InAppNotifier 已写库（body 带空格标记）→ 再次扫描不再重复推送

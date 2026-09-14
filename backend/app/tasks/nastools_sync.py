@@ -22,6 +22,7 @@ from app.database import async_session
 from app.models import SystemConfig
 from app.services import nastools
 from app.services.notifier import EVENT_FLOW_ERROR, NotifyEvent, notifier
+from app.services.notify_templates import flow_error_nastools_sync
 from app.tasks import get_config_value, record_task_run
 
 logger = logging.getLogger(__name__)
@@ -138,10 +139,14 @@ async def nastools_sync(force: bool = False) -> None:
             else:
                 _sync_alert_cooldown[key] = (now_m, bucket)
                 try:
+                    # 失败通知文案经 flow_error_nastools_sync 工厂
+                    # （fix-notification-templates）：title=「NasTools 目录同步失败」，
+                    # body 含 exc 文本（str(exc)，与节流指纹前缀无关）。
+                    ns_title, ns_body = flow_error_nastools_sync(str(exc))
                     await notifier.notify(NotifyEvent(
                         event_type=EVENT_FLOW_ERROR,
-                        title="NasTools 目录同步失败",
-                        body=f"同步失败，请检查 NasTools 服务与凭据（N2）: {exc}",
+                        title=ns_title,
+                        body=ns_body,
                         recipient=None,
                     ))
                 except Exception as notify_exc:  # noqa: BLE001  best-effort 通知

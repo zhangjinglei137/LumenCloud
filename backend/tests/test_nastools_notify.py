@@ -369,19 +369,28 @@ def test_transfer_finished_missing_tmdb_ignored(monkeypatch):
 
 
 def test_transfer_fail_notifies_flow_error(monkeypatch):
-    """transfer.fail → flow_error 通知。"""
+    """transfer.fail → flow_error 通知（中文事件名 + 中文正文，fix-notification-templates）。
+
+    事件类型经 _EVENT_CN_NAMES 映射为中文字面量，文案经 flow_error_nastools_event
+    工厂：title=「转存失败：{媒体标题}」、body=「NaSTools 报告转存失败，请人工核查。」。
+    """
     cli = make_client(_TOKEN, monkeypatch)
     notify_call = {}
 
     async def fake_notify(event):
         notify_call["event_type"] = event.event_type
         notify_call["title"] = event.title
+        notify_call["body"] = event.body
 
     monkeypatch.setattr(nn_mod.notifier, "notify", fake_notify)
     payload = {"type": "transfer.fail", "data": {"media_info": {"title": "某某"}}}
     resp = cli.post(_ENDPOINT, json=payload, headers={"X-NaSTools-Token": _TOKEN})
     assert resp.status_code == 200
     assert notify_call.get("event_type") == "flow_error"
+    # 中文事件名（不再出现英文 transfer.fail 字面量）；标题带媒体标题、正文带中文事件名
+    assert "transfer.fail" not in notify_call.get("title") and "transfer.fail" not in notify_call.get("body")
+    assert notify_call.get("title") == "转存失败：某某"
+    assert notify_call.get("body") == "NaSTools 报告转存失败，请人工核查。"
 
 
 def test_unrelated_event_ignored(monkeypatch):
