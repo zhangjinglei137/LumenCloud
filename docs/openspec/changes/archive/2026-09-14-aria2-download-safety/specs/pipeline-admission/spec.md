@@ -1,6 +1,12 @@
-## MODIFIED Requirements
+## REMOVED Requirements
 
 ### Requirement: 转存来源校验与逃生
+**Reason**: n8n 已停用，「防 n8n 误启动双转存」场景消失；白名单口径无法区分用户自行下载与误启动，继续拦截只会误伤用户自行添加的下载任务。
+**Migration**: 由新增的「转存与用户自行下载共存」要求替代——陌生 aria2 任务不再拦截转存、不再告警、不再自动清理删除。
+
+## ADDED Requirements
+
+### Requirement: 转存与用户自行下载共存
 
 系统在准入转存前 SHALL 校验 aria2 活动/等待任务的来源；aria2 中的陌生 gid（不属于本系统 download_queue 已签发集合）不得导致转存拦截、告警或自动清理删除——用户自行添加的下载任务 SHALL 与系统任务共存。系统 SHALL 仅对自有已签发 gid 执行下载状态跟踪与完成推进。
 

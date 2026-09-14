@@ -2,6 +2,8 @@
 comet_change: aria2-download-safety
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-09-14-aria2-download-safety
+status: final
 ---
 
 # aria2-download-safety 技术设计

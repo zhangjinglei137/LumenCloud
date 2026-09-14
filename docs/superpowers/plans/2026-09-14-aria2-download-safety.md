@@ -2,6 +2,7 @@
 change: aria2-download-safety
 design-doc: docs/superpowers/specs/2026-09-14-aria2-download-safety-design.md
 base-ref: bc8b15e8f70a9ce7fbf24368c00f36d0d2e21da6
+archived-with: 2026-09-14-aria2-download-safety
 ---
 
 # aria2 下载链路安全 Implementation Plan
