@@ -13,7 +13,7 @@
 """
 import asyncio
 import types
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 import pytest
@@ -306,13 +306,11 @@ def test_scan_one_missing_required_does_not_touch_last_scan_at(db, monkeypatch):
 # 统一巡检调度（queue-flow-rework Task 1）：移除 per-media 冷却
 # ---------------------------------------------------------------------------
 
-def test_scan_all_media_scans_within_interval_cooldown(db, monkeypatch):
-    """未到 per-media 冷却也巡检：last_scan_at=now（旧逻辑未到期）的 media 仍被扫描。
+def test_scan_all_media_scans_due_media(db, monkeypatch):
+    """已到期立即扫：last_scan_at 超过 per-media 间隔（1 分钟）的 media 被巡检。
 
-    queue-flow-rework Task 1：scan_all_media 不再按 per-media
-    `last_scan_at + 周期` 到期过滤，全局巡检间隔仅由 job 触发周期控制——
-    每轮 tick 遍历全部 tracking/downloading 影视逐一巡检。
-    media.scan_interval_minutes 字段仅作兼容读取保留，不再参与调度。
+    restore-scan-interval-scheduling：恢复 per-media 到期过滤——已到期（超过间隔）
+    的 tracking/downloading 影视进入巡检；未到期跳过（见 test_scan_all_media_skips_not_due）。
     """
     from app.tasks import scan as scan_mod
 
@@ -329,7 +327,8 @@ def test_scan_all_media_scans_within_interval_cooldown(db, monkeypatch):
         async with db() as s:
             media = Media(
                 title="测试剧", media_type="tv", status="tracking",
-                scan_interval_minutes=60, last_scan_at=_now(),  # 刚巡检过（旧逻辑未到期）
+                scan_interval_minutes=1,
+                last_scan_at=_now() - timedelta(minutes=2),  # 已超过 1 分钟间隔
             )
             s.add(media)
             await s.commit()
@@ -338,8 +337,7 @@ def test_scan_all_media_scans_within_interval_cooldown(db, monkeypatch):
     mid = run(seed())
     run(scan_mod.scan_all_media())
 
-    # 未到 per-media 冷却也被巡检（不在旧到期过滤分支跳过）
-    assert routed == [mid]
+    assert routed == [mid]  # 已到期 → 巡检
 
 
 def test_scan_all_media_scans_only_tracking_downloading(db, monkeypatch):

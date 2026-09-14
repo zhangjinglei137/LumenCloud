@@ -560,8 +560,8 @@ def test_done_resolution_hit_retry_limit_marks_failed(db, monkeypatch):
 # 到期过滤——每轮遍历全部 tracking/downloading 影视，全局间隔仅由 job 触发周期控制
 # ---------------------------------------------------------------------------
 
-def test_scan_all_media_scans_all_tracking(db, monkeypatch):
-    """统一调度：全部 tracking/downloading 影视一律巡检，不再按 last_scan_at 冷却跳过。"""
+def test_scan_all_media_scans_due_tracking(db, monkeypatch):
+    """恢复 per-media 到期过滤：A（从未巡检）/ B（已到期）巡检，C（未到期）跳过。"""
     from datetime import timedelta
 
     from app.tasks import scan as scan_mod
@@ -591,7 +591,12 @@ def test_scan_all_media_scans_all_tracking(db, monkeypatch):
     ids = run(seed())
     run(scan_mod.scan_all_media())
 
-    # 移除 per-media 冷却后：A（从未巡检）、B（已到期）、C（旧逻辑未到期）全部巡检
+    # 到期过滤：A（从未巡检）、B（已到期）巡检；C（未到期）跳过
+    assert sorted(routed) == sorted([ids[0], ids[1]])
+
+    # 对照：force=True 全部巡检
+    routed.clear()
+    run(scan_mod.scan_all_media(force=True))
     assert sorted(routed) == sorted(ids)
 
 
