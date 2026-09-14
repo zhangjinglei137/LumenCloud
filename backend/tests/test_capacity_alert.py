@@ -110,6 +110,15 @@ def test_alert_not_fired_when_recent_snapshot_below_threshold():
     n.notify.assert_not_called()
 
 
+def test_alert_not_fired_at_40_percent_usage():
+    # 当前生产数据（210G 总量、40% 使用率）：远低于默认阈值 90% → 绝不告警
+    rows = [_log(210.0, 84.5), _log(210.0, 84.4)]
+    alerted, session, n = _aligned_check(rows)
+
+    assert alerted is False
+    n.notify.assert_not_called()
+
+
 def test_alert_not_fired_when_only_one_snapshot():
     alerted, session, n = _aligned_check([_log(10.0, 9.5)])
 
