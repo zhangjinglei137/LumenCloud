@@ -13,8 +13,8 @@
 
 ## 3. 入库完成文案改造
 
-- [ ] 3.1 `backend/app/tasks/library_check.py` 入库完成通知改为调用 `notify_templates.download_complete(...)`：在现有 session 中查询 `Media.title` 取得媒体名，电影（`movie:` 前缀）与剧集分支分别生成文案，验证通知文案为「媒体 {title} · SxxExx 已入库完成。」/「媒体 {title} 已入库完成。」且断言不含 media_id/文件名
-- [ ] 3.2 确认删除转移队列/下载完成阶段的其它 download_complete 通知后无遗漏调用，验证 grep `EVENT_DOWNLOAD_COMPLETE` 仅 library_check 一处
+- [x] 3.1 `backend/app/tasks/library_check.py` 入库完成通知改为调用 `notify_templates.download_complete(...)`：在现有 session 中查询 `Media.title` 取得媒体名，电影（`movie:` 前缀）与剧集分支分别生成文案，验证通知文案为「媒体 {title} · SxxExx 已入库完成。」/「媒体 {title} 已入库完成。」且断言不含 media_id/文件名
+- [x] 3.2 确认删除转移队列/下载完成阶段的其它 download_complete 通知后无遗漏调用，验证 grep `EVENT_DOWNLOAD_COMPLETE` 仅 library_check 一处
 
 ## 4. 其余通知点接入文案工厂
 

@@ -314,7 +314,7 @@ git commit -m "refactor(notifications): 移除下载开始与下载完成噪音�
 - Consumes: `notify_templates.download_complete(media_name, episode, is_movie)`
 - Produces: `_finalize_done(dq_id, media_id, episode, file_name, quark_path, transfer_mod, media_title, is_movie)`（参数扩展）
 
-- [ ] **Step 1: 扩展 `_finalize_done` 签名并改用工厂**
+- [x] **Step 1: 扩展 `_finalize_done` 签名并改用工厂**
 
 在 `backend/app/tasks/library_check.py`：
 
@@ -346,7 +346,7 @@ await _finalize_done(dq_id, media_id, episode, file_name, quark_path, transfer_m
 
 （`import` 置于模块顶部更佳；函数内延迟 import 仅当存在循环导入风险。）
 
-- [ ] **Step 2: 更新 test_library_check.py 断言**
+- [x] **Step 2: 更新 test_library_check.py 断言**
 
 `backend/tests/test_library_check.py:299-302` 区域：通知断言从「入库完成 在 title 中」细化为：
 
@@ -360,7 +360,7 @@ assert ".mkv" not in done_events[0].body
 
 （`media_title` 为测试 fixture 中创建的 Media.title 值；`episode` 为该用例的 episode 值。若原用例未断言通知，则新增上述断言。）
 
-- [ ] **Step 3: 确认 download_complete 唯一调用点**
+- [x] **Step 3: 确认 download_complete 唯一调用点**
 
 Run: `cd backend && grep -rn "EVENT_DOWNLOAD_COMPLETE" app/`
 Expected: 仅 `notifier.py`（定义）与 `library_check.py`（唯一 notify 调用）
@@ -368,7 +368,7 @@ Expected: 仅 `notifier.py`（定义）与 `library_check.py`（唯一 notify �
 Run: `cd backend && python -m pytest tests/test_library_check.py -v`
 Expected: PASS
 
-- [ ] **Step 4: 提交**
+- [x] **Step 4: 提交**
 
 ```bash
 git add backend/app/tasks/library_check.py backend/tests/test_library_check.py
