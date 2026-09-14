@@ -10,7 +10,7 @@ scan_all_media 巡检主流程（设计文档 §4.3 / 实施计划 §3.5）
 入口：
 - scan_media(media_id)   单影视巡检；API POST /api/media/{id}/scan 手动触发，
                          返回最近一条 task_run id（routers/media.py 契约）
-- scan_all_media()       遍历全部 tracking/downloading 影视
+- scan_all_media()       遍历到期 tracking/downloading 影视（per-media 间隔过滤）
 - scan_all_media_job()   APScheduler job 包装（阶段2 不注册定时，仅保留供手动调用）
 
 服务层调用（app.services，另一 lane 已产出）：
@@ -1653,7 +1653,8 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
             duration_seconds=time.monotonic() - t0,
         )
 
-    # 1. 状态预检：paused/error 跳过；downloading 不跳过（防卡死），仅本轮不入队
+    # 1. 状态预检：paused/error 跳过；downloading 不排除出巡检集合（防卡死），
+    #    但按其各自间隔到期判断（≠ 绕过冷却），仅本轮不入队（skip_enqueue）
     if media.status in ("paused", "error"):
         _phase_skip_remaining(phases, "check")  # 尚未开始的阶段标记 skipped（未达完成态）
         return await _finish(
