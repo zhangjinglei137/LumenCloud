@@ -7,9 +7,9 @@
 
 ## 2. 移除噪音通知
 
-- [ ] 2.1 删除 `backend/app/routers/approvals.py` 中「开始入库」notifier.notify 调用（原 211-220 行），验证 `pytest backend/tests/test_approval_dup.py`、`test_p1_fixes.py` 相关用例更新后通过
-- [ ] 2.2 删除 `backend/app/tasks/transfer.py` 中「下载开始」与「下载完成」两处 notifier.notify 调用（保留刮削触发逻辑），验证 `pytest backend/tests/test_library_check.py` 相关断言更新后通过
-- [ ] 2.3 确认 `EVENT_DOWNLOAD_STARTED` 常量保留但无调用点，`download_complete` 仅剩「入库完成」一处调用，验证 grep 结果与 `pytest backend/tests/test_oracle_fixes.py` 通过
+- [x] 2.1 删除 `backend/app/routers/approvals.py` 中「开始入库」notifier.notify 调用（原 211-220 行），验证 `pytest backend/tests/test_approval_dup.py`、`test_p1_fixes.py` 相关用例更新后通过
+- [x] 2.2 删除 `backend/app/tasks/transfer.py` 中「下载开始」与「下载完成」两处 notifier.notify 调用（保留刮削触发逻辑），验证 `pytest backend/tests/test_library_check.py` 相关断言更新后通过
+- [x] 2.3 确认 `EVENT_DOWNLOAD_STARTED` 常量保留但无调用点，`download_complete` 仅剩「入库完成」一处调用，验证 grep 结果与 `pytest backend/tests/test_oracle_fixes.py` 通过
 
 ## 3. 入库完成文案改造
 

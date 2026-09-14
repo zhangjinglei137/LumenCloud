@@ -269,25 +269,25 @@ git commit -m "feat(notifications): 新增通知文案工厂统一文案格式"
 - Consumes: 无新接口；仅删除调用
 - Produces: 无
 
-- [ ] **Step 1: 移除 approvals.py「开始入库」通知**
+- [x] **Step 1: 移除 approvals.py「开始入库」通知**
 
 删除 `approve_approval` 中 `# ---- 事务外副作用 ----` 下 §5.3 的 `notifier.notify(NotifyEvent(event_type=EVENT_DOWNLOAD_STARTED, title=f"开始入库: {title}", recipient=requester, ...))` 整段 try/except（原 209-220 行）。同时删除该函数中不再使用的 `from app.services.notifier import ... EVENT_DOWNLOAD_STARTED` 引用（若文件顶部 import 中仅此处使用 EVENT_DOWNLOAD_STARTED，则从 import 行移除）。**保留** `trigger_scan_background(media_id, manual=True)` 触发逻辑。若 `requester` 变量此后不再被使用，一并删除其赋值（`title, requester = wr.title, wr.requested_by` → `title = wr.title`）。
 
-- [ ] **Step 2: 移除 transfer.py「下载开始」通知**
+- [x] **Step 2: 移除 transfer.py「下载开始」通知**
 
 删除 `_complete_download` 中 P1 段 `notifier.notify(NotifyEvent(event_type=EVENT_DOWNLOAD_STARTED, title=f"下载开始: {out_name}", ...))` 的 try/except（原 995-1007 行）。**保留** 其后的容量缓存失效 `capacity.provider.invalidate_usage_cache()` 逻辑。
 
-- [ ] **Step 3: 移除 transfer.py「下载完成」通知**
+- [x] **Step 3: 移除 transfer.py「下载完成」通知**
 
 在 `_after_complete_promote` 中删除 `await notifier.notify(NotifyEvent(event_type=EVENT_DOWNLOAD_COMPLETE, title=f"下载完成: {file_name}", ...))`（原 528-535 行）。**保留** 后续 `_spawn(scrape_runner)` 刮削触发。`_after_complete_promote` 参数若 `file_name` 只被通知使用，保留参数不影响（其他地方仍用），如仅此处引用则可删除参数并在调用处调整——以编译/测试为准，避免过度清理。
 
-- [ ] **Step 4: 更新受影响测试断言**
+- [x] **Step 4: 更新受影响测试断言**
 
 - `backend/tests/test_transfer.py:281` `assert done_events[0].title == "下载完成: ep.mkv"` → 该通知已移除，改为断言该路径下 download_complete 事件为空（`assert done_events == []`）或删除断言（保持测试意图：推进至 scrape）。同时检查同文件 262-281 区域用例意图，若用例专测通知则改为专测推进行为。
 - `backend/tests/test_transfer.py:531` `assert started[0].title == "下载开始: ..."` → 改为断言无 download_started 事件（`assert started == []`）。
 - 运行相关测试确认绿；若 `test_p1_fixes.py`、`test_approval_dup.py` 中 mock notifier 后按事件计数断言的地方因此变化，同步调整。
 
-- [ ] **Step 5: 验证 EVENT_DOWNLOAD_STARTED 无调用点**
+- [x] **Step 5: 验证 EVENT_DOWNLOAD_STARTED 无调用点**
 
 Run: `cd backend && grep -rn "EVENT_DOWNLOAD_STARTED" app/ | grep -v "notifier.py"`
 Expected: 无输出（常量仅定义处）
@@ -295,7 +295,7 @@ Expected: 无输出（常量仅定义处）
 Run: `cd backend && python -m pytest tests/test_transfer.py tests/test_p1_fixes.py tests/test_approval_dup.py -v`
 Expected: PASS
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add backend/app/routers/approvals.py backend/app/tasks/transfer.py backend/tests/test_transfer.py backend/tests/test_p1_fixes.py backend/tests/test_approval_dup.py
