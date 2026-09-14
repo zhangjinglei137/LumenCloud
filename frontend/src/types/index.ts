@@ -380,6 +380,8 @@ export interface NotificationItem {
   id: number
   title?: string
   message?: string
+  /** 通知事件类型（download_complete / approval_pending / flow_error 等），铃铛按类型区分图标与颜色 */
+  event_type?: string
   level?: string
   read?: boolean
   created_at?: string
