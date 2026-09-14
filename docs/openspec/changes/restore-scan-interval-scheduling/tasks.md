@@ -17,5 +17,5 @@
 
 ## 4. 文档与交付
 
-- [ ] 4.1 在 `docs/superpowers/specs/2026-09-09-queue-flow-rework-design.md` 批注「偏离设计：未实现全局间隔，改回 per-media 到期过滤（本 change 实施）」，记录决策依据；并确认本 change 的 design.md Open Questions 处置完成
+- [x] 4.1 在 `docs/superpowers/specs/2026-09-09-queue-flow-rework-design.md` 批注「偏离设计：未实现全局间隔，改回 per-media 到期过滤（本 change 实施）」，记录决策依据；并确认本 change 的 design.md Open Questions 处置完成
 - [ ] 4.2 验收确认：修改某剧详情页间隔为 5 分钟并保存 → 5 分钟内该剧被扫（前端输入框重新生效）；观察一天 task_run 写入量回落至约 N×24；向用户说明新剧发现延迟变化（release note 项）

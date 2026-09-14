@@ -11,6 +11,11 @@ status: final
 日期: 2026-09-09
 规格: 见 `<classic-change-dir>/specs/{media-pipeline,pipeline-admission,pipeline-transfer}/spec.md`
 
+> **偏离设计（2026-09-14，restore-scan-interval-scheduling）**：本文档原定「全局统一间隔、
+> 移除 per-media 冷却」未落地为全局统一调度，已改回 per-media 到期过滤（scan_all_media 按
+> `Media.scan_interval_minutes` 兜底 60 分钟到期判断；job 保持每分钟 tick）。决策依据与
+> 实现见 `docs/superpowers/specs/2026-09-14-restore-scan-interval-scheduling-design.md`。
+
 ## 1. 目标与非目标
 
 **目标**
