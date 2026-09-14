@@ -1,0 +1,30 @@
+{
+  "change": "fix-notification-templates",
+  "phase": "design",
+  "mode": "beta",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "3e1d494ecf394b17228d689a2126dfc3c84d7dc5a382a4c86da6506450b94528",
+  "files": [
+    {
+      "path": "docs/openspec/changes/fix-notification-templates/proposal.md",
+      "sha256": "74818294c4ee929e1418df27c57c6dd81bbb7401802eaa9fedb15bc64d48d415",
+      "role": "supporting"
+    },
+    {
+      "path": "docs/openspec/changes/fix-notification-templates/design.md",
+      "sha256": "94f3ccfd29a780a0f8f65caaa2cbbc3f16c8dd07247e2eb7b5db972994b546ee",
+      "role": "supporting"
+    },
+    {
+      "path": "docs/openspec/changes/fix-notification-templates/tasks.md",
+      "sha256": "29f5befd9e4237a4b0407d1ae152212755ac31b69975a2f18a66068224b5c66f",
+      "role": "supporting"
+    },
+    {
+      "path": "docs/openspec/changes/fix-notification-templates/specs/notifications/spec.md",
+      "sha256": "30e67c983f3982894149db1f7915c98e2b393675a2cfb003cdfbbe795949c5da",
+      "role": "spec"
+    }
+  ]
+}
