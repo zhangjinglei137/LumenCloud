@@ -199,6 +199,8 @@ def test_cleanup_preserves_scrape_and_only_removes_failed_or_missing(db, monkeyp
 
     fake_alist = _FakeCleanupAlist(["scrape.mkv", "failed.mkv", "ghost.mkv"])
     monkeypatch.setattr(cleanup_mod, "alist", fake_alist)
+    monkeypatch.setattr(cleanup_mod, "_aria2_client", lambda: types.SimpleNamespace(
+        list_source_basenames=AsyncMock(return_value=set())))
     run(cleanup_mod.release_space_cleanup_job())
 
     assert fake_alist.remove_calls, "应当有孤儿文件待清理"

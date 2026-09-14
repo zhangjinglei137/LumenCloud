@@ -273,6 +273,8 @@ def test_cleanup_removes_unreferenced_complete(db, monkeypatch):
     fake = FakeCleanupAlist()
     fake.entries = [{"name": "ep.mkv", "is_dir": False, "size": 1}]
     monkeypatch.setattr(cleanup_mod, "alist", fake)
+    monkeypatch.setattr(cleanup_mod, "_aria2_client", lambda: types.SimpleNamespace(
+        list_source_basenames=AsyncMock(return_value=set())))
 
     run(cleanup_mod.release_space_cleanup_job())
     assert (["ep.mkv"], "/quark/") in fake.remove_calls
@@ -305,6 +307,8 @@ def test_cleanup_keeps_downloading_referenced(db, monkeypatch):
     fake = FakeCleanupAlist()
     fake.entries = [{"name": "ep.mkv", "is_dir": False, "size": 1}]
     monkeypatch.setattr(cleanup_mod, "alist", fake)
+    monkeypatch.setattr(cleanup_mod, "_aria2_client", lambda: types.SimpleNamespace(
+        list_source_basenames=AsyncMock(return_value=set())))
 
     run(cleanup_mod.release_space_cleanup_job())
     assert fake.remove_calls == []  # 无孤儿（downloading 引用受保护）

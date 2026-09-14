@@ -15,6 +15,7 @@ aria2 JSON-RPC 客户端（docs/新系统设计.md §10 / §12.2 来源校验）
 """
 import logging
 from typing import Any, Optional
+from urllib.parse import unquote, urlsplit
 
 import httpx
 
@@ -167,14 +168,17 @@ class Aria2Client:
     async def tell_active(self) -> list[dict[str, Any]]:
         """aria2.tellActive：活动任务列表（转存前 GID 来源校验用，见 §12.2）。
 
-        每项含 {gid, status, comment, totalLength, completedLength}；comment 字段在
+        每项含 {gid, status, comment, totalLength, completedLength, files}；comment 字段在
         aria2 1.36.0 下恒为空（addUri 丢弃该 option）。校验逻辑（transfer.
         _admit_batch 段 2）：aria2 活动/等待任务 gid 必须在本系统 download_queue
         已签发 gid 集合内才继续转存，发现陌生 gid 本轮跳过并告警。
+
+        files[].uris[].uri 供清理保护解析下载源文件名（见 list_source_basenames）；
+        files[].path 是 aria2 本地落盘路径（download_dir + out），不是夸克源文件。
         """
         result = await self._rpc(
             "aria2.tellActive",
-            [["gid", "status", "comment", "totalLength", "completedLength"]],
+            [["gid", "status", "comment", "totalLength", "completedLength", "files"]],
         )
         return result or []
 
@@ -183,8 +187,11 @@ class Aria2Client:
 
         P2-6（council）：waiting 队列中的陌生任务同样代表 n8n 误启动（排队中的
         双转存），仅校验 tell_active 会漏检。返回字段同 tell_active
-        （gid/status/comment/totalLength/completedLength），transfer 层将
+        （gid/status/comment/totalLength/completedLength/files），transfer 层将
         active + waiting 合并后做统一来源校验（gid 白名单口径，见 tell_active）。
+
+        files[].uris[].uri 供清理保护解析下载源文件名（见 list_source_basenames）；
+        files[].path 是 aria2 本地落盘路径（download_dir + out），不是夸克源文件。
 
         参数:
             offset: 起始位置偏移（默认 0）
@@ -195,7 +202,7 @@ class Aria2Client:
             [
                 offset,
                 num,
-                ["gid", "status", "comment", "totalLength", "completedLength"],
+                ["gid", "status", "comment", "totalLength", "completedLength", "files"],
             ],
         )
         return result or []
@@ -208,6 +215,34 @@ class Aria2Client:
         """
         result = await self._rpc("aria2.remove", [gid])
         return result or {}
+
+    async def list_source_basenames(self) -> set[str]:
+        """清理保护用：返回 aria2 活动 + 等待任务下载的源文件名集合（/quark basename）。
+
+        组合 tell_active + tell_waiting，从每任务 `files[].uris[].uri`（下载源 URL）解析
+        URL path 末段并 URL-decoded 得到文件名。`files[].path` 是 aria2 本地落盘路径
+        （download_dir + out），不是夸克源文件，不用于本方法。单条 uri 解析失败仅
+        debug 日志跳过（降级）；aria2 不可用/整体失败向上抛 Aria2Unavailable，由
+        调用方 fail-safe（不删任何孤儿）。
+        """
+        tasks = list(await self.tell_active() or [])
+        tasks += list(await self.tell_waiting() or [])
+        names: set[str] = set()
+        for t in tasks:
+            for f in (t.get("files") or []):
+                for u in (f.get("uris") or []):
+                    uri = (u.get("uri") or "").strip()
+                    if not uri:
+                        continue
+                    try:
+                        path = urlsplit(uri).path.rstrip("/")
+                        base = unquote(path.rsplit("/", 1)[-1]) if path else ""
+                    except ValueError:
+                        logger.debug("[aria2] 下载源 uri 解析失败（跳过）: %r", uri)
+                        continue
+                    if base:
+                        names.add(base)
+        return names
 
 
 # 模块级单例（与 cloudsaver 的模块级 token 缓存同风格）

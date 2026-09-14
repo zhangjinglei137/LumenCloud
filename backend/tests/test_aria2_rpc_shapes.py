@@ -161,3 +161,37 @@ def test_rpc_token_empty_stays_empty(monkeypatch):
     """token 未配置 → wire params[0] 恒为 ""（无需鉴权时保持原行为）。"""
     body = _rpc_body(monkeypatch, "")
     assert body["params"][0] == ""
+
+
+# ---------------------------------------------------------------------------
+# list_source_basenames（quark-cleanup-safety：清理保护解析下载源文件名）
+# ---------------------------------------------------------------------------
+
+def test_list_source_basenames_parses_uris():
+    """从 tell_active/tell_waiting 的 files[].uris[].uri 解析下载源 basename：
+    URL query 不影响、中文文件名 URL 解码、files[].path 不参与。"""
+    from app.services.aria2 import Aria2Client
+
+    client = Aria2Client()
+    active = [{
+        "gid": "a1",
+        "files": [{"path": "/download/本地名.mkv", "uris": [
+            {"uri": "http://alist:5244/d/quark/190.mkv?sign=abc&ts=123", "status": "used"}]}],
+    }]
+    waiting = [{
+        "gid": "w1",
+        "files": [{"uris": [{"uri": "http://alist:5244/d/quark/%E4%B8%AD%E6%96%87.mkv", "status": "used"}]}],
+    }]
+
+    async def fake_tell_active():
+        return active
+
+    async def fake_tell_waiting():
+        return waiting
+
+    client.tell_active = fake_tell_active
+    client.tell_waiting = fake_tell_waiting
+
+    import asyncio
+    names = asyncio.run(client.list_source_basenames())
+    assert names == {"190.mkv", "中文.mkv"}   # query 剥离 + 中文 URL 解码；无本地路径名

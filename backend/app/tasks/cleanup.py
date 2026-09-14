@@ -35,6 +35,11 @@ _QUARK_ROOT = "/quark"
 _DQ_TERMINAL_STATUSES = ("done", "skipped", "failed")
 
 
+def _aria2_client():
+    from app.services import aria2  # noqa: PLC0415 延迟导入防循环
+    return aria2.client
+
+
 def _basename(path) -> str | None:
     """取夸克路径末段文件名（null/空 → None）。"""
     if not path:
@@ -90,6 +95,23 @@ async def release_space_cleanup_job() -> None:
             b = _basename(p)
             if b:
                 referenced.add(b)
+
+    # 2b) aria2 下载源保护（quark-cleanup-safety）：查询 aria2 活动 + 等待任务
+    #     下载的源文件名，与引用集一起从待删除列表剔除（用户自行下载的源文件
+    #     不在 download_queue 引用集内，仅靠本层保护）。查询失败 → fail-safe：
+    #     本轮不删除任何孤儿（无法确认下载状态时绝不误删），记 error 下轮再试。
+    try:
+        aria2_sources = await _aria2_client().list_source_basenames()
+    except Exception as exc:  # noqa: BLE001  Aria2Unavailable 等 → fail-safe
+        logger.warning("[cleanup] aria2 下载源查询失败，本轮跳过清理（fail-safe）: %s", exc)
+        async with async_session() as s:
+            await record_task_run(
+                s, "cleanup", "error", f"aria2 下载源查询失败，本轮跳过清理: {exc}",
+                duration_seconds=time.monotonic() - t0,
+            )
+            await s.commit()
+        return
+    referenced |= aria2_sources
 
     # 3) 孤儿文件 → 一次批量删除
     orphans = sorted(present - referenced)
