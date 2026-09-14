@@ -409,6 +409,11 @@ function notifyEventType(item: NotificationItem): string | null | undefined {
   transition: background 0.15s ease;
 }
 
+/* unread 条目级强调（dot 已被内联类型色接管，改用条目背景区分已读/未读） */
+.lc-notify-item.unread {
+  background: var(--lc-accent-soft);
+}
+
 .lc-notify-item:hover {
   background: var(--lc-hover-bg);
 }
