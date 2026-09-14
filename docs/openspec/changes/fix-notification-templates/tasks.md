@@ -2,8 +2,8 @@
 
 ## 1. 后端通知文案工厂
 
-- [ ] 1.1 新建 `backend/app/services/notify_templates.py`：实现 `approval_pending(title) -> (title, body)`、`download_complete(media_name, episode, is_movie) -> (title, body)`、`flow_error_transfer_failed(...)`、`flow_error_capacity(...)`、`flow_error_nastools_sync(...)`、`flow_error_nastools_event(...)`、`flow_error_generic(...)` 等文案工厂函数，并验证 `pytest backend/tests/test_notify_templates.py` 通过（电影/剧集/含集号/超界集号入参用例）
-- [ ] 1.2 工厂函数保证用户可见文案不含媒体 id 与文件名、不使用英文 raw 事件名；正文首行保留 `wr#<id>` / `tq#<id>` 前缀拼接能力（前缀逻辑由调用方传入，工厂不负责去重判定），验证单测断言输出格式
+- [x] 1.1 新建 `backend/app/services/notify_templates.py`：实现 `approval_pending(title) -> (title, body)`、`download_complete(media_name, episode, is_movie) -> (title, body)`、`flow_error_transfer_failed(...)`、`flow_error_capacity(...)`、`flow_error_nastools_sync(...)`、`flow_error_nastools_event(...)`、`flow_error_generic(...)` 等文案工厂函数，并验证 `pytest backend/tests/test_notify_templates.py` 通过（电影/剧集/含集号/超界集号入参用例）
+- [x] 1.2 工厂函数保证用户可见文案不含媒体 id 与文件名、不使用英文 raw 事件名；正文首行保留 `wr#<id>` / `tq#<id>` 前缀拼接能力（前缀逻辑由调用方传入，工厂不负责去重判定），验证单测断言输出格式
 
 ## 2. 移除噪音通知
 

@@ -46,7 +46,7 @@ base-ref: 90bef00eb4b57e4b2e913e084153d529620f1a74
   - `flow_error_alert(title: str, message: str) -> tuple[str, str]`
   - `text_to_html(title: str, body: str) -> str`
 
-- [ ] **Step 1: 写失败测试 `backend/tests/test_notify_templates.py`**
+- [x] **Step 1: 写失败测试 `backend/tests/test_notify_templates.py`**
 
 ```python
 """文案工厂单测：统一通知文案格式（fix-notification-templates）。"""
@@ -137,12 +137,12 @@ class TestTextToHtml:
         assert "<b>仅标题</b>" in html
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cd backend && python -m pytest tests/test_notify_templates.py -v`
 Expected: FAIL（`ModuleNotFoundError: app.services.notify_templates`）
 
-- [ ] **Step 3: 实现 `backend/app/services/notify_templates.py`**
+- [x] **Step 3: 实现 `backend/app/services/notify_templates.py`**
 
 ```python
 """通知文案工厂（fix-notification-templates）。
@@ -243,12 +243,12 @@ def text_to_html(body: str, title: str) -> str:
 
 并在段落循环中调用 `_highlight_segment(para)` 替代直接 `_html.escape(para)`。请自行整合，使所有测试通过。
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `cd backend && python -m pytest tests/test_notify_templates.py -v`
 Expected: PASS（全部用例）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add backend/app/services/notify_templates.py backend/tests/test_notify_templates.py
