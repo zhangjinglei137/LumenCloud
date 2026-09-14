@@ -6,9 +6,9 @@
 
 ## 2. 空间不足提示来源排查与口径修复（notifications）
 
-- [ ] 2.1 证据排查：核对 quark_capacity_log 快照（总量/已用/使用率）、`check_capacity_alert` 触发门槛、`_record_alert(category="capacity")` 各触发点（「容量不足已累计 N 次」「持续超过 24 小时」）、前端「等待容量」文案的展示条件与 `quota_wait` 产生路径；验证：产出排查结论（是否真实存在误报路径，定位到具体函数与触发条件）
-- [ ] 2.2 若发现容量充足时误触发空间不足通知的路径，修复触发条件或数据源，确保与真实容量一致（spec：容量充足 MUST NOT 产生空间不足通知）；验证：对应单元测试覆盖「使用率低于阈值不告警」场景（test_capacity_alert.py / test_capacity.py），并人工核对通知表不再新增容量类误报
-- [ ] 2.3 复核前端「等待容量」文案（QueueView.vue quotaWaitText）在无 quota_wait 任务时不展示，quota_hint 数据来源与容量一致性；验证：前端构建通过，容量条/排队原因文案逻辑与后端契约一致
+- [x] 2.1 证据排查：核对 quark_capacity_log 快照（总量/已用/使用率）、`check_capacity_alert` 触发门槛、`_record_alert(category="capacity")` 各触发点（「容量不足已累计 N 次」「持续超过 24 小时」）、前端「等待容量」文案的展示条件与 `quota_wait` 产生路径；验证：产出排查结论（是否真实存在误报路径，定位到具体函数与触发条件）
+- [x] 2.2 若发现容量充足时误触发空间不足通知的路径，修复触发条件或数据源，确保与真实容量一致（spec：容量充足 MUST NOT 产生空间不足通知）；验证：对应单元测试覆盖「使用率低于阈值不告警」场景（test_capacity_alert.py / test_capacity.py），并人工核对通知表不再新增容量类误报
+- [x] 2.3 复核前端「等待容量」文案（QueueView.vue quotaWaitText）在无 quota_wait 任务时不展示，quota_hint 数据来源与容量一致性；验证：前端构建通过，容量条/排队原因文案逻辑与后端契约一致
 
 ## 3. 清理保护 aria2 下载源（quark-cleanup-safety）
 

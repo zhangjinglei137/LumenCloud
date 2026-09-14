@@ -130,7 +130,7 @@ git commit -m "feat(aria2-download-safety): 移除陌生 gid 拦截告警与强�
 - Consumes: `check_capacity_alert()`、`CapacityProvider.check()`、`_record_alert`、`quotaWaitText`
 - Produces: 排查结论（是否真实存在容量充足时误报路径）；如确认无误报则不改产品代码，仅补测试/证据
 
-- [ ] **Step 1: 证据排查并记录结论**
+- [x] **Step 1: 证据排查并记录结论**
 
 核对以下路径（用数据库查询 + 代码审读，产出结构化结论）：
 
@@ -143,13 +143,13 @@ git commit -m "feat(aria2-download-safety): 移除陌生 gid 拦截告警与强�
 
 验证：产出排查结论记录（在任务完成说明中列出 4 项核对结果）。
 
-- [ ] **Step 2: 若发现容量充足时误触发路径则修复（条件执行）**
+- [x] **Step 2: 若发现容量充足时误触发路径则修复（条件执行）**
 
 仅当 Step 1 发现实际误报路径时执行：修复对应触发条件或数据源，确保与真实容量一致（spec：容量充足 MUST NOT 产生空间不足通知）。修复后补充回归测试（放入 `backend/tests/test_capacity_alert.py` 或对应模块测试）。
 
 验证：对应测试覆盖「使用率低于阈值不告警」场景且通过。若 Step 1 确认无误报路径，本步标记为「条件未触发，跳过」。
 
-- [ ] **Step 3: 补充/确认「容量充足不告警」测试**
+- [x] **Step 3: 补充/确认「容量充足不告警」测试**
 
 `backend/tests/test_capacity_alert.py` 已有 `test_alert_not_fired_when_recent_snapshot_below_threshold`（:104，80% < 90% 不告警）。补充一个显式对齐本 change 场景的用例（40% 使用率不告警，模拟当前生产数据）：
 
@@ -165,7 +165,7 @@ def test_alert_not_fired_at_40_percent_usage():
 
 验证：`cd backend && .venv/bin/pytest -q tests/test_capacity_alert.py -k "40_percent"` 通过。
 
-- [ ] **Step 4: 全量回归 + 提交**
+- [x] **Step 4: 全量回归 + 提交**
 
 验证：`cd backend && .venv/bin/pytest -q` 全绿。
 
