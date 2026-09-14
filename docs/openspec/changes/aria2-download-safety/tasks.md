@@ -18,5 +18,5 @@
 
 ## 4. 收尾验证
 
-- [ ] 4.1 运行后端全量测试套件（`pytest backend/tests/ -q`）并确认新增/修改用例全部通过，无回归
-- [ ] 4.2 复核三个 delta spec 的验收场景均被测试覆盖（pipeline-admission 放行共存、notifications 容量一致、quark-cleanup-safety 保护与 fail-safe）；验证：测试清单与 spec 场景逐条对应
+- [x] 4.1 运行后端全量测试套件（`pytest backend/tests/ -q`）并确认新增/修改用例全部通过，无回归
+- [x] 4.2 复核三个 delta spec 的验收场景均被测试覆盖（pipeline-admission 放行共存、notifications 容量一致、quark-cleanup-safety 保护与 fail-safe）；验证：测试清单与 spec 场景逐条对应

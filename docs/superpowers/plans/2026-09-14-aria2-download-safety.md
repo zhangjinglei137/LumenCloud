@@ -452,11 +452,11 @@ git commit -m "feat(aria2-download-safety): 孤儿清理前保护 aria2 下载�
 **Files:**
 - Inspect: 全部变更文件 + spec delta 场景
 
-- [ ] **Step 1: 全量测试**
+- [x] **Step 1: 全量测试**
 
 验证：`cd backend && .venv/bin/pytest -q` 全绿（无回归）。
 
-- [ ] **Step 2: spec 场景覆盖核对**
+- [x] **Step 2: spec 场景覆盖核对**
 
 逐条核对三个 delta spec 场景均有对应测试：
 
