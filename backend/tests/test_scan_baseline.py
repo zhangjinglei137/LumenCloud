@@ -340,6 +340,41 @@ def test_scan_all_media_scans_due_media(db, monkeypatch):
     assert routed == [mid]  # 已到期 → 巡检
 
 
+def test_scan_all_media_null_interval_falls_back_to_default(db, monkeypatch):
+    """scan_interval_minutes 为 NULL 时兜底全局默认 60 分钟：超过 60min 到期、不足跳过。"""
+    from app.tasks import scan as scan_mod
+
+    monkeypatch.setattr(scan_mod, "async_session", db)
+    routed: list[int] = []
+
+    async def fake_scan_one(media_id, *, manual=False):
+        routed.append(media_id)
+        return 1
+
+    monkeypatch.setattr(scan_mod, "_scan_one", fake_scan_one)
+
+    async def seed():
+        async with db() as s:
+            a = Media(
+                title="A 间隔 NULL 未到期", media_type="tv", status="tracking",
+                scan_interval_minutes=None,
+                last_scan_at=_now() - timedelta(minutes=59),  # < 60min 兜底 → 未到期
+            )
+            b = Media(
+                title="B 间隔 NULL 已到期", media_type="tv", status="tracking",
+                scan_interval_minutes=None,
+                last_scan_at=_now() - timedelta(minutes=61),  # > 60min 兜底 → 到期
+            )
+            s.add_all([a, b])
+            await s.commit()
+            return a.id, b.id
+
+    aid, bid = run(seed())
+    run(scan_mod.scan_all_media())
+
+    assert routed == [bid]  # 仅已到期的 B 巡检，NULL 间隔按默认 60min 判定
+
+
 def test_scan_all_media_scans_only_tracking_downloading(db, monkeypatch):
     """统一调度只遍历 tracking/downloading：paused/error 状态不触及（状态预检在 _scan_one）。"""
     from app.tasks import scan as scan_mod

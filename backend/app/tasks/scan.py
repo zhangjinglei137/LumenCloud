@@ -28,7 +28,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
-from app.database import async_session
+from app.database import async_session, engine
 from app.models import DownloadQueue, Media, TaskQueue, TaskRun
 # 注：episode_state / transfer_queue / download_task 旧三表已从 scan 移除——影视下载
 # 两队列重设计：探测结果落 task_queue，经 promote 产出 download_queue（执行层），
@@ -1499,19 +1499,20 @@ def _due_filter():
 
     间隔 = COALESCE(media.scan_interval_minutes, settings.SCAN_INTERVAL_MINUTES)；
     时间基准与 _finish_scan_run 写入 last_scan_at 同源（_now()，naive UTC）。
-    SQLite（测试）用 func.datetime 修饰符；PostgreSQL（生产）用 now() - interval。
+    SQLite（测试）用 func.datetime 修饰符；PostgreSQL（生产）用 now 绑定参数 - interval。
     """
-    from sqlalchemy import String, func, or_, text
+    from sqlalchemy import String, bindparam, func, literal, or_, text
 
     minutes = func.coalesce(Media.scan_interval_minutes, settings.SCAN_INTERVAL_MINUTES)
-    bind = async_session().bind
-    if bind is not None and bind.dialect.name == "postgresql":
+    if engine.dialect.name == "postgresql":
+        # PG：timestamp 列 - interval 无隐式时区 cast，now 绑定参数与写入端同源（naive UTC）
         due_expr = Media.last_scan_at <= (
-            func.now() - (minutes * text("interval '1 minute'"))
+            bindparam("now", _now()) - (minutes * text("interval '1 minute'"))
         )
     else:
+        # SQLite：datetime(now_iso, '-' || minutes || ' minutes') 修饰符
         now_iso = _now().strftime("%Y-%m-%d %H:%M:%S")
-        modifier = func.concat("-", minutes.cast(String), " minutes")
+        modifier = literal("-") + minutes.cast(String) + literal(" minutes")
         due_expr = Media.last_scan_at <= func.datetime(now_iso, modifier)
     return or_(Media.last_scan_at.is_(None), due_expr)
 
