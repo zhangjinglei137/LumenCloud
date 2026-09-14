@@ -515,7 +515,7 @@ git commit -m "refactor(notifications): 通知点接入文案工厂并中文化�
 - Consumes: `text_to_html(body, title)`
 - Produces: `PushPlusNotifier.notify` 以 `template="html"` 发送 HTML 内容
 
-- [ ] **Step 1: PushPlusNotifier.notify 出口转换**
+- [x] **Step 1: PushPlusNotifier.notify 出口转换**
 
 在 `backend/app/services/notifier.py` 的 `PushPlusNotifier.notify`：
 
@@ -534,7 +534,7 @@ async def notify(self, event: NotifyEvent) -> None:
 
 （`send` 已接受 `template` 参数，默认 `txt`；此处显式 `html`。）
 
-- [ ] **Step 2: 新增 `backend/tests/test_pushplus_html.py`**
+- [x] **Step 2: 新增 `backend/tests/test_pushplus_html.py`**
 
 ```python
 """PushPlus HTML 出口单测：纯文本转 HTML + template=html 发送。"""
@@ -562,14 +562,14 @@ class TestPushPlusHtml:
         assert "&lt;script&gt;" in html
 ```
 
-- [ ] **Step 3: 验证 PushPlus 未配置行为不变**
+- [x] **Step 3: 验证 PushPlus 未配置行为不变**
 
 在 `notifier.py` 测试（或手动核对）：`_client is None` 时直接 return，不构建 HTML。已有 `test_pushplus.py` 若存在则运行确认。
 
 Run: `cd backend && python -m pytest tests/test_pushplus_html.py tests/test_notify_templates.py -v`
 Expected: PASS
 
-- [ ] **Step 4: 提交**
+- [x] **Step 4: 提交**
 
 ```bash
 git add backend/app/services/notifier.py backend/tests/test_pushplus_html.py backend/tests/test_notify_templates.py

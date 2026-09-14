@@ -24,8 +24,8 @@
 
 ## 5. PushPlus HTML 模板
 
-- [ ] 5.1 `backend/app/services/pushplus.py`：`send()` 透传 template 参数，`PushPlusNotifier.notify` 将纯文本 body 转换为 HTML（标题加粗、按换行分段、媒体名与集数高亮）后以 `template="html"` 发送，验证 `pytest backend/tests/` 相关 PushPlus 用例（含新建的转换单测）通过
-- [ ] 5.2 验证未配置 token 时 HTML 路径仍整体跳过、站内通知不受影响
+- [x] 5.1 `backend/app/services/pushplus.py`：`send()` 透传 template 参数，`PushPlusNotifier.notify` 将纯文本 body 转换为 HTML（标题加粗、按换行分段、媒体名与集数高亮）后以 `template="html"` 发送，验证 `pytest backend/tests/` 相关 PushPlus 用例（含新建的转换单测）通过
+- [x] 5.2 验证未配置 token 时 HTML 路径仍整体跳过、站内通知不受影响
 
 ## 6. 前端铃铛类型呈现
 
