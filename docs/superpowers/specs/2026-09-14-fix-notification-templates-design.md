@@ -2,6 +2,8 @@
 comet_change: fix-notification-templates
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-09-14-fix-notification-templates
+status: final
 ---
 
 # Design Doc：修复通知模板

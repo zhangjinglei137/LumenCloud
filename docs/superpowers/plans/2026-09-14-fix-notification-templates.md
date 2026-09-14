@@ -2,6 +2,7 @@
 change: fix-notification-templates
 design-doc: docs/superpowers/specs/2026-09-14-fix-notification-templates-design.md
 base-ref: 90bef00eb4b57e4b2e913e084153d529620f1a74
+archived-with: 2026-09-14-fix-notification-templates
 ---
 
 # 修复通知模板 Implementation Plan
