@@ -1,7 +1,7 @@
 ## 1. 事实核查
 
-- [ ] 1.1 核实 Task 3「自然重试」闭环对每分钟全量的代码依赖：审查 `_scan_one` 搜索/重试路径，确认 per-media 间隔下缺失集重试延迟为 ≤interval 是否符合既有语义；将核查结论记录到本 change 的 design.md Open Questions（无代码改动）
-- [ ] 1.2 摸底存量 `scan_interval_minutes` 值分布：查询 media 表中非 NULL 且 ≠60 的间隔值，评估恢复过滤后的行为回归面；异常小值（如 <5）上报用户确认
+- [x] 1.1 核实 Task 3「自然重试」闭环对每分钟全量的代码依赖：审查 `_scan_one` 搜索/重试路径，确认 per-media 间隔下缺失集重试延迟为 ≤interval 是否符合既有语义；将核查结论记录到本 change 的 design.md Open Questions（无代码改动）
+- [x] 1.2 摸底存量 `scan_interval_minutes` 值分布：查询 media 表中非 NULL 且 ≠60 的间隔值，评估恢复过滤后的行为回归面；异常小值（如 <5）上报用户确认
 
 ## 2. 核心实现
 

@@ -58,6 +58,6 @@
 
 ## Open Questions
 
-- 默认 60 分钟的新剧发现延迟是否可接受（产品确认，实施前）。
-- 存量 `scan_interval_minutes` 值分布摸底结果（实施前）。
-- Task 3「自然重试」对每分钟全量的确切代码依赖（实施前核实）。
+- 默认 60 分钟的新剧发现延迟是否可接受（产品确认，实施前）。**已确认（2026-09-14 brainstorming）**：可接受，release note 引导调小关注剧集间隔。
+- 存量 `scan_interval_minutes` 值分布摸底结果（实施前）。**已摸底（2026-09-14）**：DB 查询 8 行 media 间隔全为 60/NULL，无异常小值；`last_scan_at` 无 NULL。
+- Task 3「自然重试」对每分钟全量的确切代码依赖（实施前核实）。**已核实（2026-09-14 build）**：重试不依赖每分钟全量必扫——`_search_and_rank` 全部关键词失败抛 `ScanSearchUnavailable` → error 分支（touch=False 后下轮 tick 重试）；搜索成功但无候选 → 正常完成 touch=True → 缺集下轮按 interval 到期重试，延迟 ≤interval，符合「自然重试」语义，节奏变化记入 release note。
