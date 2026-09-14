@@ -5,15 +5,15 @@
 
 ## 2. 核心实现
 
-- [ ] 2.1 `scan_all_media` 恢复 SQL 侧到期过滤：查询按 `last_scan_at IS NULL OR last_scan_at <= :threshold` 过滤（threshold 按各 media 间隔计算，`_now()` naive UTC 同源），间隔取值链 `media.scan_interval_minutes ?? settings.SCAN_INTERVAL_MINUTES(60)`；并验证新增「未到期跳过」「last_scan_at NULL 立即扫」测试通过
-- [ ] 2.2 恢复 `force` 语义：`force=True` 绕过到期过滤（CLI/手动全量入口），同步修正 `scan_all_media` docstring 中「force 不再改变遍历行为」的过时描述；并验证新增「force 绕过过滤」测试通过
-- [ ] 2.3 修复 `_scan_one` 短路分支 touch 语义：逐分支审查 `_finish` 调用点，Emby 故障 / 未收录等「未真正完成主流程」的分支 `touch_last_scan_at=False`（保留日志与重试计数），仅正常完成分支 touch=True；并验证新增「故障/未收录下轮重试」测试通过
-- [ ] 2.4 澄清 downloading 语义注释：`scan_all_media` 注释明确「downloading 不排除出巡检集合（防卡死）≠ 绕过冷却」，并同步 `scheduler.py` 模块 docstring 与 `register_jobs` docstring 至与实现一致
+- [x] 2.1 `scan_all_media` 恢复 SQL 侧到期过滤：查询按 `last_scan_at IS NULL OR last_scan_at <= :threshold` 过滤（threshold 按各 media 间隔计算，`_now()` naive UTC 同源），间隔取值链 `media.scan_interval_minutes ?? settings.SCAN_INTERVAL_MINUTES(60)`；并验证新增「未到期跳过」「last_scan_at NULL 立即扫」测试通过
+- [x] 2.2 恢复 `force` 语义：`force=True` 绕过到期过滤（CLI/手动全量入口），同步修正 `scan_all_media` docstring 中「force 不再改变遍历行为」的过时描述；并验证新增「force 绕过过滤」测试通过
+- [x] 2.3 修复 `_scan_one` 短路分支 touch 语义：逐分支审查 `_finish` 调用点，Emby 故障 / 未收录等「未真正完成主流程」的分支 `touch_last_scan_at=False`（保留日志与重试计数），仅正常完成分支 touch=True；并验证新增「故障/未收录下轮重试」测试通过
+- [x] 2.4 澄清 downloading 语义注释：`scan_all_media` 注释明确「downloading 不排除出巡检集合（防卡死）≠ 绕过冷却」，并同步 `scheduler.py` 模块 docstring 与 `register_jobs` docstring 至与实现一致
 
 ## 3. 测试同步
 
-- [ ] 3.1 翻转固化「未到冷却期也巡检 / force 不再改变行为」的既有断言（`test_scan_baseline.py` / `test_oracle_fixes.py`）为到期过滤语义，逐用例核对无其它隐含依赖；并验证两个测试文件全绿
-- [ ] 3.2 全量回归：运行 `cd backend && .venv/bin/python -m pytest tests/ -x -q`，确认既有全部测试（含巡检相关与转存相关）通过，无跨模块破坏
+- [x] 3.1 翻转固化「未到冷却期也巡检 / force 不再改变行为」的既有断言（`test_scan_baseline.py` / `test_oracle_fixes.py`）为到期过滤语义，逐用例核对无其它隐含依赖；并验证两个测试文件全绿
+- [x] 3.2 全量回归：运行 `cd backend && .venv/bin/python -m pytest tests/ -x -q`，确认既有全部测试（含巡检相关与转存相关）通过，无跨模块破坏
 
 ## 4. 文档与交付
 
