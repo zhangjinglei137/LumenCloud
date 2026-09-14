@@ -131,9 +131,11 @@ async def _library_already_collected(row: DownloadQueue) -> bool | None:
         missing_codes: set[str] = {str(ep.get("code")) for ep in missing if ep.get("code")}
         if lc._episode_in_missing(row.episode, missing_codes):
             return False  # 仍在遗漏集 → Emby 尚未收录 → 回退
-    # 已收录 → 直接 finalize done（不回退）
+    # 已收录 → 直接 finalize done（不回退）；fix-notification-templates：
+    # _finalize_done 签名扩展（media_title, is_movie），此处 media 对象在上方已取
     await lc._finalize_done(
-        row.id, row.media_id, row.episode, row.file_name, row.quark_path, transfer_mod
+        row.id, row.media_id, row.episode, row.file_name, row.quark_path, transfer_mod,
+        media.title, (media.media_type or "").strip().lower() == "movie",
     )
     return True
 

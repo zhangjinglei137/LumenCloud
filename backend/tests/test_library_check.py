@@ -296,10 +296,15 @@ def test_library_hit_marks_done_and_removes_quark(db, env, monkeypatch):
     # 夸克中转文件已删除（G6：入库确认后释放；P2-5 列目录匹配不到 → 回退原始名）
     assert env["alist"].remove_calls == [(["ep.mkv"], "/quark/")]
     assert env["alist"].list_dir_calls == ["/quark"]
-    # 「入库完成」通知（复用 download_complete 事件类型，文案区分）
+    # 「入库完成」通知（fix-notification-templates：工厂文案——媒体名+集数，
+    # 不再出现 media_id 与文件名；fixture media.title="测试剧"、episode="S01E01"）
     done_events = [e for e in env["notifier"].events if e.event_type == EVENT_DOWNLOAD_COMPLETE]
     assert len(done_events) == 1
-    assert "入库完成" in done_events[0].title
+    assert done_events[0].event_type == "download_complete"
+    assert done_events[0].title == "入库完成：测试剧 · S01E01"
+    assert done_events[0].body == "媒体 测试剧 · S01E01 已入库完成。"
+    assert "media_id" not in done_events[0].body
+    assert ".mkv" not in done_events[0].body
     assert done_events[0].extra["media_id"] == mid
     assert done_events[0].extra["episode"] == "S01E01"
     # media 无其他进行中集 → 回退 tracking（P3-6）
@@ -767,7 +772,10 @@ def test_finalize_done_syncs_episode_state(db, env, monkeypatch):
     mid, dq_id = run(seed())
 
     async def do_finalize():
-        await _finalize_done(dq_id, mid, "S01E01", "剧.S01E01.mkv", "/quark/a.mkv", transfer_mod)
+        await _finalize_done(
+            dq_id, mid, "S01E01", "剧.S01E01.mkv", "/quark/a.mkv", transfer_mod,
+            "测试剧", False,  # fix-notification-templates：签名扩展（media_title, is_movie）
+        )
     run(do_finalize())
 
     async def assert_state():

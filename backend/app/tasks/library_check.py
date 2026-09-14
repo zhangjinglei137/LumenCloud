@@ -62,6 +62,7 @@ from app.services.notifier import (
     NotifyEvent,
     notifier,
 )
+from app.services.notify_templates import download_complete
 from app.tasks import get_config_value, nastools_sync
 # tasks 层公共纯函数（app.utils，仅标准库）：统一时间源与集级匹配函数
 from app.utils import fmt_episode, now_utc_naive as _now, parse_episode_num
@@ -508,7 +509,10 @@ async def library_check() -> None:
                         cause="持续在 Emby 遗漏集（Emby 收录超时）",
                     )
                     continue
-            await _finalize_done(dq_id, media_id, episode, file_name, quark_path, transfer_mod)
+            await _finalize_done(
+                dq_id, media_id, episode, file_name, quark_path, transfer_mod,
+                media.title, (media.media_type or "").strip().lower() == "movie",
+            )
             continue
 
         # 3) 未命中 → 超时判定（未超时下一轮继续等）
@@ -565,9 +569,13 @@ async def _remove_quark_files(transfer_mod, quark_path: str | None) -> None:
         logger.warning("[library_check] 删除夸克文件失败: %s", exc)
 
 
-async def _finalize_done(dq_id, media_id, episode, file_name, quark_path, transfer_mod) -> None:
+async def _finalize_done(dq_id, media_id, episode, file_name, quark_path, transfer_mod,
+                         media_title: str, is_movie: bool) -> None:
     """Emby 已收录 → done：先删夸克（网络 IO 事务外，失败不阻断），再条件更新置
     done + 同事务 _sync_media_status，最后「入库完成」通知 + 触发下载队列续跑。
+
+    通知文案经 notify_templates.download_complete 工厂（fix-notification-templates）：
+    用 media_title（媒体名）与 is_movie（电影/剧集）区分文案，不再出现 media_id 与文件名。
 
     顺序说明：删除在前、置 done 在后——若删除成功但置 done 失败（CAS/并发），下轮
     仍 status='library' 可重试删除（alist.remove 幂等）；反之若先置 done 后删失败则
@@ -624,11 +632,11 @@ async def _finalize_done(dq_id, media_id, episode, file_name, quark_path, transf
             # P3-6：该 media 无其他进行中集 → tracking
             await transfer_mod._sync_media_status(media_id, s)
 
+    title, body = download_complete(media_title, episode, is_movie)
     await notifier.notify(NotifyEvent(
         event_type=EVENT_DOWNLOAD_COMPLETE,
-        title=f"入库完成: {episode}",
-        body=f"媒体 {media_id} · {episode}（{file_name or ''}）已确认被 Emby 收录，"
-             f"夸克中转文件已释放。",
+        title=title,
+        body=body,
         recipient=None,
         extra={"media_id": media_id, "episode": episode},
     ))
