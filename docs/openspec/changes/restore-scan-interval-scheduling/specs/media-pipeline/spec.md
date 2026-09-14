@@ -8,6 +8,16 @@
 
 系统 SHALL 按各影视的 per-media 巡检间隔（`Media.scan_interval_minutes`，缺省回退全局默认 60 分钟）执行缺集巡检：调度 job 每分钟触发一次巡检 tick，每轮仅巡检「距上次成功巡检已超过其配置间隔」或「从未巡检过」的 tracking/downloading 影视；未到期的影视 SHALL 被跳过（不执行 Emby 基线、搜索与 task_run 落库）。
 
+#### Scenario: 到点触发全局巡检
+> **已废弃（restore-scan-interval-scheduling）**：本场景由「到点触发该影视巡检」取代——调度恢复 per-media 间隔，不再按全局统一间隔对全部影视逐部巡检。
+- **WHEN** 距上次全局巡检达到配置间隔
+- **THEN** 系统对全部 tracking/downloading 影视逐个执行缺集搜索并产出缺失集任务
+
+#### Scenario: 配置全局间隔
+> **已废弃（restore-scan-interval-scheduling）**：全局巡检间隔配置键已退休（`_RETIRED_EXACT`，不复活）；间隔改由各影视详情页 per-media 配置（见「per-media 间隔配置生效」）。
+- **WHEN** 管理员修改全局巡检间隔配置
+- **THEN** 后续巡检按新间隔执行，且无需逐个影视设置
+
 #### Scenario: 到点触发该影视巡检
 - **WHEN** 某影视距上次巡检已超过其配置间隔（或从未巡检过）
 - **THEN** 系统对该影视执行缺集搜索并产出缺失集任务，并更新其最近巡检时间
