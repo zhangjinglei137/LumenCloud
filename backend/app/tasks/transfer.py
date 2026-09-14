@@ -68,8 +68,6 @@ from app.database import async_session
 from app.models import DownloadQueue, Media, SystemConfig, TaskQueue
 from app.services import alist, aria2, capacity, cloudsaver, config_store
 from app.services.notifier import (
-    EVENT_DOWNLOAD_COMPLETE,
-    EVENT_DOWNLOAD_STARTED,
     EVENT_FLOW_ERROR,
     NotifyEvent,
     notifier,
@@ -517,22 +515,13 @@ async def _poll_downloading_tasks() -> None:
             await s.commit()
 
 
-async def _after_complete_promote(media_id: int, episode: str, file_name: str) -> None:
+async def _after_complete_promote() -> None:
     """downloading→scrape 推进后的统一动作（轮询与 aria2 回调共用，§6.2/§6.3）：
 
-    - download_complete 通知（站内 + PushPlus，全体）；
     - 触发刮削执行器（scrape_runner：nastools_sync force=True，事件触发不阻塞；
       P3-3 持引用防 GC）。G6：**不删夸克**——入库确认（library 节点完成）后才删，
       由后续 lane 执行。
     """
-    await notifier.notify(NotifyEvent(
-        event_type=EVENT_DOWNLOAD_COMPLETE,
-        title=f"下载完成: {file_name}",
-        body=f"媒体 {media_id} · 集 {episode} · {file_name} 下载完成，已推送刮削；"
-             f"夸克中转文件将在 Emby 入库确认后释放。",
-        recipient=None,
-        extra={"media_id": media_id, "episode": episode},
-    ))
     try:
         _spawn(scrape_runner)
     except Exception as exc:  # noqa: BLE001
@@ -546,8 +535,8 @@ async def _complete_download(dq_id, media_id, episode, file_name, quark_path,
 
     与旧三表版（双表 done + 删夸克）的差异：
       a. 单表条件更新 downloading→scrape（rowcount=0 → 已被并发方推进，幂等返回，
-         不重复计数/通知——回调与轮询并发推进由条件更新兜底，§6.2）；
-      b. 触发刮削执行器（_after_complete_promote：nastools force 同步 + 通知）；
+         不重复推进/触发刮削——回调与轮询并发推进由条件更新兜底，§6.2）；
+      b. 触发刮削执行器（_after_complete_promote：nastools force 同步）；
       c. **不删夸克文件**（G6：入库确认后由后续 lane 删除）；
       d. media 离开 downloading 后检查是否还有其他进行中任务，无则回 tracking。
 
@@ -588,8 +577,8 @@ async def _complete_download(dq_id, media_id, episode, file_name, quark_path,
             # 无则回 tracking（条件更新不覆盖 paused）。与推进同一事务。
             await _sync_media_status(media_id, s)
 
-    # 通知 + 触发刮削 + 不删夸克（G6）
-    await _after_complete_promote(media_id, episode, file_name)
+    # 触发刮削 + 不删夸克（G6）
+    await _after_complete_promote()
 
 
 async def _node_failure(dq_id, media_id, episode, file_name, retry_snapshot,
@@ -991,20 +980,6 @@ async def _commit_downloading(dq_id, media_id, episode, file_name, out_name, gid
             )
             await s.commit()
         return "conflict"
-
-    # P1（议会验证 gamma）：download_started 通知（§6.3 通知时机清单：addUri 成功
-    # 进入 downloading → download_started）。失败仅告警不阻断（通知通道异常不影响
-    # 主流程，与 download_complete 通知同模式）。
-    try:
-        await notifier.notify(NotifyEvent(
-            event_type=EVENT_DOWNLOAD_STARTED,
-            title=f"下载开始: {out_name}",
-            body=f"媒体 {media_id} · 集 {episode} · {out_name} 已提交 aria2 下载。",
-            recipient=None,
-            extra={"media_id": media_id, "episode": episode},
-        ))
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[transfer] download_started 通知失败（不阻断主流程）: %s", exc)
 
     # design T7（fix-transfer-flow-reliability Task 10）：转存提交成功（文件已落盘
     # downloading）→ 立即使 30s 进程内 used 缓存失效，下一轮准入 re-count 反映真实
@@ -1813,10 +1788,10 @@ async def trigger_download_complete(gid: str) -> bool:
 
     §6.2 回调链路：按 DownloadQueue.aria2_gid 反查 downloading 任务（comment 仅作
     GID 来源校验辅助，此处不校验）→ 条件更新 downloading→scrape（幂等：二次回调 /
-    轮询已并发推进时 rowcount=0 → 返回 False，不重复推进/通知/触发刮削）→
-    _after_complete_promote（通知 + 刮削执行器）→ 返回 True。
+    轮询已并发推进时 rowcount=0 → 返回 False，不重复推进/触发刮削）→
+    _after_complete_promote（触发刮削执行器）→ 返回 True。
 
-    内部 try/except 全包：任何异常（DB 故障/notifier 异常等）记录日志并返回 False，
+    内部 try/except 全包：任何异常（DB 故障等）记录日志并返回 False，
     回调端点不会因内部异常抛 500（事件丢失由轮询兜底，§6.2）。
     """
     try:
@@ -1868,8 +1843,8 @@ async def trigger_download_complete(gid: str) -> bool:
                     duration_seconds=0.0,
                 )
                 await _sync_media_status(media_id, s)
-        # 通知 + 触发刮削（同轮询推进语义，G6 不删夸克）
-        await _after_complete_promote(media_id, episode, file_name)
+        # 触发刮削（同轮询推进语义，G6 不删夸克）
+        await _after_complete_promote()
         logger.info("[transfer] trigger_download_complete 推进成功（gid=%s）", gid)
         return True
     except Exception as exc:  # noqa: BLE001
@@ -1927,4 +1902,6 @@ async def trigger_download_complete(gid: str) -> bool:
 #         覆盖，防双重计算）；_ACTIVE_STATUSES（media 处理中判定）保持含 downloading。
 #         准入无并发数上限（容量为唯一约束，空间不足 quota_wait 排队）。
 #   - P1  gamma：_commit_downloading 成功发出 download_started 通知（§6.3）。
+#         fix-notification-templates：download_started / download_complete 噪音通知已移除
+#         （approvals 开始入库 / transfer 下载开始 / 下载完成，保留刮削触发与容量缓存失效）。
 # ---------------------------------------------------------------------------

@@ -5,8 +5,8 @@ aria2/cloudsaver/alist/capacity/notifier/scrape_runner/async_session），
 不连任何真实外部服务/数据库。数据库用独立 in-memory SQLite（StaticPool 共享连接）。
 
 验证场景（对应影视下载两队列重设计 §4.2/§5/§6.2）：
-- 阶段 A：tell_status=complete → dq downloading→scrape + download_complete 通知
-  + 刮削执行器触发 + 幂等（二次运行不重复）
+- 阶段 A：tell_status=complete → dq downloading→scrape + 刮削执行器触发
+  + 幂等（二次运行不重复；fix-notification-templates：download_complete 通知已移除）
 - 阶段 A：active → 刷新 updated_at；error → retry_count 递增 → 第 3 次 failed + flow_error
 - 阶段 B：容量 False → 保持 pending + quota_reject_count++ 且 retry_count 不变；
   容量异常（CapacityUnavailable）→ 保持 pending 且 quota_reject_count 不变 + flow_error
@@ -260,9 +260,9 @@ async def get_all_dq(db):
 
 def test_poll_complete_enters_scrape_and_triggers_scrape(db, env, monkeypatch):
     """下载完成（§4.2/G6）：dq downloading→scrape（不置 done、不删夸克）；
-    触发刮削执行器 + download_complete 通知。回调/轮询并发推进幂等（二次不重复）。"""
+    触发刮削执行器（download_complete 通知已移除）。回调/轮询并发推进幂等（二次不重复）。"""
     patch_db(monkeypatch, db)
-    mid, dq_id = run(seed_downloading(db))
+    _, dq_id = run(seed_downloading(db))
     env["aria2"].statuses["gid1"] = "complete"
 
     run(transfer_mod.process_transfer_queue())
@@ -275,19 +275,15 @@ def test_poll_complete_enters_scrape_and_triggers_scrape(db, env, monkeypatch):
     assert dq.node_error is None
     # G6：下载完成不删夸克（入库确认后才删，由后续 lane 执行），零删除调用
     assert env["alist"].remove_calls == []
-    # download_complete 通知（全体）
-    done_events = [e for e in env["notifier"].events if e.event_type == "download_complete"]
-    assert len(done_events) == 1
-    assert done_events[0].title == "下载完成: ep.mkv"
-    assert done_events[0].extra["media_id"] == mid
-    assert done_events[0].extra["episode"] == "S01E01"
+    # download_complete 通知已移除（fix-notification-templates）：推进路径不再发事件
+    assert [e for e in env["notifier"].events if e.event_type == "download_complete"] == []
     # 刮削执行器事件触发（L3，不阻塞转存链）；成功推进不 spawn process_transfer_queue
     # （容量预算并发下循环内续跑，见 test_admit_processes_multiple_pending）
     assert env["spawn"] == [transfer_mod.scrape_runner]
     # 幂等：二次运行不重复处理（dq 已 scrape，轮询不再命中 downloading）
     run(transfer_mod.process_transfer_queue())
     assert env["spawn"] == [transfer_mod.scrape_runner]  # 不再触发
-    assert len([e for e in env["notifier"].events if e.event_type == "download_complete"]) == 1
+    assert [e for e in env["notifier"].events if e.event_type == "download_complete"] == []
 
 
 def test_poll_active_refreshes_updated_at(db, env, monkeypatch):
@@ -516,9 +512,10 @@ def test_save_success_commits_download(db, env, monkeypatch):
 
 
 def test_download_started_notification_after_commit(db, env, monkeypatch):
-    """P1（议会裁决 gamma）：addUri 成功落 downloading 后发出 download_started 通知。"""
+    """addUri 成功落 downloading 后的提交语义：download_started 通知已移除
+    （fix-notification-templates），但落 downloading 状态与命名对齐仍成立。"""
     patch_db(monkeypatch, db)
-    mid, dq_id = run(seed_pending(
+    _, dq_id = run(seed_pending(
         db, file_name="Show.S01E02.1080p.mkv", download_name="测试剧 - S01E02 - 第 2 集.mkv",
     ))
 
@@ -526,11 +523,8 @@ def test_download_started_notification_after_commit(db, env, monkeypatch):
 
     dq = run(read_row(db, DownloadQueue, dq_id))
     assert dq.status == "downloading"
-    started = [e for e in env["notifier"].events if e.event_type == "download_started"]
-    assert len(started) == 1
-    assert started[0].title == "下载开始: 测试剧 - S01E02 - 第 2 集.mkv"  # 用落盘名
-    assert started[0].extra["media_id"] == mid
-    assert started[0].extra["episode"] == "S01E01"
+    # download_started 通知已移除：addUri 成功后不再发事件
+    assert [e for e in env["notifier"].events if e.event_type == "download_started"] == []
     # 落盘名/本地路径与 download_name 对齐
     assert dq.quark_path == "/quark/Show.S01E02.1080p.mkv"
     assert dq.local_path == "/downloads/测试剧 - S01E02 - 第 2 集.mkv"
@@ -984,9 +978,10 @@ def test_complete_enters_scrape_without_removing_quark(db, env, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_trigger_download_complete_promotes_to_scrape(db, env, monkeypatch):
-    """回调推进：按 aria2_gid 反查 downloading → downloading→scrape + 通知 + 触发刮削。"""
+    """回调推进：按 aria2_gid 反查 downloading → downloading→scrape + 触发刮削
+    （download_complete 通知已移除）。"""
     patch_db(monkeypatch, db)
-    mid, dq_id = run(seed_downloading(db, gid="gid-1"))
+    _, dq_id = run(seed_downloading(db, gid="gid-1"))
 
     result = run(transfer_mod.trigger_download_complete("gid-1"))
 
@@ -995,18 +990,15 @@ def test_trigger_download_complete_promotes_to_scrape(db, env, monkeypatch):
     assert dq.status == "scrape"
     assert dq.node_attempt == 0
     assert dq.node_finished_at is not None
-    # 通知 + 刮削执行器触发（同轮询推进语义）
-    done_events = [e for e in env["notifier"].events if e.event_type == "download_complete"]
-    assert len(done_events) == 1
-    assert done_events[0].extra["media_id"] == mid
-    assert done_events[0].extra["episode"] == "S01E01"
+    # 刮削执行器触发（同轮询推进语义）；download_complete 通知已移除
+    assert [e for e in env["notifier"].events if e.event_type == "download_complete"] == []
     assert env["spawn"] == [transfer_mod.scrape_runner]
 
 
 def test_trigger_download_complete_idempotent_second_false(db, env, monkeypatch):
-    """幂等：二次回调（dq 已 scrape）→ 返回 False，不重复推进/通知/触发刮削。"""
+    """幂等：二次回调（dq 已 scrape）→ 返回 False，不重复推进/触发刮削。"""
     patch_db(monkeypatch, db)
-    mid, dq_id = run(seed_downloading(db, gid="gid-1"))
+    _, dq_id = run(seed_downloading(db, gid="gid-1"))
 
     assert run(transfer_mod.trigger_download_complete("gid-1")) is True
     # 二次回调：条件更新 downloading→scrape 命中 0 行 → False
@@ -1014,7 +1006,7 @@ def test_trigger_download_complete_idempotent_second_false(db, env, monkeypatch)
 
     dq = run(read_row(db, DownloadQueue, dq_id))
     assert dq.status == "scrape"
-    assert len([e for e in env["notifier"].events if e.event_type == "download_complete"]) == 1
+    assert [e for e in env["notifier"].events if e.event_type == "download_complete"] == []
     assert env["spawn"] == [transfer_mod.scrape_runner]
 
 

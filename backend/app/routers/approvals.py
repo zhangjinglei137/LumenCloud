@@ -19,7 +19,6 @@ from app.services import emby
 from app.services.emby import EmbyUnavailable
 from app.services.notifier import (
     EVENT_APPROVAL_PENDING,
-    EVENT_DOWNLOAD_STARTED,
     NotifyEvent,
     notifier,
 )
@@ -188,7 +187,6 @@ async def approve_approval(
     if result.rowcount == 0:
         raise HTTPException(status_code=409, detail="该请求已被处理")
 
-    title, requester = wr.title, wr.requested_by
     media = Media(
         title=wr.title,
         tmdb_id=wr.tmdb_id,
@@ -205,20 +203,6 @@ async def approve_approval(
     await session.commit()
 
     # ---- 事务外副作用 ----
-    # §5.3：批准通过通知访客（download_started）
-    if requester:
-        try:
-            await notifier.notify(
-                NotifyEvent(
-                    event_type=EVENT_DOWNLOAD_STARTED,
-                    title=f"开始入库: {title}",
-                    recipient=requester,
-                    extra={"media_id": media_id},
-                )
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("入库通知失败: %s", exc)
-
     # 可选：触发该 media 巡检（fire-and-forget，E-1 不再同步等待；故障不影响审批结果）
     try:
         from app.tasks.scan import trigger_scan_background
