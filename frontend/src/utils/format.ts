@@ -1,5 +1,9 @@
 /** 通用格式化工具 */
 
+import { markRaw } from 'vue'
+import type { Component } from 'vue'
+import { Bell, BellFilled, CircleCheckFilled, WarningFilled } from '@element-plus/icons-vue'
+
 export function formatGb(gb: number | null | undefined): string {
   if (typeof gb !== 'number' || Number.isNaN(gb)) return '—'
   if (gb >= 1) return `${gb.toFixed(1)} GB`
@@ -551,4 +555,35 @@ export function episodeDisplayName(row: Record<string, unknown>): string {
     return `S${String(season).padStart(2, '0')}E${String(episodeNumber).padStart(2, '0')}`
   }
   return '—'
+}
+
+// ---------- 通知事件类型 → 铃铛呈现（fix-notification-templates） ----------
+
+/** 通知事件类型的铃铛呈现元信息（label / icon 组件 / 强调色） */
+export interface NotificationTypeMeta {
+  label: string
+  /** Element Plus 图标组件（模板 <component :is> 使用）；markRaw 包裹避免响应式代理 */
+  icon: Component
+  /** 强调色（dot / 图标着色） */
+  color: string
+}
+
+const NOTIFICATION_TYPE_MAP: Record<string, NotificationTypeMeta> = {
+  download_complete: { label: '入库完成', icon: markRaw(CircleCheckFilled), color: '#67c23a' },
+  approval_pending: { label: '待审批', icon: markRaw(BellFilled), color: '#409eff' },
+  flow_error: { label: '告警', icon: markRaw(WarningFilled), color: '#f56c6c' },
+}
+
+const NOTIFICATION_TYPE_DEFAULT: NotificationTypeMeta = {
+  label: '通知',
+  icon: markRaw(Bell),
+  color: '#909399',
+}
+
+/** 通知事件类型 → 铃铛呈现；未知/空值回退默认（灰 Bell「通知」） */
+export function notificationTypeMeta(event_type?: string | null): NotificationTypeMeta {
+  if (event_type && NOTIFICATION_TYPE_MAP[event_type]) {
+    return NOTIFICATION_TYPE_MAP[event_type]
+  }
+  return NOTIFICATION_TYPE_DEFAULT
 }

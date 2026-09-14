@@ -6,7 +6,8 @@ import { useAuthStore } from '../stores/auth'
 import { useNotificationsStore } from '../stores/notifications'
 import { useQueueStore } from '../stores/queue'
 import { useThemeStore } from '../stores/theme'
-import { formatGb, timeAgo } from '../utils/format'
+import { formatGb, timeAgo, notificationTypeMeta } from '../utils/format'
+import type { NotificationItem } from '../types'
 
 const route = useRoute()
 const router = useRouter()
@@ -84,6 +85,11 @@ async function onNotificationClick(id: number, read: boolean | undefined) {
 
 async function onReadAll() {
   await notifications.markAllRead()
+}
+
+/** NotificationItem 带索引签名（[key: string]: unknown），event_type 需窄化为 string 后才能传给映射 */
+function notifyEventType(item: NotificationItem): string | null | undefined {
+  return typeof item.event_type === 'string' ? item.event_type : undefined
 }
 </script>
 
@@ -206,7 +212,17 @@ async function onReadAll() {
                   @click="onNotificationClick(item.id, item.read)"
                 >
                   <div class="title">
-                    <span class="dot" />
+                    <span
+                      class="dot"
+                      :style="{ background: notificationTypeMeta(notifyEventType(item)).color }"
+                    />
+                    <el-icon
+                      :style="{ color: notificationTypeMeta(notifyEventType(item)).color }"
+                      class="notify-type-icon"
+                    >
+                      <component :is="notificationTypeMeta(notifyEventType(item)).icon" />
+                    </el-icon>
+                    <span class="notify-label">{{ notificationTypeMeta(notifyEventType(item)).label }}</span>
                     {{ item.title || '通知' }}
                   </div>
                   <div class="msg">{{ item.message }}</div>
@@ -410,6 +426,15 @@ async function onReadAll() {
   height: 6px;
   border-radius: 50%;
   background: transparent;
+}
+
+.lc-notify-item .notify-type-icon {
+  margin-right: 4px;
+}
+
+.lc-notify-item .notify-label {
+  margin-right: 4px;
+  font-size: 12px;
 }
 
 .lc-notify-item.unread .dot {

@@ -158,3 +158,27 @@ describe('mediaStatusLabel 兜底（fix-online-issues）', () => {
     expect(mediaStatusType('weird_value')).toBe('info')
   })
 })
+
+import { notificationTypeMeta } from './format'
+
+describe('通知事件类型 → 铃铛呈现（fix-notification-templates）', () => {
+  it('三种已知类型返回对应 label 与强调色', () => {
+    expect(notificationTypeMeta('download_complete')).toMatchObject({
+      label: '入库完成',
+      color: '#67c23a',
+    })
+    expect(notificationTypeMeta('approval_pending')).toMatchObject({
+      label: '待审批',
+      color: '#409eff',
+    })
+    expect(notificationTypeMeta('flow_error')).toMatchObject({
+      label: '告警',
+      color: '#f56c6c',
+    })
+  })
+  it('未知 / 空值回退默认（灰 Bell 通知）', () => {
+    expect(notificationTypeMeta('whatever')).toMatchObject({ label: '通知', color: '#909399' })
+    expect(notificationTypeMeta(undefined)).toMatchObject({ label: '通知', color: '#909399' })
+    expect(notificationTypeMeta(null)).toMatchObject({ label: '通知', color: '#909399' })
+  })
+})
