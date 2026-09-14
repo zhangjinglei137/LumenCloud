@@ -1,0 +1,40 @@
+{
+  "change": "aria2-download-safety",
+  "phase": "design",
+  "mode": "beta",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "059861245c86d803506f61a4aff065eb676226dee1fb4e0dcebcfa6d271b4838",
+  "files": [
+    {
+      "path": "docs/openspec/changes/aria2-download-safety/proposal.md",
+      "sha256": "cbeb1bc31ba43179447b009d9a3fd2832392605f8b42ddec41959c5b9651853c",
+      "role": "supporting"
+    },
+    {
+      "path": "docs/openspec/changes/aria2-download-safety/design.md",
+      "sha256": "a988a8cf9461141dd55c43ba7e6def37a71088b629ffc40558638bc9dd1ad48a",
+      "role": "supporting"
+    },
+    {
+      "path": "docs/openspec/changes/aria2-download-safety/tasks.md",
+      "sha256": "8110a63179b9af3dcd570d54aa84d43b1e5409a19b974ab1cd591ff1fb378131",
+      "role": "supporting"
+    },
+    {
+      "path": "docs/openspec/changes/aria2-download-safety/specs/notifications/spec.md",
+      "sha256": "4e9668f08a2cfd06daaa90215ced461473aeeba46735b598ddbfe4fcf5b3eaf5",
+      "role": "spec"
+    },
+    {
+      "path": "docs/openspec/changes/aria2-download-safety/specs/pipeline-admission/spec.md",
+      "sha256": "69244db109a5117844be5dfef8be165a4706968d530946e335e755fa908833d0",
+      "role": "spec"
+    },
+    {
+      "path": "docs/openspec/changes/aria2-download-safety/specs/quark-cleanup-safety/spec.md",
+      "sha256": "b6bec108575f4c011c0b5efb7904c62adf2f008d5751c46e1f2b0d25381294b8",
+      "role": "spec"
+    }
+  ]
+}
