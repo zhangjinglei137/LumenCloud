@@ -12,8 +12,7 @@ from sqlalchemy.pool import StaticPool
 from app.database import Base
 import app.models  # noqa: F401  注册全部 ORM 模型
 from app.tasks import cleanup as cleanup_mod
-from app.models import DownloadQueue, Media
-from app.utils import now_utc_naive as _now
+from app.models import Media
 
 
 def run(coro):

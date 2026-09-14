@@ -790,7 +790,7 @@ async def _sync_media_status(media_id: int, session=None) -> int:
 def _alert_bucket(message: str) -> str:
     """告警节流指纹：消息固定前缀（去掉 ': <exc>' 变量尾巴）。
 
-    Oracle M4：GID/容量告警消息尾部的 exc 会随网络抖动变化（超时/拒连/解析失败…），
+    Oracle M4：容量/流程告警消息尾部的 exc 会随网络抖动变化（超时/拒连/解析失败…），
     直接整条比较会让节流对变量尾巴失效（每分钟 job 刷屏）。取冒号前固定前缀作
     比较指纹；不同前缀 = 不同根因，照常放行通知。
     """
@@ -1614,7 +1614,7 @@ async def _admit_batch() -> None:
             logger.info("[transfer] 无 pending 任务待转存，本轮空跑")
             return
 
-    # 3) 准入循环：无可准入任务/资源受限时停止（准入唯一约束 = 网盘容量——容量不足
+    # 2) 准入循环：无可准入任务/资源受限时停止（准入唯一约束 = 网盘容量——容量不足
     #    置 quota_wait 按空间排队，由下一轮 job/事件续跑唤醒；无并发数上限）
     while True:
         result = await _try_admit_one(t0)

@@ -1,5 +1,5 @@
 """
-aria2 JSON-RPC 客户端（docs/新系统设计.md §10 / §12.2 来源校验）。
+aria2 JSON-RPC 客户端（docs/新系统设计.md §10）。
 
 契约（n8n 旧流程沿用）：
     JSON-RPC POST：addUri / tellStatus / getGlobalStat / tellActive
@@ -9,9 +9,9 @@ aria2 JSON-RPC 客户端（docs/新系统设计.md §10 / §12.2 来源校验）
     提交下载前检查 numActive / numWaiting（§4.4 步骤 6 前忙闲检查）；
     add_uri 的 comment 传 "lumencloud:<media_id>:<episode>" 标记 GID 来源。
     2026-09 修订：实测 aria2 1.36.0 静默丢弃 comment option（getOption/tellStatus
-    均读不到），故 GID 来源校验（§12.2 防 n8n 误启动双转存）已改为 **DB gid
-    白名单**（transfer._admit_batch 段 2：aria2 活动/等待任务 gid 必须在
-    download_queue 已签发集合内）；comment 仅作未来 aria2 版本兼容的冗余标记。
+    均读不到），comment 仅作未来 aria2 版本兼容的冗余标记；aria2-download-safety
+    起已移除来源校验，来源判定由清理保护 list_source_basenames 解析下载源文件名
+    兜底。
 """
 import logging
 from typing import Any, Optional
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT = httpx.Timeout(30.0)
 
-# tellStatus 关注的字段（状态轮询 / GID 来源校验 / 实时进度都需要）
+# tellStatus 关注的字段（状态轮询 / 实时进度 / 完成判定都需要）
 _DEFAULT_KEYS = [
     "gid",
     "status",
@@ -127,8 +127,7 @@ class Aria2Client:
             out:          落盘文件名
             comment:      来源标记，本系统传 "lumencloud:<media_id>:<episode>"
                           （2026-09 修订：aria2 1.36.0 会静默丢弃该 option，
-                          GID 来源校验已改用 DB gid 白名单，此参数仅作未来
-                          aria2 版本兼容的冗余标记）
+                          此参数仅作未来 aria2 版本兼容的冗余标记）
             options:      追加透传的 aria2 RPC options（与 download_dir/out/
                           comment 合并为同一 options dict）。T8.2 固定传
                           {"allow-overwrite": "true", "auto-file-renaming": "false"}
@@ -166,12 +165,13 @@ class Aria2Client:
         return result or {}
 
     async def tell_active(self) -> list[dict[str, Any]]:
-        """aria2.tellActive：活动任务列表（转存前 GID 来源校验用，见 §12.2）。
+        """aria2.tellActive：活动任务列表（清理保护源解析用）。
 
-        每项含 {gid, status, comment, totalLength, completedLength, files}；comment 字段在
-        aria2 1.36.0 下恒为空（addUri 丢弃该 option）。校验逻辑（transfer.
-        _admit_batch 段 2）：aria2 活动/等待任务 gid 必须在本系统 download_queue
-        已签发 gid 集合内才继续转存，发现陌生 gid 本轮跳过并告警。
+        当前用途：清理保护——list_source_basenames 解析下载源文件名（活动任务的源
+        文件在清理时不删）。阶段 A（downloading 完成轮询）对本系统已签发 gid
+        （download_queue.aria2_gid）走 tell_status，不经本接口。每项含 {gid,
+        status, comment, totalLength, completedLength, files}；comment 字段在
+        aria2 1.36.0 下恒为空（addUri 丢弃该 option）。
 
         files[].uris[].uri 供清理保护解析下载源文件名（见 list_source_basenames）；
         files[].path 是 aria2 本地落盘路径（download_dir + out），不是夸克源文件。
@@ -183,12 +183,11 @@ class Aria2Client:
         return result or []
 
     async def tell_waiting(self, offset: int = 0, num: int = 100) -> list[dict[str, Any]]:
-        """aria2.tellWaiting：等待队列任务列表（转存前 GID 来源校验用，§12.2）。
+        """aria2.tellWaiting：等待队列任务列表（清理保护源解析用）。
 
-        P2-6（council）：waiting 队列中的陌生任务同样代表 n8n 误启动（排队中的
-        双转存），仅校验 tell_active 会漏检。返回字段同 tell_active
-        （gid/status/comment/totalLength/completedLength/files），transfer 层将
-        active + waiting 合并后做统一来源校验（gid 白名单口径，见 tell_active）。
+        当前用途同 tell_active：list_source_basenames 解析下载源文件名（等待队列中
+        的源文件同样不删，防排队中的双转存误删）。返回字段同 tell_active
+        （gid/status/comment/totalLength/completedLength/files）。
 
         files[].uris[].uri 供清理保护解析下载源文件名（见 list_source_basenames）；
         files[].path 是 aria2 本地落盘路径（download_dir + out），不是夸克源文件。
