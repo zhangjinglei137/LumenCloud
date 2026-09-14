@@ -2,6 +2,8 @@
 comet_change: restore-scan-interval-scheduling
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-09-14-restore-scan-interval-scheduling
+status: final
 ---
 
 # 恢复 per-media 巡检间隔调度 — 深度技术设计

@@ -1,0 +1,9 @@
+{
+  "openspec_proposal": "docs/openspec/changes/restore-scan-interval-scheduling/proposal.md",
+  "openspec_design": "docs/openspec/changes/restore-scan-interval-scheduling/design.md",
+  "openspec_tasks": "docs/openspec/changes/restore-scan-interval-scheduling/tasks.md",
+  "openspec_delta_spec": "docs/openspec/changes/restore-scan-interval-scheduling/specs/media-pipeline/spec.md",
+  "handoff_context": "docs/openspec/changes/archive/2026-09-14-restore-scan-interval-scheduling/.comet/handoff/spec-context.json",
+  "handoff_markdown": "docs/openspec/changes/archive/2026-09-14-restore-scan-interval-scheduling/.comet/handoff/spec-context.md",
+  "archive_directory": "docs/openspec/changes/archive/2026-09-14-restore-scan-interval-scheduling"
+}

@@ -2,6 +2,7 @@
 change: restore-scan-interval-scheduling
 design-doc: docs/superpowers/specs/2026-09-14-restore-scan-interval-scheduling-design.md
 base-ref: ec2d6dd03d4bec292f9a6daa53a4c1fcab0435f5
+archived-with: 2026-09-14-restore-scan-interval-scheduling
 ---
 
 # 恢复 per-media 巡检间隔调度 实施计划

@@ -1,0 +1,30 @@
+{
+  "change": "restore-scan-interval-scheduling",
+  "phase": "design",
+  "mode": "beta",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "69b23fc2363f9f2d227e6499246bb840458658adb82496caff6ad522bb4c10e1",
+  "files": [
+    {
+      "path": "docs/openspec/changes/restore-scan-interval-scheduling/proposal.md",
+      "sha256": "2f02d655aa25bf07c174a16a067b9a0b20351adb145abd04c08010a9bd33d2fa",
+      "role": "supporting"
+    },
+    {
+      "path": "docs/openspec/changes/restore-scan-interval-scheduling/design.md",
+      "sha256": "0a84c0f78141078267b625a953380c83f53a510917ad882726b16f0bddc42d7d",
+      "role": "supporting"
+    },
+    {
+      "path": "docs/openspec/changes/restore-scan-interval-scheduling/tasks.md",
+      "sha256": "6c1c8e16e6ca69d603006e32df8632dc342ccbb381bb3ed8980b4edb5e67be77",
+      "role": "supporting"
+    },
+    {
+      "path": "docs/openspec/changes/restore-scan-interval-scheduling/specs/media-pipeline/spec.md",
+      "sha256": "65dffb7e007fe0084664ac48067bd2e6e68456eace3e40cdc9a90271faa58b75",
+      "role": "spec"
+    }
+  ]
+}
