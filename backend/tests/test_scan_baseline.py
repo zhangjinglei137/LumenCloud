@@ -270,6 +270,38 @@ def test_scan_one_tv_missing_required_skips(db, monkeypatch):
     assert rid == tr.id
 
 
+def test_scan_one_emby_error_does_not_touch_last_scan_at(db, monkeypatch):
+    """Emby 故障 error 分支不更新 last_scan_at：下轮 tick 继续重试，不被冷却。"""
+    scan_mod = _patch_scan_env(monkeypatch, db, find_emby_id=None)
+    monkeypatch.setattr(scan_mod, "_emby_missing_codes", AsyncMock(side_effect=RuntimeError("Emby down")))
+
+    mid = run(_seed_media(db))
+    run(scan_mod._scan_one(mid))
+
+    async def _read_media():
+        async with db() as s:
+            m = await s.get(Media, mid)
+            return m.last_scan_at
+    last = run(_read_media())
+    assert last is None  # 故障分支未 touch → last_scan_at 保持 NULL（下轮重试）
+
+
+def test_scan_one_missing_required_does_not_touch_last_scan_at(db, monkeypatch):
+    """Emby 未收录（强防重 skipped）分支不更新 last_scan_at：下轮继续重试。"""
+    _mock_baseline_config(monkeypatch, "true")
+    scan_mod = _patch_scan_env(monkeypatch, db, find_emby_id=None)
+
+    mid = run(_seed_media(db))
+    run(scan_mod._scan_one(mid))
+
+    async def _read_media():
+        async with db() as s:
+            m = await s.get(Media, mid)
+            return m.last_scan_at
+    last = run(_read_media())
+    assert last is None  # 未收录 skipped 分支未 touch
+
+
 # ---------------------------------------------------------------------------
 # 统一巡检调度（queue-flow-rework Task 1）：移除 per-media 冷却
 # ---------------------------------------------------------------------------

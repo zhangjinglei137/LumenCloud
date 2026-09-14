@@ -1673,7 +1673,7 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
         return await _finish(
             "error",
             f"Emby 故障，fail-safe 暂停新缺集发现: {exc}",
-            touch_last_scan_at=True,
+            touch_last_scan_at=False,
         )
     _phase_done(phases, "check")
 
@@ -1686,7 +1686,7 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
         return await _finish(
             "skipped",
             "Emby 未收录该剧集，防重基线强制（scan_baseline_required=True），本轮跳过",
-            touch_last_scan_at=True,
+            touch_last_scan_at=False,
         )
 
     missing_keys = {m for m in missing if m is not None}
@@ -1750,7 +1750,7 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
         return await _finish(
             "error",
             f"搜索服务异常（cloudSaver 不可达或超时），未能查找缺失集资源，请稍后重试: {exc}",
-            touch_last_scan_at=True,
+            touch_last_scan_at=False,
         )
     _phase_done(phases, "search")
     scan_detail["search_status"] = "ok" if candidates else "no_candidates"
@@ -1765,7 +1765,7 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
         scan_detail["failed_phase"] = "match"
         return await _finish(
             "error", f"巡检中止: 大小过滤上限读取失败: {exc}",
-            touch_last_scan_at=True,
+            touch_last_scan_at=False,
         )
     limit_gb = _size_limit_gb(media, ep_limit, movie_limit)
     skip_enqueue = media.status == "downloading"  # 有进行中任务本轮不入队，但仍检查遗漏
