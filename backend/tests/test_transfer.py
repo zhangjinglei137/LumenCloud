@@ -12,9 +12,9 @@ aria2/cloudsaver/alist/capacity/notifier/scrape_runner/async_session），
   容量异常（CapacityUnavailable）→ 保持 pending 且 quota_reject_count 不变 + flow_error
 - 阶段 B：save 连续失败 3 次 → failed + retry_count=3
 - 容量预算并发（§5）：准入无并发数上限（唯一约束=网盘容量）；reserved 聚合计入容量 check
-- GID 校验：tell_active/tell_waiting 返回陌生 gid 任务 → 告警 + 跳过本轮（不转存 +
-  flow_error），陌生任务消失后下轮自动续跑（不整批停摆）；本系统已签发 gid 任务
-  → 不阻断正常转存提交；tell_active 故障 → 告警 + 跳过本轮
+- 陌生 gid 共存放行（aria2-download-safety）：GID 来源校验已整体移除——aria2 活动/
+  等待任务中的陌生 gid（用户自行下载，不在本系统已签发集合）不再拦截转存、不产生
+  flow_error 告警、不触发 aria2.remove（n8n 已停用，白名单口径无存在意义）
 - aria2 回调推进（§6.2）：trigger_download_complete 反查 gid → downloading→scrape；
   幂等（二次 False）；未知 gid → False
 - P2：aria2 落盘名 = dq.download_name（缺失回退原始名）
@@ -479,7 +479,7 @@ def test_save_success_commits_download(db, env, monkeypatch):
     """正常转存链路：save → get_link → add_uri → dq downloading + gid/quark_path 落库。"""
     patch_db(monkeypatch, db)
     mid, dq_id = run(seed_pending(db))
-    env["aria2"].actives = []  # 无活动任务（GID 校验 gid 白名单口径：空列表直接放行）
+    env["aria2"].actives = []  # 无活动任务（GID 来源校验已移除，此字段仅作场景记录）
 
     run(transfer_mod.process_transfer_queue())
 
@@ -631,177 +631,23 @@ def test_reserved_aggregation_included_in_capacity_check(db, env, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 阶段 B：GID 来源校验兜底（§12.2 简化版）
+# 阶段 B：陌生 gid 共存放行（aria2-download-safety：GID 来源校验已移除）
 # ---------------------------------------------------------------------------
 
-def test_gid_source_check_skips_round_then_resumes(db, env, monkeypatch):
-    """陌生 aria2 活动任务（gid 不在本系统 download_queue 已签发集合）→ 告警 + 跳过本轮
-    （不转存、不 ++quota_reject、不耗 retry、非抛错挂起）；陌生任务消失后下一轮自动
-    恢复准入（下轮续跑，一过性陌生任务不再造成整批永久停摆）。"""
+def test_unknown_gid_coexists_with_transfer(db, env, monkeypatch):
+    """陌生 aria2 活动任务（用户自行下载，不在系统已签发集合）不再拦截转存：
+    转存正常继续、不产生 flow_error 告警、不调用 aria2.remove。"""
     patch_db(monkeypatch, db)
     mid, dq_id = run(seed_pending(db))
-    env["aria2"].actives = [{"gid": "n8n-gid", "status": "active", "comment": "n8n:legacy"}]
+    env["aria2"].actives = [{"gid": "user-gid", "status": "active", "comment": ""}]
 
-    # 第一轮：存在陌生任务 → 告警 + 本轮跳过（_admit_batch 正常返回，不抛错不挂起）
     run(transfer_mod.process_transfer_queue())
 
     dq = run(read_row(db, DownloadQueue, dq_id))
-    assert dq.status == "pending"            # 本轮不处理
-    assert dq.quota_reject_count == 0        # 不 ++ quota_reject
-    assert dq.retry_count == 0               # 不耗 retry
-    assert env["cloudsaver"].save_calls == []  # 不转存
-    assert any(e.event_type == "flow_error" for e in env["notifier"].events)
-
-    # 第二轮：陌生任务消失（下载完成/被人工移除）→ 下轮续跑，正常准入转存
-    env["aria2"].actives = []
-    run(transfer_mod.process_transfer_queue())
-
-    dq = run(read_row(db, DownloadQueue, dq_id))
-    assert dq.status == "downloading"
+    assert dq.status == "downloading"            # 转存正常准入
     assert len(env["cloudsaver"].save_calls) == 1
-
-
-def test_gid_source_check_accepts_known_gid(db, env, monkeypatch):
-    """aria2 活动任务 gid 在本系统 download_queue 已签发集合内（downloading 行）→
-    不阻断转存（2026-09 修订：gid 白名单口径，不依赖 aria2 comment）。"""
-    patch_db(monkeypatch, db)
-    run(seed_downloading(db, gid="own-1", file_name="已知剧集.mkv"))
-    mid, dq_id = run(seed_pending(db))
-    env["aria2"].actives = [{"gid": "own-1", "status": "active", "comment": "lumencloud:9:S02E03"}]
-
-    run(transfer_mod.process_transfer_queue())
-
-    assert len(env["cloudsaver"].save_calls) == 1  # 正常转存
-    dq = run(read_row(db, DownloadQueue, dq_id))
-    assert dq.status == "downloading"
-
-
-def test_gid_check_failure_blocks_round(db, env, monkeypatch):
-    """tell_active 故障 → fail-closed：整批跳过 + flow_error，不转存。"""
-    patch_db(monkeypatch, db)
-    mid, dq_id = run(seed_pending(db))
-
-    async def boom():
-        raise RuntimeError("aria2 RPC 不可用")
-
-    env["aria2"].tell_active = boom
-    run(transfer_mod.process_transfer_queue())
-
-    dq = run(read_row(db, DownloadQueue, dq_id))
-    assert dq.status == "pending"
-    assert dq.quota_reject_count == 0
-    assert dq.retry_count == 0
-    assert env["cloudsaver"].save_calls == []
-    assert any(e.event_type == "flow_error" for e in env["notifier"].events)
-
-
-def test_gid_whitelist_includes_non_downloading_rows(db, env, monkeypatch):
-    """白名单口径放宽（design T2）：非 downloading 但 aria2_gid 非空的行也在白名单。
-
-    recovery 回退 downloading→pending 且 aria2.remove 失败的场景下，gid 残留于
-    pending 行（回退中/在库任务）——旧实现白名单只收 status='downloading' 会把
-    该 gid 判陌生并整批跳过（自锁）；放宽为「DB 中 aria2_gid 非空全部行」后不再
-    误判（无告警、不跳过，准入循环正常续跑）。
-    """
-    patch_db(monkeypatch, db)
-    # 回退中的任务：status='pending' 但 aria2_gid 仍残留（recovery 回退未清 gid）
-    async def seed():
-        async with db() as s:
-            media = Media(title="测试剧", media_type="tv", tmdb_id=None, status="tracking")
-            s.add(media)
-            await s.flush()
-            mid = media.id
-            s.add(DownloadQueue(
-                media_id=mid, episode="S01E01", file_name="a.mkv", file_size=1,
-                share_code="sc", stoken="stoken-x", receive_code="提取码占位",
-                fids='["f1"]', fid_tokens='["ft1"]', folder_id="folder-1",
-                status="pending", aria2_gid="gid-pending-row",
-                enqueued_at=_now(), updated_at=_now(),
-            ))
-            # 真正的 pending 任务（保证 has_pending → 走到 GID 校验段）
-            s.add(DownloadQueue(
-                media_id=mid, episode="S01E02", file_name="b.mkv", file_size=1,
-                share_code="sc", stoken="stoken-x", receive_code="提取码占位",
-                fids='["f1"]', fid_tokens='["ft1"]', folder_id="folder-1",
-                status="pending", enqueued_at=_now(), updated_at=_now(),
-            ))
-            await s.commit()
-    run(seed())
-    env["aria2"].actives = [{"gid": "gid-pending-row", "status": "active"}]
-    # 骨架修正（协调者裁定）：取件与准入循环短路，避免触发真实转存链——
-    # 本轮只验证「白名单口径」：该 pending 残留 gid 不被判陌生（不告警）。
-    monkeypatch.setattr(transfer_mod, "_fetch_from_task_queue", AsyncMock(return_value=0))
-    monkeypatch.setattr(transfer_mod, "_try_admit_one", AsyncMock(return_value="no_pending"))
-    record_alert = AsyncMock()
-    monkeypatch.setattr(transfer_mod, "_record_alert", record_alert)
-
-    run(transfer_mod._admit_batch())
-
-    # 未告警 = 白名单命中（旧实现 status='downloading' 过滤会把该 gid 判陌生 → 告警）
-    record_alert.assert_not_awaited()
-
-
-def test_unknown_gid_removed_after_three_strikes(db, env, monkeypatch):
-    """孤儿 gid 连续 3 轮未命中白名单 → 触发 aria2.remove + 告警，仍跳过本轮；移除后自动恢复。
-
-    design T2 哨兵（fix-transfer-flow-reliability Task 4）：白名单未命中（不在 DB
-    任何行）的 aria2 活动任务每轮 strikes += 1；连续 _GID_STRIKE_LIMIT(3) 轮 →
-    best-effort aria2.remove + 告警并清计数；此后 actives 不再含该 gid → 下一轮
-    自动恢复转存（孤儿 gid 不再永久阻断转存，解除自锁）。
-    """
-    patch_db(monkeypatch, db)
-    run(seed_pending(db))
-    env["aria2"].actives = [{"gid": "orphan-gid", "status": "active"}]
-    # 骨架修正（Task 3 同款）：取件与准入循环短路，聚焦 GID 校验段的哨兵行为
-    monkeypatch.setattr(transfer_mod, "_fetch_from_task_queue", AsyncMock(return_value=0))
-    try_admit_one = AsyncMock(return_value="no_pending")
-    monkeypatch.setattr(transfer_mod, "_try_admit_one", try_admit_one)
-    record_alert = AsyncMock()
-    monkeypatch.setattr(transfer_mod, "_record_alert", record_alert)
-    # conftest 只清 _alert_cooldown，不涉及哨兵计数 dict（模块级共享状态）——用例内自行清空
-    transfer_mod._unknown_gid_strikes.clear()
-
-    for _ in range(2):
-        run(transfer_mod._admit_batch())
-    # 前两轮：计数未到 3 → 仅告警 + 跳过本轮（fail-closed 拦截保持：不 remove、不进准入）
-    assert env["aria2"].removed == []
-    try_admit_one.assert_not_awaited()
-    assert record_alert.await_count == 2
-
-    run(transfer_mod._admit_batch())
-    # 第 3 轮：触发一次 best-effort remove + 告警 + 清计数，仍跳过本轮
-    assert env["aria2"].removed == ["orphan-gid"]
-    assert "orphan-gid" not in transfer_mod._unknown_gid_strikes
-    try_admit_one.assert_not_awaited()
-    assert record_alert.await_count == 3
-
-    # 清理成功后（actives 不再含孤儿 gid）下一轮自动恢复转存
-    env["aria2"].actives = []
-    run(transfer_mod._admit_batch())
-    try_admit_one.assert_awaited_once()
-
-
-def test_known_gid_never_strikes(db, env, monkeypatch):
-    """在库 gid（含非 downloading 行）不进入哨兵计数：命中白名单 → 计数清零，不告警不拦截。"""
-    patch_db(monkeypatch, db)
-    run(seed_downloading(db, gid="in-db-gid", file_name="已知剧集.mkv"))
-    run(seed_pending(db))
-    env["aria2"].actives = [{"gid": "in-db-gid", "status": "active"}]
-    monkeypatch.setattr(transfer_mod, "_fetch_from_task_queue", AsyncMock(return_value=0))
-    try_admit_one = AsyncMock(return_value="no_pending")
-    monkeypatch.setattr(transfer_mod, "_try_admit_one", try_admit_one)
-    record_alert = AsyncMock()
-    monkeypatch.setattr(transfer_mod, "_record_alert", record_alert)
-    transfer_mod._unknown_gid_strikes.clear()
-    transfer_mod._unknown_gid_strikes["in-db-gid"] = 2  # 预置残留计数 → 命中白名单应清零
-
-    for _ in range(5):
-        run(transfer_mod._admit_batch())
-
-    assert env["aria2"].removed == []                       # 从未触发 remove
-    record_alert.assert_not_awaited()                      # 从未告警
-    assert "in-db-gid" not in transfer_mod._unknown_gid_strikes  # 白名单命中清零
-    assert try_admit_one.await_count == 5                  # 每轮均进入准入循环（不拦截）
+    assert env["aria2"].removed == []            # 不强删用户任务
+    assert not any(e.event_type == "flow_error" for e in env["notifier"].events)
 
 
 def test_no_pending_is_skipped(db, env, monkeypatch):

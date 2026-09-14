@@ -8,8 +8,10 @@
 探测 → task_queue 取件生成：全部分享快照；download_name 取件时为空，转存落盘后
 由 _ensure_download_name 后置生成落库，Task 7）。本模块替换旧
 episode_state + transfer_queue + download_task 三表联动实现，保留全部既有逻辑
-语义（GID 来源校验 / /quark 挂载预检 / 容量模型 B fail-closed / save 幂等
+语义（/quark 挂载预检 / 容量模型 B fail-closed / save 幂等
 P2-10·P0-1 / _get_link_wait_visible / addUri / 失败回退 CAS / 节点级状态机）。
+aria2-download-safety：陌生 gid 拦截（§12.2 白名单 + 哨兵强删）已整体移除——
+用户自行下载等非系统签发的 aria2 任务与转存共存放行，不再阻断/告警/强删。
 
 执行状态机（§4.2）：
     pending ──转存──▶ transferring ──提交aria2──▶ downloading ──hook/轮询──▶ scrape
@@ -88,8 +90,8 @@ logger = logging.getLogger(__name__)
 _IMPLEMENTED = True
 
 # aria2 任务 comment 来源标记前缀（add_uri 透传用；2026-09 修订：aria2 1.36.0
-# 静默丢弃 comment option，GID 来源校验已改用 DB gid 白名单（_admit_batch 段 2），
-# comment 仅作未来 aria2 版本兼容的冗余标记，不再参与校验）
+# 静默丢弃 comment option，comment 仅作未来 aria2 版本兼容的冗余标记，
+# 不参与任何逻辑判定）
 _COMMENT_PREFIX = "lumencloud:"
 # P2（影视下载两队列重设计 §7）：aria2 落盘名格式化正则（对齐 n8n formatFileName，
 # SxxExx 命中 → 「剧名 - SxxExx - 第 N 集.ext」；SxxExxx 三位集数保留）。
@@ -228,7 +230,7 @@ _admission_lock = asyncio.Lock()
 # 重试的重叠并行仍由 _try_admit_one 的「进程锁 + 事务级锁 + 行级 CAS」保证正确。
 _consume_trigger_lock = asyncio.Lock()
 
-# P2-2（council）：flow_error 通知节流窗（秒）。GID 校验失败/容量不可用等
+# P2-2（council）：flow_error 通知节流窗（秒）。容量不可用/等待超时等
 # fail-closed 场景由每分钟兜底 job 重复触发，同一告警 10 分钟内只 notify 一次，
 # 防通知刷屏（task_run(error) 仍每次记录，仅通知节流）。
 _ALERT_COOLDOWN_SECONDS = 600.0
@@ -236,15 +238,6 @@ _ALERT_COOLDOWN_SECONDS = 600.0
 # monotonic 时间戳, 上次消息)。同一 key 在窗口内重复触发时，仅当消息与上次
 # **完全相同**才跳过 notify（消息变化视为根因变化的新告警，必须通知）。
 _alert_cooldown: dict[str, tuple[float, str]] = {}
-
-# fix-transfer-flow-reliability Task 4（design T2 双层之二）：陌生 gid 连续跳过哨兵。
-# 白名单未命中（不在 DB 任何行）的 aria2 活动/等待任务每轮 strikes += 1，连续
-# _GID_STRIKE_LIMIT(3) 轮未消失 → best-effort aria2.remove 清理 + 告警并清计数——
-# 防 recovery 回退时 aria2.remove 失败遗留的孤儿 gid 永久阻断转存（自锁）；remove
-# 成功后下轮 actives 不再含该 gid → 自动恢复转存。计数为进程内共享状态（单 worker
-# 部署可靠；重启即清零，重启后至多多计数 3 轮，不影响正确性）。
-_GID_STRIKE_LIMIT = 3
-_unknown_gid_strikes: dict[str, int] = {}
 
 # P5（§5 容量预算并发）：reserved 聚合口径（议会验证 P1-4 收紧）——
 # **不含 downloading**：该状态已落盘，容量由 capacity.check 内层 used（alist /quark
@@ -805,13 +798,13 @@ def _alert_bucket(message: str) -> str:
 
 
 async def _record_alert(media_id, message, category=None, bucket=None) -> None:
-    """record task_run(error) + flow_error 通知（GID 校验 / 容量数据不可用等 fail-closed 分支）。
+    """record task_run(error) + flow_error 通知（容量数据不可用/等待超时等 fail-closed 分支）。
 
-    P2-2（council）：flow_error 通知节流——GID 校验失败/容量不可用由每分钟兜底
+    P2-2（council）：flow_error 通知节流——容量不可用/等待超时等由每分钟兜底
     job 重复触发会通知刷屏；此处按 (media_id, 告警类别) 在 _ALERT_COOLDOWN_SECONDS
     内去重：首次必须通知，窗口内**同类别且节流指纹（bucket）相同**的重复触发跳过
-    notify（task_run(error) 仍每次记录）。告警类别：GID 校验失败用 "gid"、容量失败
-    用 "capacity"、其他用消息前缀前 40 字符。
+    notify（task_run(error) 仍每次记录）。告警类别：容量失败用 "capacity"、
+    其他用消息前缀前 40 字符。
 
     bucket：节流指纹，默认 _alert_bucket(message) 推断（M4：截掉变量尾巴）。
     可显式传入使**不同消息共享同一指纹**——如 P3-2 容量不足告警（消息含累计次数、
@@ -1015,7 +1008,7 @@ async def _transfer_chain(dq_id, media_id, episode, file_name, share_code, stoke
     - P2（§7）/Task 7：aria2 out = dq.download_name——取件时该列为空，转存落盘
       可见/改名 前由 _ensure_download_name 按媒体信息生成并 CAS 落库（后置生成，
       重试幂等：已生成则跳过），缺失/无可格式化名回退原始名；
-      comment = lumencloud:<media_id>:<episode>（GID 来源校验标记）；
+      comment = lumencloud:<media_id>:<episode>（来源标记，仅元数据不参与判定）；
     - 任一步失败 → _fail_transfer 节点级重试（清理夸克残留 + 计数 + 回退 pending/failed）。
 
     返回状态（供主循环决策）：'admitted' / 'retry' / 'terminal_failed' / 'conflict'。
@@ -1525,10 +1518,9 @@ async def _admit_batch() -> None:
          （null pending 时若先空跑返回，ready 任务将永不取件，下载停摆）。
       1. 准入唯一约束 = 网盘容量（不再设并发数上限）：每轮准入数量 = 容量可容纳数；
          容量不足 → quota_wait 按网盘空间排队（空间释放后由下轮入口唤醒重试）。
-      2. GID 来源校验（§12.2 简化版）整批一次：存在陌生 aria2 活动/等待任务 → 告警
-         并跳过本轮（下轮续跑，防 n8n 误启动双转存；一过性陌生任务不造成整批停摆）。
-      3. 准入循环内每任务走 _try_admit_one；容量不足/容量不可用/任务失败回退后停止
+      2. 准入循环内每任务走 _try_admit_one；容量不足/容量不可用/任务失败回退后停止
          本批（等价原版一次处理一个 + 续跑语义，下一轮 job/事件续跑）。
+         （aria2-download-safety：原 GID 白名单拦截段已移除，陌生 gid 与转存共存放行）
     """
     t0 = _time.monotonic()  # Q8①：真实耗时
 
@@ -1582,7 +1574,7 @@ async def _admit_batch() -> None:
         )
 
     # T8.5 容量预查（fix-transfer-flow-reliability Task 15）：唤醒 quota_wait 后先查
-    # 容量余量，余量 ≤ 0 直接返回——不进入后续取件/GID 校验/准入循环。旧行为会在
+    # 容量余量，余量 ≤ 0 直接返回——不进入后续取件/准入循环。旧行为会在
     # 准入循环内对每行做容量 check、拒绝后置回 quota_wait：N×UPDATE + 容量查询的
     # 写放大（容量已满时每轮白做）。预查是优化不是新硬门：容量不可用（异常）→
     # 不 return，由准入循环内的 fail-closed 语义兜底（_try_admit_one 容量 check
@@ -1610,7 +1602,7 @@ async def _admit_batch() -> None:
     await _fetch_from_task_queue()
 
     # 1b) 无 pending 直接空跑（取件后的 pending 已计入；唤醒后的 quota_wait 已计入；
-    #     不触发 GID 校验/预检）
+    #     不触发预检）
     async with async_session() as s:
         has_pending = (
             await s.scalar(
@@ -1621,75 +1613,6 @@ async def _admit_batch() -> None:
             # 纯空跑不写 task_run（每分钟高频噪音；保留服务日志供运维核对 job 存活）
             logger.info("[transfer] 无 pending 任务待转存，本轮空跑")
             return
-
-    # 2) GID 来源校验兜底（§12.2）：存在陌生 aria2 活动/等待任务 → 告警并跳过本轮
-    #    （不处理、不 ++quota_reject_count；防 n8n 被误启动时的双转存）。陌生任务
-    #    消失后下轮自动续跑——一过性外来任务不再造成整批永久停摆（queue-flow-rework
-    #    Task 5 降级：由 fail-closed 改为「告警 + 本轮跳过 + 下轮续跑」）。
-    #    P2-6（council）：合并校验 active + waiting 队列——waiting 中的陌生任务同样
-    #    代表排队中的双转存，仅校验 active 会漏检；任一调用异常同样告警 + 跳过本轮。
-    #    判定口径（2026-09 修订，oracle 评审）：不依赖 aria2 comment——实测 aria2
-    #    1.36.0 静默丢弃 addUri 的 comment option（getOption/tellStatus 均读不到），
-    #    comment 恒空会导致自家任务也被判陌生、转存永久停摆。改为 **DB gid 白名单**：
-    #    aria2 活动/等待任务的 gid 必须在本系统 download_queue 已签发 gid 集合内
-    #    （aria2_gid 非空全部行，不限 status）；不在集合 → 判陌生拦截。
-    #    权威源 = DB（_commit_downloading 落库），版本无关，不依赖 aria2 行为。
-    #    口径放宽（fix-transfer-flow-reliability Task 3）：recovery 回退 downloading→
-    #    pending 时 aria2.remove 失败的场景下 gid 残留于 pending 行——若白名单只收
-    #    status='downloading'，回退中/在库任务会被误判陌生并每轮整批跳过（自锁）；
-    #    改为「aria2_gid 非空全部行」后不再误判（陌生判定仅对不在 DB 任何行的 gid）。
-    try:
-        actives = await aria2.client.tell_active() or []
-        tell_waiting = getattr(aria2.client, "tell_waiting", None)
-        if tell_waiting is not None:
-            actives = actives + (await tell_waiting() or [])
-    except Exception as exc:  # noqa: BLE001  Aria2Unavailable → 无法确认来源，告警 + 跳过本轮
-        await _record_alert(
-            None, f"aria2 状态不可用，本轮跳过转存（GID 校验失败，下轮续跑）: {exc}", category="gid",
-        )
-        return
-    async with async_session() as s:
-        known_gids = {
-            g for (g,) in (
-                await s.execute(
-                    select(DownloadQueue.aria2_gid).where(
-                        DownloadQueue.aria2_gid.isnot(None),
-                    )
-                )
-            ).all()
-        }
-    for t in actives:
-        gid = t.get("gid") or ""  # aria2 契约每项必有 gid；空/缺省按陌生计数（fail-closed 语义保持）
-        if gid in known_gids:
-            # 在库 gid（白名单命中）→ 自然清零计数，不拦截
-            _unknown_gid_strikes.pop(gid, None)
-            continue
-        # 陌生 gid（不在 DB 任何行）：每轮 strikes += 1 + 告警 + 跳过本轮
-        # （fail-closed 拦截保持，防 n8n 误启动双转存）；连续 _GID_STRIKE_LIMIT 轮
-        # 未消失 → best-effort aria2.remove 清理孤儿任务（避免该 gid 永不消失时
-        # 整批永久跳过自锁），随后仍跳过本轮，下轮 actives 不再含该 gid 自动恢复。
-        strikes = _unknown_gid_strikes.get(gid, 0) + 1
-        _unknown_gid_strikes[gid] = strikes
-        if strikes >= _GID_STRIKE_LIMIT:
-            _unknown_gid_strikes.pop(gid, None)   # 清计数防重复删除
-            try:
-                await aria2.client.remove(gid)
-            except Exception as exc:  # noqa: BLE001  best-effort
-                logger.warning("[transfer] 清理孤儿 aria2 任务失败 %s: %s", gid, exc)
-            await _record_alert(
-                None,
-                f"检测到非本系统 aria2 任务 gid={gid}（连续 {_GID_STRIKE_LIMIT} 轮未在 DB 白名单），"
-                f"已 best-effort 清理并告警，请人工确认 n8n 未误启动",
-                category="gid",
-            )
-        else:
-            await _record_alert(
-                None,
-                f"检测到非本系统 aria2 任务 gid={gid}（第 {strikes}/{_GID_STRIKE_LIMIT} 轮，暂跳过转存），"
-                f"请人工确认 n8n 未误启动",
-                category="gid",
-            )
-        return
 
     # 3) 准入循环：无可准入任务/资源受限时停止（准入唯一约束 = 网盘容量——容量不足
     #    置 quota_wait 按空间排队，由下一轮 job/事件续跑唤醒；无并发数上限）
@@ -1795,8 +1718,8 @@ async def trigger_transfer() -> None:
 async def trigger_download_complete(gid: str) -> bool:
     """aria2 下载完成回调推进（P6 端点延迟导入调用，签名冻结：async (gid) -> bool）。
 
-    §6.2 回调链路：按 DownloadQueue.aria2_gid 反查 downloading 任务（comment 仅作
-    GID 来源校验辅助，此处不校验）→ 条件更新 downloading→scrape（幂等：二次回调 /
+    §6.2 回调链路：按 DownloadQueue.aria2_gid 反查 downloading 任务（comment 仅为
+    元数据标记，不参与判定）→ 条件更新 downloading→scrape（幂等：二次回调 /
     轮询已并发推进时 rowcount=0 → 返回 False，不重复推进/触发刮削）→
     _after_complete_promote（触发刮削执行器）→ 返回 True。
 
@@ -1867,14 +1790,14 @@ async def trigger_download_complete(gid: str) -> bool:
 # P2-2  ：flow_error 通知节流。_record_alert 按 (media_id, 告警类别) 在 10 分钟
 #         （_ALERT_COOLDOWN_SECONDS）内去重：task_run(error) 每次记录，notify 仅在
 #         「首次」或「消息变化（新根因）」时发出；每分钟兜底 job 重复触发同类告警
-#         不再刷屏。类别：GID 校验失败 "gid" / 容量失败 "capacity" / 其他取消息前 40 字符。
+#         不再刷屏。类别：容量失败 "capacity" / 其他取消息前 40 字符。
 # P2-4/P2-10：cloudsaver.save 幂等 + save_task_id 记录。DownloadQueue 的 save_task_id
 #         列，save 一受理即落库；重试时若非空则跳过 save，直接 _get_link_wait_visible
 #         等落盘/取直链，防重复转存。
 # P2-5  ：retry_count 增量改 CAS 条件更新（WHERE 含 retry_count=读到的旧值），
 #         替代「读-改-写」；recovery 并发回退不丢增量，CAS 未命中本轮跳过不计数。
-# P2-6  ：GID 来源校验合并 active + waiting 队列（aria2.tell_waiting）；
-#         waiting 中陌生任务同样阻断转存并告警。
+# P2-6  ：（aria2-download-safety 已移除）原实现曾合并 active + waiting 队列
+#         （aria2.tell_waiting）拦截陌生 gid 并告警；现已彻底放行，仅存历史记录。
 # P2-9  ：paused 不再刷新 updated_at，由 recover_stale_tasks 按
 #         episode_state_timeout_hours 超时回退 pending + 清理残留。
 # P3-2  ：quota 拒绝累计告警阈值 _QUOTA_REJECT_ALERT_THRESHOLD=5。容量不足更新

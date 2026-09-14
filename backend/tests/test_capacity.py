@@ -399,7 +399,7 @@ def _task6_now():
 
 
 class _Task6Aria2:
-    """aria2.client：GID 校验（tell_active/tell_waiting 空）+ add_uri。"""
+    """aria2.client：tell_active/tell_waiting（GID 拦截已移除，仅保留契约）+ add_uri。"""
 
     def __init__(self):
         self.add_uri_calls = []
