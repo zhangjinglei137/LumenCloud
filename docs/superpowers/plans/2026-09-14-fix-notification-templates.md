@@ -590,7 +590,7 @@ git commit -m "feat(notifications): PushPlus 推送改用 HTML 模板"
   - `export interface NotificationTypeMeta { label: string; icon: string; color: string }`
   - `export function notificationTypeMeta(event_type?: string | null): NotificationTypeMeta`
 
-- [ ] **Step 1: format.ts 新增类型映射**
+- [x] **Step 1: format.ts 新增类型映射**
 
 在 `frontend/src/utils/format.ts` 末尾追加：
 
@@ -622,7 +622,7 @@ export function notificationTypeMeta(event_type?: string | null): NotificationTy
 }
 ```
 
-- [ ] **Step 2: MainLayout.vue 渲染图标与着色 dot**
+- [x] **Step 2: MainLayout.vue 渲染图标与着色 dot**
 
 在 `frontend/src/layouts/MainLayout.vue`：
 
@@ -644,12 +644,12 @@ export function notificationTypeMeta(event_type?: string | null): NotificationTy
 
 注意：`item` 类型为 `NotificationItem`（含 `event_type?: string`），TS 若报 icon 字符串不能用于 `:is`，可对 icon 字段断言为 `Component`（`import type { Component } from 'vue'`，映射值 `icon` 类型声明为 `Component`，用 `markRaw(CircleCheckFilled)` 等包装，或以 `as Component` 断言后使用）。
 
-- [ ] **Step 3: 前端构建验证**
+- [x] **Step 3: 前端构建验证**
 
 Run: `cd frontend && npm run build`
 Expected: PASS（typecheck + 构建无错误）
 
-- [ ] **Step 4: 提交**
+- [x] **Step 4: 提交**
 
 ```bash
 git add frontend/src/utils/format.ts frontend/src/layouts/MainLayout.vue

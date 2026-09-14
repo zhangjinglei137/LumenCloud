@@ -29,8 +29,8 @@
 
 ## 6. 前端铃铛类型呈现
 
-- [ ] 6.1 `frontend/src/utils/format.ts` 或 `MainLayout.vue` 新增 `event_type → {label, icon, color}` 映射（download_complete 绿/成功图标、approval_pending 蓝/待审批图标、flow_error 红/告警图标、未知回退默认），验证 `npm run build`（或前端 lint/typecheck）通过
-- [ ] 6.2 铃铛条目标题前渲染类型图标与强调色 dot，保留 unread 高亮与全部已读功能，验证前端构建通过且人工查看铃铛面板三类通知样式区分可见
+- [x] 6.1 `frontend/src/utils/format.ts` 或 `MainLayout.vue` 新增 `event_type → {label, icon, color}` 映射（download_complete 绿/成功图标、approval_pending 蓝/待审批图标、flow_error 红/告警图标、未知回退默认），验证 `npm run build`（或前端 lint/typecheck）通过
+- [x] 6.2 铃铛条目标题前渲染类型图标与强调色 dot，保留 unread 高亮与全部已读功能，验证前端构建通过且人工查看铃铛面板三类通知样式区分可见
 
 ## 7. 集成验证
 
