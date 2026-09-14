@@ -34,6 +34,6 @@
 
 ## 7. 集成验证
 
-- [ ] 7.1 后端全量测试通过：`cd backend && python -m pytest`（或项目约定测试命令）无失败
-- [ ] 7.2 前端构建通过（`npm run build` 或项目约定命令）
-- [ ] 7.3 核对 `docs/openspec/changes/fix-notification-templates/specs/notifications/spec.md` 全部 Requirement/Scenario 有对应实现与测试覆盖，验证清单无遗漏
+- [x] 7.1 后端全量测试通过：`cd backend && python -m pytest`（或项目约定测试命令）无失败
+- [x] 7.2 前端构建通过（`npm run build` 或项目约定命令）
+- [x] 7.3 核对 `docs/openspec/changes/fix-notification-templates/specs/notifications/spec.md` 全部 Requirement/Scenario 有对应实现与测试覆盖，验证清单无遗漏

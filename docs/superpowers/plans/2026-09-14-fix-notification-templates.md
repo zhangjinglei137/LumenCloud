@@ -663,17 +663,17 @@ git commit -m "feat(notifications): 铃铛按事件类型区分图标与颜色"
 **Files:**
 - 验证范围：全部改动
 
-- [ ] **Step 1: 后端全量测试**
+- [x] **Step 1: 后端全量测试**
 
 Run: `cd backend && python -m pytest`
 Expected: PASS（无失败）
 
-- [ ] **Step 2: 前端构建**
+- [x] **Step 2: 前端构建**
 
 Run: `cd frontend && npm run build`
 Expected: PASS
 
-- [ ] **Step 3: 核对 spec 覆盖**
+- [x] **Step 3: 核对 spec 覆盖**
 
 对照 `docs/openspec/changes/fix-notification-templates/specs/notifications/spec.md` 逐条核对：
 - 触发时机（无下载开始/下载完成通知）→ Task 2 实现
@@ -682,7 +682,7 @@ Expected: PASS
 - PushPlus HTML + 未配置跳过 → Task 5 实现
 - 铃铛类型呈现 + 未知回退 → Task 6 实现
 
-- [ ] **Step 4: 汇总验证证据**
+- [x] **Step 4: 汇总验证证据**
 
 在任务完成汇报中记录：后端 pytest 结果、前端 build 结果、spec 逐条覆盖结论。**不提交**（验证任务本身无代码变更；如验证发现缺陷，回到对应任务修复后重新验证）。
 
