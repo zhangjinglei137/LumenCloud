@@ -148,21 +148,32 @@ async def health():
 
 
 # 前端静态文件 — 必须在最后注册（SPA fallback）
+# /assets 挂载需要目录真实存在（StaticFiles 初始化会校验目录），保持存在性门控。
+# serve_spa 路由则无条件注册：backend/static 是前端构建产物（gitignore 不入库），
+# CI 干净 checkout 下目录不存在——若把 fallback 路由也放进存在性门控，路由整体不
+# 注册，所有非 API 路径一律 404，且「路径穿越防护」形同虚设（请求根本到不了
+# serve_spa）。无条件注册后：目录缺失时最多回退 404 JSON，绝不 500。
 if STATIC_DIR.exists():
     app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
 
-    @app.get("/{full_path:path}")
-    async def serve_spa(full_path: str):
-        # P3-5：/api 未知路径返回 404 JSON（REST 语义），其余未知路径保持 SPA fallback。
-        # D7 安全审查（路径穿越防护）：URL 编码的 `..%2f` 未经规范化直接 join 可
-        # 穿越出 static 根读取任意文件（如 <data_dir>/.jwt_secret 伪造 token）。
-        # 先 resolve 规范化 + 必须落在 static 根内，越界一律回退 SPA（不直出文件）。
-        static_root = STATIC_DIR.resolve()
-        file_path = (static_root / full_path).resolve()
-        if file_path.is_relative_to(static_root) and file_path.is_file():
-            return FileResponse(file_path)
-        if full_path == "api" or full_path.startswith("api/"):
-            # 与 FastAPI 默认错误结构一致（{"detail": "Not Found"}），
-            # 前端可直接按 REST 处理，不再收到 200 的 HTML。
-            return JSONResponse(status_code=404, content={"detail": "Not Found"})
-        return FileResponse(STATIC_DIR / "index.html")
+
+@app.get("/{full_path:path}")
+async def serve_spa(full_path: str):
+    # P3-5：/api 未知路径返回 404 JSON（REST 语义），其余未知路径保持 SPA fallback。
+    # D7 安全审查（路径穿越防护）：URL 编码的 `..%2f` 未经规范化直接 join 可
+    # 穿越出 static 根读取任意文件（如 <data_dir>/.jwt_secret 伪造 token）。
+    # 先 resolve 规范化 + 必须落在 static 根内，越界一律回退 SPA（不直出文件）。
+    static_root = STATIC_DIR.resolve()
+    file_path = (static_root / full_path).resolve()
+    if file_path.is_relative_to(static_root) and file_path.is_file():
+        return FileResponse(file_path)
+    if full_path == "api" or full_path.startswith("api/"):
+        # 与 FastAPI 默认错误结构一致（{"detail": "Not Found"}），
+        # 前端可直接按 REST 处理，不再收到 200 的 HTML。
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
+    index_file = STATIC_DIR / "index.html"
+    if index_file.is_file():
+        return FileResponse(index_file)
+    # static 根缺失（CI 无产物/未构建前端）：无 index.html 可回退，
+    # 返回与 FastAPI 默认一致的 404 JSON，避免 FileResponse 缺文件抛 500。
+    return JSONResponse(status_code=404, content={"detail": "Not Found"})

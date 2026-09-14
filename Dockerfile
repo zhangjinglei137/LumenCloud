@@ -37,7 +37,13 @@ FROM python:3.12-slim
 # ⚠️ purge 前必须 apt-get update：基础镜像层含 apt 源列表，但 RUN 层无缓存；
 # 无 update 时 purge 报 'Unable to locate package' 被 || true 吞掉而静默失败
 # （CI 实证：曾因吞输出未发现 purge 未执行，trivy 仍报 Debian 70.3.0/1.1.2）。
+#
+# ⚠️ CI 修复（fix-ci-failures）：python:3.12-slim（Debian trixie）基础镜像的系统
+# 包（gzip/libpcre2/libsqlite3/perl-base 等）不随基础镜像 tag 自动升级，trivy 扫描
+# 持续报 12 个 HIGH/CRITICAL 系统包漏洞。apt-get upgrade 升级到 Debian 修复版本
+# （deb13u1/u2）；不引入新包（upgrade 不装新依赖），层体积增量小。
 RUN apt-get update -qq \
+    && apt-get upgrade -y -qq \
     && pip install --no-cache-dir --upgrade "pip>=26.2.1" \
     && pip install --no-cache-dir --upgrade "setuptools>=78.1.1" "msgpack>=1.2.1" \
     && pip install --no-cache-dir "supervisor>=4.2.5" \
