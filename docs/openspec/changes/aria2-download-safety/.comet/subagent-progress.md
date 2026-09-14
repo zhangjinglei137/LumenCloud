@@ -1,9 +1,9 @@
 # Subagent Progress — aria2-download-safety
 
-## Task 3（当前）：清理保护 aria2 下载源（quark-cleanup-safety）
+## Task 4（当前）：收尾验证
 - 阶段: implementing
-- plan task: Task 3: 清理保护 aria2 下载源（quark-cleanup-safety）
-- OpenSpec task: 3.1 扩展 aria2 查询 + 3.2 cleanup 求差 + 3.3 fail-safe
-- model: fixer（plan 含完整实现代码与测试）
+- plan task: Task 4: 收尾验证
+- OpenSpec task: 4.1 全量测试 + 4.2 spec 场景覆盖核对
+- model: fixer
 - review_mode: standard
-- 风险信号: 命中「跨模块协调」（aria2.py + cleanup.py + 多测试文件）→ 需任务级 review
+- 风险信号: 无实现代码改动（全量回归 + 覆盖核对）

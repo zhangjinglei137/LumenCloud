@@ -193,7 +193,7 @@ _record_alert(capacity) 仅在真实不足/滞留>24h 触发、通知表无容�
 - Consumes: `aria2.client.list_source_basenames() -> set[str]`（新增）
 - Produces: `release_space_cleanup_job` 的孤儿判定变为 `present − referenced − aria2_sources`；aria2 不可用时本轮不删
 
-- [ ] **Step 1: 扩展 `tell_active` / `tell_waiting` 的 keys 增加 `"files"`**
+- [x] **Step 1: 扩展 `tell_active` / `tell_waiting` 的 keys 增加 `"files"`**
 
 `backend/app/services/aria2.py`：
 
@@ -203,7 +203,7 @@ _record_alert(capacity) 仅在真实不足/滞留>24h 触发、通知表无容�
 
 验证：`grep -n '"files"' backend/app/services/aria2.py` 出现 2 处（tell_active / tell_waiting keys 内）。
 
-- [ ] **Step 2: 新增 `list_source_basenames()`**
+- [x] **Step 2: 新增 `list_source_basenames()`**
 
 在 `backend/app/services/aria2.py` 的 `remove` 方法之后、模块单例之前新增：
 
@@ -241,7 +241,7 @@ async def list_source_basenames(self) -> set[str]:
 
 验证：`python -c "import ast; ast.parse(open('backend/app/services/aria2.py').read())"` 通过。
 
-- [ ] **Step 3: 新增 `list_source_basenames` 单测**
+- [x] **Step 3: 新增 `list_source_basenames` 单测**
 
 `backend/tests/test_aria2_rpc_shapes.py` 新增：
 
@@ -278,7 +278,7 @@ def test_list_source_basenames_parses_uris():
 
 验证：`cd backend && .venv/bin/pytest -q tests/test_aria2_rpc_shapes.py -k "list_source_basenames"` 通过。
 
-- [ ] **Step 4: `release_space_cleanup_job` 加入下载源保护 + fail-safe**
+- [x] **Step 4: `release_space_cleanup_job` 加入下载源保护 + fail-safe**
 
 `backend/app/tasks/cleanup.py`：
 
@@ -315,7 +315,7 @@ def _aria2_client():
 
 验证：`python -c "import ast; ast.parse(open('backend/app/tasks/cleanup.py').read())"` 通过。
 
-- [ ] **Step 5: 新增清理保护测试（4 场景）**
+- [x] **Step 5: 新增清理保护测试（4 场景）**
 
 Create `backend/tests/test_cleanup_aria2_protection.py`：
 
@@ -426,13 +426,13 @@ def test_cleanup_failsafe_when_aria2_unavailable(db, monkeypatch):
 
 验证：`cd backend && .venv/bin/pytest -q tests/test_cleanup_aria2_protection.py` 4 个用例全绿。
 
-- [ ] **Step 6: 既有 cleanup 测试回归**
+- [x] **Step 6: 既有 cleanup 测试回归**
 
 `test_fix_p0_recovery_cleanup_transfer.py` / `test_oracle_fixes.py` / `test_library_check.py` 中调用 `release_space_cleanup_job` 的用例需要 `_aria2_client` 的 mock（否则真实 aria2 RPC 调用）。按测试文件既有风格在对应 fixture/monkeypatch 中补 `monkeypatch.setattr(cleanup_mod, "_aria2_client", lambda: SimpleNamespace(list_source_basenames=AsyncMock(return_value=set())))`。
 
 验证：`cd backend && .venv/bin/pytest -q tests/test_fix_p0_recovery_cleanup_transfer.py tests/test_oracle_fixes.py tests/test_library_check.py tests/test_library_check_timeout.py` 全绿。
 
-- [ ] **Step 7: 全量回归 + 提交**
+- [x] **Step 7: 全量回归 + 提交**
 
 验证：`cd backend && .venv/bin/pytest -q` 全绿。
 

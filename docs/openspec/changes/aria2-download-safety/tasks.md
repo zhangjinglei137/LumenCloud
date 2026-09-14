@@ -12,9 +12,9 @@
 
 ## 3. 清理保护 aria2 下载源（quark-cleanup-safety）
 
-- [ ] 3.1 扩展 `Aria2Client.tell_active` / `tell_waiting` 返回 keys 增加 `"files"`，新增 `list_source_basenames()`：组合 tell_active+tell_waiting，从 `files[].uris[].uri` 解析 URL path 末段（URL-decoded basename）作为下载源文件名集合；验证：新增单元测试（mock aria2 响应，断言 uri 解析与 basename 提取正确，含 query string 与路径边界）
-- [ ] 3.2 `release_space_cleanup_job` 在孤儿判定（present − referenced）之后、删除之前计算 aria2 下载源保护集并求差（orphans = present − referenced − aria2_sources）；验证：新增测试覆盖「下载中文件被保护」「等待下载文件被保护」「无下载任务正常清理」
-- [ ] 3.3 aria2 查询失败（Aria2Unavailable）时清理 fail-safe：本轮不删除任何孤儿、`record_task_run(cleanup, error)` 并记录告警；验证：新增测试断言查询异常时 `alist.remove` 不被调用、task_run 记录 error
+- [x] 3.1 扩展 `Aria2Client.tell_active` / `tell_waiting` 返回 keys 增加 `"files"`，新增 `list_source_basenames()`：组合 tell_active+tell_waiting，从 `files[].uris[].uri` 解析 URL path 末段（URL-decoded basename）作为下载源文件名集合；验证：新增单元测试（mock aria2 响应，断言 uri 解析与 basename 提取正确，含 query string 与路径边界）
+- [x] 3.2 `release_space_cleanup_job` 在孤儿判定（present − referenced）之后、删除之前计算 aria2 下载源保护集并求差（orphans = present − referenced − aria2_sources）；验证：新增测试覆盖「下载中文件被保护」「等待下载文件被保护」「无下载任务正常清理」
+- [x] 3.3 aria2 查询失败（Aria2Unavailable）时清理 fail-safe：本轮不删除任何孤儿、`record_task_run(cleanup, error)` 并记录告警；验证：新增测试断言查询异常时 `alist.remove` 不被调用、task_run 记录 error
 
 ## 4. 收尾验证
 
