@@ -338,12 +338,13 @@ def test_complete_with_lost_double_table_no_notify(db, monkeypatch):
     assert nas.nastools_sync.await_count == 0
     assert len(spawn) == 0
 
-    # 正常路径对比：完整 downloading 行 → 推进 scrape + 通知 + 触发刮削执行器
+    # 正常路径对比：完整 downloading 行 → 推进 scrape + 触发刮削执行器
+    # （fix-notification-templates：download_complete 通知已移除，正常路径同样无事件）
     mid2, dq2_id = run(seed_downloading(db, episode="S01E02"))
     run(transfer_mod._complete_download(dq2_id, mid2, "S01E02", "ep2.mkv", "/quark/ep2.mkv", 0, 0))
     dq2 = run(read_row(db, DownloadQueue, dq2_id))
     assert dq2.status == "scrape"
-    assert any(e.event_type == "download_complete" for e in notifier.events)
+    assert not any(e.event_type == "download_complete" for e in notifier.events)
     assert len(spawn) == 1  # _after_complete_promote 仅触发刮削执行器（不删夸克）
 
 

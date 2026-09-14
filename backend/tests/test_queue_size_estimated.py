@@ -258,7 +258,8 @@ def test_complete_download_without_real_size_keeps_file_size(db, env, monkeypatc
     assert dq.status == "scrape"
     assert dq.file_size == 1024         # 未被覆盖
     assert dq.size_estimated is True    # 估算标记保留（等待真实值）
-    assert env["notifier"].events and env["spawn"] == [transfer_mod.scrape_runner]
+    # fix-notification-templates：downloading→scrape 阶段无下载完成通知，仅触发刮削执行器
+    assert not env["notifier"].events and env["spawn"] == [transfer_mod.scrape_runner]
 
 
 # ---------------------------------------------------------------------------
