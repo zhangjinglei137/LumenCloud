@@ -18,9 +18,9 @@
 
 ## 4. 其余通知点接入文案工厂
 
-- [ ] 4.1 `notification_scan.py` 审批待办与转存失败两条通知改用工厂（保留 body 前缀），验证 `pytest backend/tests/test_oracle_fixes.py` 通过且去重前缀未被破坏
-- [ ] 4.2 `capacity.py` 容量告警、`nastools_sync.py` 同步失败、`transfer.py` 转存失败/流程告警改用工厂文案，验证 `pytest backend/tests/test_capacity_alert.py`、`test_library_check.py`、`backend/tests/test_nastools_notify.py` 通过
-- [ ] 4.3 `nastools_notify.py` 失败事件中文映射（transfer.finished→转存完成 / transfer.fail→转存失败 / download.fail→下载失败），验证 `backend/tests/test_nastools_notify.py` 断言更新后通过
+- [x] 4.1 `notification_scan.py` 审批待办与转存失败两条通知改用工厂（保留 body 前缀），验证 `pytest backend/tests/test_oracle_fixes.py` 通过且去重前缀未被破坏
+- [x] 4.2 `capacity.py` 容量告警、`nastools_sync.py` 同步失败、`transfer.py` 转存失败/流程告警改用工厂文案，验证 `pytest backend/tests/test_capacity_alert.py`、`test_library_check.py`、`backend/tests/test_nastools_notify.py` 通过
+- [x] 4.3 `nastools_notify.py` 失败事件中文映射（transfer.finished→转存完成 / transfer.fail→转存失败 / download.fail→下载失败），验证 `backend/tests/test_nastools_notify.py` 断言更新后通过
 
 ## 5. PushPlus HTML 模板
 

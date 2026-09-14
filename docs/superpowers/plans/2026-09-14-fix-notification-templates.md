@@ -391,7 +391,7 @@ git commit -m "feat(notifications): 入库完成通知改用媒体名与集数�
 - Consumes: `approval_pending`、`flow_error_transfer`、`flow_error_capacity`、`flow_error_nastools_sync`、`flow_error_nastools_event`、`flow_error_alert`
 - Produces: 无
 
-- [ ] **Step 1: notification_scan.py 接入工厂（保留去重前缀）**
+- [x] **Step 1: notification_scan.py 接入工厂（保留去重前缀）**
 
 `notification_scan_job` 中两处 NotifyEvent 改用工厂，但**必须保留** body 前缀：
 
@@ -421,7 +421,7 @@ await notifier.notify(NotifyEvent(
 
 注意：`flow_error_transfer` 工厂函数面向「有媒体名/集数」的转存失败；notification_scan 的失败任务只有 `file_name` 与 `error`，且**必须保持 `tq#<id> {file_name}: {error}` 前缀查重格式**。为不破坏去重，此处在工厂族内新增轻量函数或直接保留内联文案均可——**决策：保留该条内联文案不变**（其格式本身已是「中文标题 + 前缀 + 文件名: 原因」，且前缀必须精确匹配，动它有风险）。只需将 `approval_pending` 用于审批条，失败条保持原样并在代码注释中说明「去重前缀格式固定，不入工厂」。
 
-- [ ] **Step 2: capacity.py 接入工厂**
+- [x] **Step 2: capacity.py 接入工厂**
 
 `_maybe_capacity_alert`（原 395-405 行）改用：
 
@@ -443,7 +443,7 @@ await notifier.notify(NotifyEvent(
 
 更新 `backend/tests/test_capacity_alert.py:96` 若断言有差异（标题「夸克容量使用率过高」不变，body 若原测试断言旧文案则更新为新格式）。
 
-- [ ] **Step 3: nastools_sync.py 接入工厂**
+- [x] **Step 3: nastools_sync.py 接入工厂**
 
 `nastools_sync` 失败通知（原 141-146 行）改用：
 
@@ -459,7 +459,7 @@ await notifier.notify(NotifyEvent(
 ))
 ```
 
-- [ ] **Step 4: transfer.py `_record_alert` 与终态失败通知接入工厂**
+- [x] **Step 4: transfer.py `_record_alert` 与终态失败通知接入工厂**
 
 - `_record_alert`（原 850-856 行）改用 `flow_error_alert(title, message)`：
   ```python
@@ -468,7 +468,7 @@ await notifier.notify(NotifyEvent(
   （`title` 保留「转存流程告警」，`body=message`；与工厂默认一致即可，也可直接复用现有内联。）
 - 终态失败通知（原 707-714 行，`_fail_transfer` 内的 `notify_title`）改用 `flow_error_transfer`：需要媒体名 → 该函数作用域内有 `media_id`；为最小改动，可先查 Media.title（若有现成 media 对象则用之）。若作用域内拿不到媒体名，保留原 `notify_title` 与 body 格式不变（该通知已有中文标题与原因+次数信息，符合规范）。**决策：若获取媒体名需要额外查询且该路径无现成 media 对象，则保留原内联文案**，仅在设计文档记录。
 
-- [ ] **Step 5: nastools_notify.py 中文事件名映射**
+- [x] **Step 5: nastools_notify.py 中文事件名映射**
 
 在 `nastools_notify.py` 增加映射并在 `_notify_flow_error` 调用处传入中文名：
 
@@ -490,12 +490,12 @@ await _notify_flow_error(
 
 （`title` 为媒体标题，来自 `media_info.title` 或 `data.name`。）更新 `backend/tests/test_nastools_notify.py` 相关断言为中文文案。
 
-- [ ] **Step 6: 运行受影响测试**
+- [x] **Step 6: 运行受影响测试**
 
 Run: `cd backend && python -m pytest tests/test_oracle_fixes.py tests/test_capacity_alert.py tests/test_nastools_notify.py tests/test_library_check.py tests/test_capacity.py -v`
 Expected: PASS（断言已按新文案同步）
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```bash
 git add backend/app/tasks/notification_scan.py backend/app/services/capacity.py backend/app/tasks/nastools_sync.py backend/app/tasks/transfer.py backend/app/routers/nastools_notify.py backend/tests/
