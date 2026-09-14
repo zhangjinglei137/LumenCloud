@@ -336,3 +336,87 @@ def test_scan_all_media_scans_only_tracking_downloading(db, monkeypatch):
     run(scan_mod.scan_all_media())
 
     assert sorted(routed) == sorted(ids[:2])  # 只巡检 tracking + downloading
+
+
+def test_scan_all_media_skips_not_due(db, monkeypatch):
+    """未到期跳过：last_scan_at=now（60 间隔未到期）的 media 不进入巡检。"""
+    from app.tasks import scan as scan_mod
+
+    monkeypatch.setattr(scan_mod, "async_session", db)
+    routed: list[int] = []
+
+    async def fake_scan_one(media_id, *, manual=False):
+        routed.append(media_id)
+        return 1
+
+    monkeypatch.setattr(scan_mod, "_scan_one", fake_scan_one)
+
+    async def seed():
+        async with db() as s:
+            media = Media(
+                title="测试剧", media_type="tv", status="tracking",
+                scan_interval_minutes=60, last_scan_at=_now(),
+            )
+            s.add(media)
+            await s.commit()
+            return media.id
+
+    mid = run(seed())
+    run(scan_mod.scan_all_media())
+
+    assert routed == []  # 未到期 → 跳过，不调用 _scan_one
+
+
+def test_scan_all_media_scans_never_scanned(db, monkeypatch):
+    """last_scan_at 为 NULL 的 media 立即首巡（新建影视下轮 tick 即扫）。"""
+    from app.tasks import scan as scan_mod
+
+    monkeypatch.setattr(scan_mod, "async_session", db)
+    routed: list[int] = []
+
+    async def fake_scan_one(media_id, *, manual=False):
+        routed.append(media_id)
+        return 1
+
+    monkeypatch.setattr(scan_mod, "_scan_one", fake_scan_one)
+
+    async def seed():
+        async with db() as s:
+            media = Media(title="测试剧", media_type="tv", status="tracking", last_scan_at=None)
+            s.add(media)
+            await s.commit()
+            return media.id
+
+    mid = run(seed())
+    run(scan_mod.scan_all_media())
+
+    assert routed == [mid]  # 从未巡检 → 立即巡检
+
+
+def test_scan_all_media_force_bypasses_due(db, monkeypatch):
+    """force=True 绕过到期过滤：未到期 media 也立即巡检（对照 force=False 跳过）。"""
+    from app.tasks import scan as scan_mod
+
+    monkeypatch.setattr(scan_mod, "async_session", db)
+    routed: list[int] = []
+
+    async def fake_scan_one(media_id, *, manual=False):
+        routed.append(media_id)
+        return 1
+
+    monkeypatch.setattr(scan_mod, "_scan_one", fake_scan_one)
+
+    async def seed():
+        async with db() as s:
+            media = Media(
+                title="测试剧", media_type="tv", status="tracking",
+                scan_interval_minutes=60, last_scan_at=_now(),  # 未到期
+            )
+            s.add(media)
+            await s.commit()
+            return media.id
+
+    mid = run(seed())
+    run(scan_mod.scan_all_media(force=True))
+
+    assert routed == [mid]  # force 全量：未到期也巡检

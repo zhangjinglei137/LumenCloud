@@ -1466,11 +1466,11 @@ async def scan_media(media_id: int, *, manual: bool = False) -> int | None:
 
 
 async def scan_all_media_job() -> None:
-    """定时 tick 包装（B 定时：每分钟；全局巡检间隔由本 job 触发周期控制）。
+    """定时 tick 包装（B 定时：每分钟；调度粒度由本 job 触发周期控制）。
 
-    queue-flow-rework Task 1：全局间隔不再由 per-media last_scan_at + 周期过滤，
-    也不再读取 scan_interval_minutes 配置——每轮 tick 由 scan_all_media 遍历全部
-    tracking/downloading 影视，调度粒度收敛到本 job 的 APScheduler IntervalTrigger。
+    restore-scan-interval-scheduling：job 保持每分钟 tick；到期过滤在
+    scan_all_media 内部完成——每轮仅巡检已到期的 tracking/downloading 影视
+    （per-media scan_interval_minutes，兜底 60 分钟），未到期影视轻量 SQL 跳过。
 
     M1（Oracle Gate2）：与同模块其它 job 一致（transfer.process_transfer_queue_job 等），
     DB 读取/执行异常时记录 task_run(error) 兜底而不是静默抛出——APScheduler 会吞
@@ -1494,23 +1494,46 @@ async def scan_all_media_job() -> None:
             logger.exception("[scan] scan_all_media 异常记录失败")
 
 
+def _due_filter():
+    """per-media 到期过滤条件（跨方言）：last_scan_at IS NULL OR last_scan_at <= now - 间隔。
+
+    间隔 = COALESCE(media.scan_interval_minutes, settings.SCAN_INTERVAL_MINUTES)；
+    时间基准与 _finish_scan_run 写入 last_scan_at 同源（_now()，naive UTC）。
+    SQLite（测试）用 func.datetime 修饰符；PostgreSQL（生产）用 now() - interval。
+    """
+    from sqlalchemy import String, func, or_, text
+
+    minutes = func.coalesce(Media.scan_interval_minutes, settings.SCAN_INTERVAL_MINUTES)
+    bind = async_session().bind
+    if bind is not None and bind.dialect.name == "postgresql":
+        due_expr = Media.last_scan_at <= (
+            func.now() - (minutes * text("interval '1 minute'"))
+        )
+    else:
+        now_iso = _now().strftime("%Y-%m-%d %H:%M:%S")
+        modifier = func.concat("-", minutes.cast(String), " minutes")
+        due_expr = Media.last_scan_at <= func.datetime(now_iso, modifier)
+    return or_(Media.last_scan_at.is_(None), due_expr)
+
+
 async def scan_all_media(force: bool = False) -> None:
-    """遍历全部 tracking/downloading 影视巡检（downloading 不跳过，防卡死，§3.1）。
+    """遍历到期 tracking/downloading 影视巡检（downloading 不跳过，防卡死，§3.1）。
 
-    统一巡检调度（queue-flow-rework Task 1）：**移除 per-media 冷却过滤**——
-    不再按各 media `last_scan_at + 周期` 到期判断，每轮 tick 直接遍历全部
-    tracking/downloading 影视逐一巡检；全局巡检间隔仅由 job 触发周期
-    （scan_all_media_job 的 APScheduler IntervalTrigger）控制。
-    media.scan_interval_minutes / system_config "scan_interval_minutes" /
-    settings.SCAN_INTERVAL_MINUTES 字段仅作兼容读取保留，不再参与调度。
+    恢复 per-media 到期过滤（restore-scan-interval-scheduling）：每轮 tick 仅巡检
+    「距上次成功巡检已超过其配置间隔（scan_interval_minutes，兜底全局默认 60 分钟）」
+    或「从未巡检过（last_scan_at 为 NULL）」的 tracking/downloading 影视；未到期
+    影视以轻量 SQL 过滤跳过（不执行 Emby 基线、搜索与 task_run 落库）。调度 job
+    保持每分钟 tick（scan_all_media_job 的 APScheduler IntervalTrigger），过滤在本
+    函数内完成。
 
-    force（手动全量/CLI 入口）参数保留以兼容既有调用契约；因本函数已无到期
-    过滤，force 不再改变遍历行为——全部 tracking/downloading 影视一律巡检。
+    force（手动全量/CLI 入口契约）：force=True 绕过 per-media 到期过滤，立即巡检
+    全部 tracking/downloading 影视。本 change 不新增 force 调用入口（仅恢复函数语义）。
     """
     async with async_session() as s:
-        rows = (
-            await s.execute(select(Media).where(Media.status.in_(("tracking", "downloading"))))
-        ).scalars().all()
+        stmt = select(Media).where(Media.status.in_(("tracking", "downloading")))
+        if not force:
+            stmt = stmt.where(_due_filter())
+        rows = (await s.execute(stmt)).scalars().all()
     for media in rows:
         try:
             await scan_media(media.id)
