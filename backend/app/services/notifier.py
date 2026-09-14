@@ -113,7 +113,11 @@ class PushPlusNotifier:
         if self._client is None:
             return  # 未配置 PushPlus，跳过
         try:
-            await self._client.send(title=event.title, content=event.body)
+            from app.services.notify_templates import text_to_html
+
+            # 出口转换：纯文本 body + 标题 → 加粗/分段/高亮的 HTML，显式 template=html
+            content = text_to_html(event.body or "", event.title)
+            await self._client.send(title=event.title, content=content, template="html")
         except Exception:
             logger.exception("PushPlus 推送失败（降级站内，event=%s）", event.event_type)
 
