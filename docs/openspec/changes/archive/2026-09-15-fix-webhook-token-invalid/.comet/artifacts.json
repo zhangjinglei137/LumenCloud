@@ -1,0 +1,6 @@
+{
+  "openspec_proposal": "docs/openspec/changes/fix-webhook-token-invalid/proposal.md",
+  "openspec_design": "docs/openspec/changes/fix-webhook-token-invalid/design.md",
+  "openspec_tasks": "docs/openspec/changes/fix-webhook-token-invalid/tasks.md",
+  "archive_directory": "docs/openspec/changes/archive/2026-09-15-fix-webhook-token-invalid"
+}
