@@ -58,7 +58,7 @@ def _token_from_request(request: Request) -> Optional[str]:
 
 1. `nastools_notify.py` 模块 docstring：更新鉴权说明——三通道并列，明确标注 NaSTools 实际发送裸 token（附源码证据位置），移除「旧版插件需升级」的未决假设表述（已核实为实发格式而非假设）。
 2. `backend/app/config.py`:85-89 注释：同步说明渠道实发裸 token。
-3. `docs/影视下载两队列重设计.md` §12.2（L507-511）与 §12.4（L534）：删除 `?token=` 配置引导（已失效），改为「新版消息通知→Webhook 渠道配置 Authorization 裸 token」。
+3. `docs/影视下载两队列重设计.md` §12.2/§12.3/§12.4：删除 `?token=` 配置引导（已失效），改为「新版消息通知→Webhook 渠道配置 Authorization 裸 token」。
 
 ## 验证方式
 

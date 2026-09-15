@@ -82,7 +82,7 @@ def _now() -> datetime:
 
 
 async def _secret() -> Optional[str]:
-    """systen_config internal_nastools_webhook_token 优先，env/settings fallback。"""
+    """system_config internal_nastools_webhook_token 优先，env/settings fallback。"""
     try:
         async with async_session() as s:
             row = await s.get(SystemConfig, "internal_nastools_webhook_token")
@@ -102,7 +102,7 @@ def _token_from_request(request: Request) -> Optional[str]:
     3. `Authorization: <裸token>` —— NaSTools 新版「消息通知→Webhook」渠道实发格式
        （源码证据：app/message/client/webhook.py:201-206 构造 `{"Authorization": self._token}`，
        无 Bearer 前缀；同库 ntfy.py 却带 Bearer，说明是刻意选择）。须接受该通道，
-       否则 NaSTools 推送必然 401（生产已实测复现）。
+       否则 NaSTools 推送必然 401（生产已观测持续 401，修复前经测试级 RED 复现）。
     """
     token = request.headers.get("X-NaSTools-Token")
     if token:

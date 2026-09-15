@@ -216,6 +216,7 @@ def test_no_secret_configured_returns_503(monkeypatch):
 @pytest.mark.parametrize("header_name,header_value", [
     ("X-NaSTools-Token", _TOKEN),
     ("Authorization", f"Bearer {_TOKEN}"),
+    ("Authorization", f"bearer {_TOKEN}"),  # Bearer scheme 大小写不敏感
     # NaSTools 新版「消息通知→Webhook」渠道实发 `Authorization: <裸token>`（无 Bearer 前缀，
     # 见 app/message/client/webhook.py:201-206）——本系统须兼容此通道
     ("Authorization", _TOKEN),
@@ -263,6 +264,35 @@ def test_token_wrong_returns_401(monkeypatch):
     cli = make_client(_TOKEN, monkeypatch)
     resp = cli.post(_ENDPOINT, json={"type": "x"},
                     headers={"X-NaSTools-Token": "wrong"})
+    assert resp.status_code == 401
+
+
+def test_bare_token_wrong_returns_401(monkeypatch):
+    """裸 token 通道携带错误值 → 401（负例，固化新通道的拒绝路径）。"""
+    cli = make_client(_TOKEN, monkeypatch)
+    resp = cli.post(_ENDPOINT, json={"type": "x"},
+                    headers={"Authorization": "wrong"})
+    assert resp.status_code == 401
+
+
+def test_authorization_basic_scheme_rejected(monkeypatch):
+    """`Authorization: Basic ...` 等异构 scheme 按原值比较失败 → 401（fail-closed）。
+
+    设计选择：端点只认静态 token，非匹配 scheme 一律拒绝；该语义由负例固化，
+    防止未来重构误放宽（对 Basic 凭据做解码等）。
+    """
+    cli = make_client(_TOKEN, monkeypatch)
+    resp = cli.post(_ENDPOINT, json={"type": "x"},
+                    headers={"Authorization": "Basic dXNlcjpwYXNz"})
+    assert resp.status_code == 401
+
+
+@pytest.mark.parametrize("auth_value", ["Bearer ", "bearer ", "   "])
+def test_authorization_empty_or_blank_token_returns_401(monkeypatch, auth_value):
+    """Authorization 仅有前缀无 token / 纯空白 → 401（fail-closed）。"""
+    cli = make_client(_TOKEN, monkeypatch)
+    resp = cli.post(_ENDPOINT, json={"type": "x"},
+                    headers={"Authorization": auth_value})
     assert resp.status_code == 401
 
 
