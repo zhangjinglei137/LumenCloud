@@ -1,8 +1,10 @@
 """§十二 NaSTools Webhook 集成端点单测（POST /internal/nastools/notify）。
 
-验证（对应 docs/影视下载两队列重设计.md §12.3；design T8.9 起仅 header 鉴权）：
-- token 正确（X-NaSTools-Token header / Authorization Bearer）→ 200 {"ok": true}
-- 仅带 `?token=` query（旧版插件地址带 token 的通道）→ 401（T8.9 已移除该通道）
+验证（对应 docs/影视下载两队列重设计.md §12.3；四通道鉴权，常数时间比较）：
+- token 正确（X-NaSTools-Token / Authorization Bearer / Authorization 裸 token /
+  ?token= query）→ 200 {"ok": true}
+- `?token=` query 通道（旧版插件 URL 带 token，2026-09-15 恢复兼容旧版插件）：
+  正确 token 200、错误 token 401
 - token 缺失 / 错误 → 401；secret 未配置 → 503（fail-closed）
 - body 非 JSON / 非对象 → 400
 - transfer.finished → 推进该 media 的 scrape→library + 触发 library_check（fire-and-forget）
@@ -235,14 +237,23 @@ def test_token_via_header_ok(monkeypatch, header_name, header_value):
     assert resp.json()["ok"] is True
 
 
-def test_query_token_channel_removed(monkeypatch):
-    """仅带 `?token=<secret>`（旧版插件 Webhook 地址带 token 的通道）→ 401。
+def test_query_token_channel(monkeypatch):
+    """`?token=<secret>`（旧版插件 Webhook 地址带 token 的通道）→ 200。
 
-    design T8.9：query 通道是攻击面（token 出现在 URL/日志/代理），已移除，
-    仅 header 鉴权。secret 正确也不再放行。
+    2026-09-15 恢复兼容：T8.9 曾移除 query 通道（token 过 URL 属攻击面），但旧版
+    Webhook 插件 POST 不支持自定义 Header、token 只能拼在 Webhook 地址上——
+    生产部署确认使用旧版插件（URL `?token=`），故恢复该通道放行正确 token。
     """
     cli = make_client(_TOKEN, monkeypatch)
-    resp = cli.post(f"{_ENDPOINT}?token={_TOKEN}", json={"type": "x"})
+    resp = cli.post(f"{_ENDPOINT}?token={_TOKEN}", json={"type": "unrelated.event", "data": {}})
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+
+
+def test_query_token_wrong_returns_401(monkeypatch):
+    """query 通道携带错误 token → 401（负例：恢复通道只放行正确 secret）。"""
+    cli = make_client(_TOKEN, monkeypatch)
+    resp = cli.post(f"{_ENDPOINT}?token=wrong", json={"type": "x"})
     assert resp.status_code == 401
 
 

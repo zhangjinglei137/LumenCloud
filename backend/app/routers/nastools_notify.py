@@ -11,16 +11,17 @@
 - `transfer.fail` / `download.fail`：flow_error 通知（节流沿用）。
 - 其它事件：记录后忽略（返回 ok）。
 
-鉴权：静态 token（T8.9 起仅 header 通道）：
+鉴权：静态 token（四通道，常数时间比较；secret 未配置 → 503 fail-closed）：
 - header `X-NaSTools-Token` / `Authorization: Bearer <token>`（通用通道）
 - `Authorization: <裸token>`（NaSTools 新版「消息通知→Webhook」渠道实发格式，
   源码证据：app/message/client/webhook.py:201-206 构造 `{"Authorization": self._token}`，
   无 Bearer 前缀；同库 ntfy.py 却用 Bearer，说明是刻意选择。2026-09-15 修复：
   此前端点不认该格式导致 NaSTools 推送必然 401）
-- `?token=` query 通道已移除（2026-09-12：部署配置/docker-compose/README/运维手册
-  均无 query 通道依赖证据；token 经 URL query 传输会泄露到日志与反向代理，属攻击面
-  收窄。旧版 Webhook 插件 POST 不支持自定义 Header——若部署仍使用旧版插件，需升级
-  到支持 Authorization Header 的新版「消息通知→Webhook」渠道）
+- `?token=` query 通道（2026-09-12 曾移除：token 经 URL 传输会泄露到日志与反向代理，
+  属攻击面收窄；2026-09-15 **恢复以兼容旧版 Webhook 插件**——旧版插件 POST 不支持
+  自定义 Header，token 只能拼在 Webhook 地址 URL query 上。注意：这是攻击面回退，
+  仅当部署使用旧版插件时启用；新版渠道优先走 Authorization header。
+  配置示例：`POST http://<host>/internal/nastools/notify?token=<token>`）
 secret 来源：system_config `internal_nastools_webhook_token` 优先，env/settings
 `NASTOOLS_WEBHOOK_SECRET` fallback；未配置 → 503（fail-closed）。
 
@@ -94,15 +95,19 @@ async def _secret() -> Optional[str]:
 
 
 def _token_from_request(request: Request) -> Optional[str]:
-    """header `X-NaSTools-Token` → `Authorization`（Bearer 前缀或裸 token）。
+    """header `X-NaSTools-Token` → `Authorization`（Bearer 前缀或裸 token）→ `?token=` query。
 
-    兼容三种通道：
+    兼容四通道（按优先级依次尝试，常数时间比较统一在调用方）：
     1. `X-NaSTools-Token`（自定义头）
     2. `Authorization: Bearer <token>`
     3. `Authorization: <裸token>` —— NaSTools 新版「消息通知→Webhook」渠道实发格式
        （源码证据：app/message/client/webhook.py:201-206 构造 `{"Authorization": self._token}`，
        无 Bearer 前缀；同库 ntfy.py 却带 Bearer，说明是刻意选择）。须接受该通道，
        否则 NaSTools 推送必然 401（生产已观测持续 401，修复前经测试级 RED 复现）。
+    4. `?token=<token>`（旧版 Webhook 插件——POST 不支持自定义 Header，token 只能
+       拼在 Webhook 地址 URL query 上；2026-09-15 起恢复此通道以兼容旧版插件部署。
+       注意：token 经 URL query 传递会出现在访问日志/反向代理，属攻击面回退，
+       仅当部署使用旧版插件时启用，新版「消息通知→Webhook」渠道仍优先走 header）。
     """
     token = request.headers.get("X-NaSTools-Token")
     if token:
@@ -115,6 +120,10 @@ def _token_from_request(request: Request) -> Optional[str]:
         # 兼容 NaSTools 实发的裸 token（无 Bearer 前缀）；非 Bearer 的其它 scheme
         # （如 Basic）会按其原值参与比较失败 → 401，行为正确（fail-closed）。
         return auth
+    # 旧版 Webhook 插件通道：URL query token（2026-09-15 恢复，详见 docstring）
+    query_token = request.query_params.get("token")
+    if query_token:
+        return query_token.strip()
     return None
 
 
@@ -301,7 +310,8 @@ async def nastools_notify(request: Request) -> JSONResponse:
     """接收 NaSTools Webhook 事件推送（§12.3）。
 
     body: {"type": "<event_type>", "data": {...}}（旧版插件 POST 原文）
-    鉴权：header 静态 token（仅 X-NaSTools-Token / Authorization）；secret 未配置 503，不匹配 401。
+    鉴权：静态 token 四通道（X-NaSTools-Token / Authorization Bearer / Authorization 裸
+    token / ?token= query，见 _token_from_request）；secret 未配置 503，不匹配 401。
     """
     secret = await _secret()
     if not secret:

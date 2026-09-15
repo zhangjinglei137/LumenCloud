@@ -83,10 +83,11 @@ class Settings(BaseSettings):
     # 此处为 env fallback（旧部署平滑迁移：system_config 缺失时回退 .env/环境变量）。
     ARIA2_WEBHOOK_SECRET: Optional[str] = None
     # §12 NaSTools Webhook 集成鉴权 token（/internal/nastools/notify）。
-    # 接收三通道 header：X-NaSTools-Token / Authorization: Bearer <token> /
-    # Authorization: <裸token>（后者为 NaSTools 新版「消息通知→Webhook」渠道实发格式，
-    # 见 app/message/client/webhook.py:201-206；2026-09-15 起兼容）。
-    # query 通道已移除（2026-09-12，token 过 URL 属攻击面）。
+    # 接收四通道：X-NaSTools-Token / Authorization: Bearer <token> /
+    # Authorization: <裸token>（新版「消息通知→Webhook」渠道实发格式，
+    # 见 app/message/client/webhook.py:201-206）/ ?token= query（旧版插件
+    # 2026-09-15 恢复兼容：旧版插件 POST 不支持自定义 Header，token 只能拼 URL；
+    # 曾于 2026-09-12 移除，因生产使用旧版插件故恢复，属攻击面回退按需启用）。
     # DB 优先（system_config.internal_nastools_webhook_token），此处 env fallback。
     NASTOOLS_WEBHOOK_SECRET: Optional[str] = None
     NASTOOLS_BASE_URL: str = ""
