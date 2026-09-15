@@ -216,6 +216,9 @@ def test_no_secret_configured_returns_503(monkeypatch):
 @pytest.mark.parametrize("header_name,header_value", [
     ("X-NaSTools-Token", _TOKEN),
     ("Authorization", f"Bearer {_TOKEN}"),
+    # NaSTools 新版「消息通知→Webhook」渠道实发 `Authorization: <裸token>`（无 Bearer 前缀，
+    # 见 app/message/client/webhook.py:201-206）——本系统须兼容此通道
+    ("Authorization", _TOKEN),
 ])
 def test_token_via_header_ok(monkeypatch, header_name, header_value):
     """header 带 token（新版消息通知→Webhook 渠道 / Authorization）→ 200。"""

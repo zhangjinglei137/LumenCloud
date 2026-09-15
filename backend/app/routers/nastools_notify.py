@@ -12,12 +12,15 @@
 - 其它事件：记录后忽略（返回 ok）。
 
 鉴权：静态 token（T8.9 起仅 header 通道）：
-- header `X-NaSTools-Token` / `Authorization`（新版「消息通知→Webhook」渠道）
-- `?token=` query 通道已移除（2026-09-12 实施前核对：部署配置/docker-compose/
-  README/运维手册均无 query 通道依赖证据；token 经 URL query 传输会泄露到日志与
-  反向代理，属攻击面收窄。注意设计 §12.2 记载旧版 Webhook 插件 POST 不支持自定义
-  Header——若部署仍使用旧版插件，需升级到支持 Authorization Header 的新版
-  「消息通知→Webhook」渠道，否则 webhook 将 401）
+- header `X-NaSTools-Token` / `Authorization: Bearer <token>`（通用通道）
+- `Authorization: <裸token>`（NaSTools 新版「消息通知→Webhook」渠道实发格式，
+  源码证据：app/message/client/webhook.py:201-206 构造 `{"Authorization": self._token}`，
+  无 Bearer 前缀；同库 ntfy.py 却用 Bearer，说明是刻意选择。2026-09-15 修复：
+  此前端点不认该格式导致 NaSTools 推送必然 401）
+- `?token=` query 通道已移除（2026-09-12：部署配置/docker-compose/README/运维手册
+  均无 query 通道依赖证据；token 经 URL query 传输会泄露到日志与反向代理，属攻击面
+  收窄。旧版 Webhook 插件 POST 不支持自定义 Header——若部署仍使用旧版插件，需升级
+  到支持 Authorization Header 的新版「消息通知→Webhook」渠道）
 secret 来源：system_config `internal_nastools_webhook_token` 优先，env/settings
 `NASTOOLS_WEBHOOK_SECRET` fallback；未配置 → 503（fail-closed）。
 
@@ -91,13 +94,27 @@ async def _secret() -> Optional[str]:
 
 
 def _token_from_request(request: Request) -> Optional[str]:
-    """header `X-NaSTools-Token` → header `Authorization`（T8.9 起仅 header 通道）。"""
+    """header `X-NaSTools-Token` → `Authorization`（Bearer 前缀或裸 token）。
+
+    兼容三种通道：
+    1. `X-NaSTools-Token`（自定义头）
+    2. `Authorization: Bearer <token>`
+    3. `Authorization: <裸token>` —— NaSTools 新版「消息通知→Webhook」渠道实发格式
+       （源码证据：app/message/client/webhook.py:201-206 构造 `{"Authorization": self._token}`，
+       无 Bearer 前缀；同库 ntfy.py 却带 Bearer，说明是刻意选择）。须接受该通道，
+       否则 NaSTools 推送必然 401（生产已实测复现）。
+    """
     token = request.headers.get("X-NaSTools-Token")
     if token:
         return token
     auth = request.headers.get("Authorization")
-    if auth and auth.lower().startswith("bearer "):
-        return auth[len("bearer "):].strip()
+    if auth:
+        auth = auth.strip()
+        if auth.lower().startswith("bearer "):
+            return auth[len("bearer "):].strip()
+        # 兼容 NaSTools 实发的裸 token（无 Bearer 前缀）；非 Bearer 的其它 scheme
+        # （如 Basic）会按其原值参与比较失败 → 401，行为正确（fail-closed）。
+        return auth
     return None
 
 
