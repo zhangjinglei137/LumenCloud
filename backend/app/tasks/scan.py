@@ -301,16 +301,11 @@ _fmt_episode = fmt_episode
 _ep_num = parse_episode_num
 
 
-def match_missing(text: str, missing_keys: set[str]) -> str | None:
-    """三重匹配缺失集：SxxExx / SxxExxx / 第N集（跨季按集号匹配）→ 纯数字兜底。
+def match_missing_std(text: str, missing_keys: set[str]) -> str | None:
+    """规范命名匹配（规则 1/2）：SxxExx / SxxExxx / 第N集（跨季按集号匹配）。
 
-    纯数字兜底（凡人修仙传 S01E190 案例）：网盘资源文件常为纯数字命名
-    （`190.mkv`、`189.mkv`），既非 SxxExx 也非「第N集」——若不兜底，真实有效
-    分享即使遍历到也匹配不到。双重收紧防歧义：
-      ① 文件名主体提取 1-3 位数字块（开头或独立数字块，前置 [xxx] 标签可忽略）；
-      ② 缺失集全部属于同一季 S，且 SxxE{数字} ∈ missing_keys 才命中。
-    多季缺失（{"S01E01","S02E05"}）、数字超范围、纯数字与缺失集不吻合 → None，
-    不影响既有三条规则（放在最后作为兜底）。
+    与 match_missing 的规则 1/2 完全同源（2026-09 拆分：主循环改为两阶段，
+    规则 3 纯数字兜底降级为「未被规范命名的缺失集」的最后手段，见 _scan_one）。
     """
     if not text:
         return None
@@ -327,19 +322,52 @@ def match_missing(text: str, missing_keys: set[str]) -> str | None:
         hits = [k for k in missing_keys if _ep_num(k) == ep]
         if hits:
             return sorted(hits)[0]
-    # 3) 纯数字兜底：文件名主体为纯数字（190.mkv → 190），前置 [xxx] 标签可忽略。
-    #    「190.2020.2160p.mkv」首个数字块 190 亦可；「风起天南1」首字符非数字不匹配。
+    return None
+
+
+def _pure_numeric_match(text: str, missing_keys: set[str]) -> str | None:
+    """纯数字兜底（规则 3）：文件名主体纯数字 + 缺失集全部同一季 → 构造集 key。
+
+    双重收紧防歧义（与原 match_missing 规则 3 完全一致）：
+      ① 文件名主体提取 1-3 位数字块（开头或独立数字块，前置 [xxx] 标签可忽略）；
+      ② 缺失集全部属于同一季 S，且 SxxE{数字} ∈ missing_keys 才命中。
+    多季缺失（{"S01E01","S02E05"}）、数字超范围、纯数字与缺失集不吻合 → None。
+    """
+    if not text or not missing_keys:
+        return None
     basename = text.rsplit(".", 1)[0] if "." in text else text
     m = re.match(r"^(?:\[[^\]]*\])*(\d{1,3})(?=\D|$)", basename)
-    if m and missing_keys:
-        ep = int(m.group(1))
-        seasons = {_season_of_key(k) for k in missing_keys}
-        if len(seasons) == 1:  # 多季缺失集：纯数字无法判定归属季 → 不匹配（防歧义）
-            season = next(iter(seasons))
-            key = _fmt_episode(season, ep)
-            if key in missing_keys:
-                return key
+    if not m:
+        return None
+    ep = int(m.group(1))
+    seasons = {_season_of_key(k) for k in missing_keys}
+    if len(seasons) == 1:  # 多季缺失集：纯数字无法判定归属季 → 不匹配（防歧义）
+        season = next(iter(seasons))
+        key = _fmt_episode(season, ep)
+        if key in missing_keys:
+            return key
     return None
+
+
+def match_missing(text: str, missing_keys: set[str]) -> str | None:
+    """三重匹配缺失集：SxxExx / SxxExxx / 第N集（跨季按集号匹配）→ 纯数字兜底。
+
+    保留原语义与签名（外部调用/既有单测兼容）：先规则 1/2（规范命名），
+    未命中再规则 3（纯数字）。_scan_one 主循环已改两阶段调用拆分后的
+    match_missing_std / _pure_numeric_match，本函数供独立场景/测试复用。
+
+    纯数字兜底（凡人修仙传 S01E190 案例）：网盘资源文件常为纯数字命名
+    （`190.mkv`、`189.mkv`），既非 SxxExx 也非「第N集」——若不兜底，真实有效
+    分享即使遍历到也匹配不到。双重收紧防歧义：
+      ① 文件名主体提取 1-3 位数字块（开头或独立数字块，前置 [xxx] 标签可忽略）；
+      ② 缺失集全部属于同一季 S，且 SxxE{数字} ∈ missing_keys 才命中。
+    多季缺失（{"S01E01","S02E05"}）、数字超范围、纯数字与缺失集不吻合 → None，
+    不影响既有三条规则（放在最后作为兜底）。
+    """
+    key = match_missing_std(text, missing_keys)
+    if key is not None:
+        return key
+    return _pure_numeric_match(text, missing_keys)
 
 
 # ---------------------------------------------------------------------------
@@ -1784,6 +1812,10 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
     enqueue_limited = False  # A4：全量模式限批触发标记（停止遍历后续分享/文件）
     unmatched_files: list[str] = []  # 未匹配文件名样例（至多收集 3 个，供 message 定位）
     share_info_ok = share_info_fail = walk_fail = tried = 0
+    # 两阶段匹配（2026-09）：规范命名（SxxExx/第N集）命中登记 + 纯数字候选暂存——
+    # 规则3 纯数字降级为「未被规范命名的缺失集」的最后兜底（优先规范命名资源）
+    std_matched_keys: set[str] = set()       # 被规则1/2（规范命名）命中的缺失集
+    numeric_candidates: dict[str, list[dict]] = {}  # 纯数字候选：episode_key → 候选文件
     _phase_start(phases, "match")
     _phase_start(phases, "enqueue")  # 匹配+入队同循环内推进；先统一标 process
     for cand in candidates:
@@ -1868,8 +1900,23 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
                 missing_items.append(item)
                 missing_items_by_key[matched_key] = item
             else:
-                matched_key = match_missing(file_name, missing_keys)
-                if not matched_key:
+                # 两阶段匹配（2026-09 优化）：
+                #   阶段 A（本循环）：规则1/2 规范命名（SxxExx/第N集）命中 → 立即入队，
+                #                     并登记 std_matched_keys（该集已有规范命名资源）；
+                #                     规则3 纯数字命中 → 仅暂存候选（不立即入队）
+                #   阶段 B（循环后）：仅对「未被规范命名命中的缺失集」用纯数字候选兜底，
+                #                     优先规范命名资源，纯数字是最后手段
+                matched_key = match_missing_std(file_name, missing_keys)
+                if matched_key is not None:
+                    std_matched_keys.add(matched_key)
+                else:
+                    num_key = _pure_numeric_match(file_name, missing_keys)
+                    if num_key is not None:
+                        numeric_candidates.setdefault(num_key, []).append({
+                            "info": info, "f": f, "share_code": share_code,
+                            "file_name": file_name, "file_size": file_size,
+                        })
+                        continue
                     unmatched += 1
                     if len(unmatched_files) < 3:
                         unmatched_files.append(file_name)
@@ -1913,6 +1960,44 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
         # A4 全量限批：已达单轮入队上限 → 停止遍历后续分享候选（防一次入队爆炸）
         if enqueue_limited:
             break
+
+    # ---- 阶段 B：纯数字兜底入队（规则 3 仅作最后手段）----
+    # 对「未被规范命名（SxxExx/第N集）命中」的缺失集，用暂存的纯数字候选按序入队：
+    #   优先规范命名资源——只要某集在任意分享被规范命名命中（std_matched_keys），
+    #   即使该规范文件因大小过滤被拒，也不再降级纯数字（防误配，下轮自然重试）。
+    #   同一集多个纯数字候选：取第一个通过大小过滤且入队成功的。
+    # movie_missing 分支不收集 numeric_candidates（走文件名键），此处自然为空。
+    if numeric_candidates:
+        fallback_keys = sorted(missing_keys - std_matched_keys)
+        for ep_key in fallback_keys:
+            for cand in numeric_candidates.get(ep_key) or ():
+                # 大小过滤（与主循环同语义：fail-closed）
+                if cand["f"].get("size_unknown"):
+                    size_filtered += 1
+                    continue
+                if limit_gb and cand["file_size"] and cand["file_size"] > limit_gb * 1024 ** 3:
+                    size_filtered += 1
+                    continue
+                if skip_enqueue:
+                    existing_skipped += 1  # downloading 状态本轮不入队（同主循环语义）
+                    break
+                payload = _enqueue_payload(cand["info"], cand["f"])
+                res = await _enqueue(
+                    media_id, ep_key, cand["file_name"], cand["file_size"],
+                    cand["share_code"], payload,
+                    size_estimated=bool(cand["f"].get("size_estimated")),
+                )
+                if res == "enqueued":
+                    enqueued += 1
+                    item = missing_items_by_key.get(ep_key)
+                    if item is not None:
+                        item["result"] = "enqueued"
+                    break  # 该集已入队，不再尝试其它候选
+                elif res == "existing":
+                    existing_skipped += 1  # 已有任务（视为有资源），无需继续尝试
+                    break
+                else:
+                    existing_skipped += 1  # conflict → 尝试下一个候选（下轮重试兜底）
 
     _phase_done(phases, "match")
     _phase_done(phases, "enqueue")

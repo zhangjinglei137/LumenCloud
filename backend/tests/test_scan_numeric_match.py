@@ -325,3 +325,82 @@ def test_scan_one_share_try_limit_stops_when_all_dead(db, monkeypatch):
     detail = json.loads(tr.scan_detail)
     assert detail["share_info_ok"] == 0
     assert detail["share_info_fail"] == limit   # 未验证剩余候选（超上限）
+
+
+# ---------------------------------------------------------------------------
+# 4) 两阶段匹配：规范命名优先，纯数字仅兜底未被规范命中的缺失集（2026-09）
+# ---------------------------------------------------------------------------
+
+def _seed_and_run_scan(monkeypatch, db, *, missing_codes, files):
+    """构造单分享巡检：media + 基线缺失集 + 1 个有效分享（share_list 返回 files）。"""
+    from app.tasks import scan as scan_mod
+
+    mid = run(_seed_media(db, title="斗罗大陆Ⅱ绝世唐门"))
+    scan_mod = _patch_scan_base(monkeypatch, db, missing_codes=missing_codes)
+    monkeypatch.setattr(scan_mod, "_search_and_rank", AsyncMock(return_value=[
+        {"title": "斗罗大陆Ⅱ绝世唐门", "share_code": "2c16748e7818"}]))
+    monkeypatch.setattr(
+        scan_mod, "_cloudsaver_share_info",
+        AsyncMock(return_value={"pwd_id": "pd", "stoken": "st", "receive_code": "",
+                                "fileSize": 9999}),
+    )
+    monkeypatch.setattr(
+        scan_mod.cloudsaver, "share_list",
+        AsyncMock(return_value={"list": files}),
+    )
+    rid = run(scan_mod._scan_one(mid))
+    return rid, mid
+
+
+def _read_tq_entries(db, mid):
+    from sqlalchemy import select
+    async def _read():
+        async with db() as s:
+            return (await s.execute(
+                select(TaskQueue).where(TaskQueue.media_id == mid)
+                .order_by(TaskQueue.episode.asc())
+            )).scalars().all()
+    return run(_read())
+
+
+def test_scan_one_std_naming_preferred_over_numeric(db, monkeypatch):
+    """同分享含规范命名（S01E190.mkv）与纯数字（190.mkv）→ 仅规范命名入队。
+
+    两阶段匹配：S01E190 被规范命名命中（std_matched_keys）→ 阶段 B 不再
+    用纯数字兜底该集（190.mkv 不重复入队）；task_queue 仅 1 条且 file_name
+    为规范命名。
+    """
+    rid, mid = _seed_and_run_scan(monkeypatch, db, missing_codes=["S01E190"], files=[
+        {"fileName": "S01E190.mkv", "fileId": "f1", "fileIdToken": "ft",
+         "isFolder": False, "size": 1024 * 1024 * 1024},
+        {"fileName": "190.mkv", "fileId": "f2", "fileIdToken": "ft2",
+         "isFolder": False, "size": 1024 * 1024 * 1024},
+    ])
+    tr = run(_read_runs(db, mid))[0]
+    assert tr.id == rid and tr.status == "success"
+    tq = _read_tq_entries(db, mid)
+    assert len(tq) == 1, f"纯数字候选不应重复入队已被规范命中的集: {[x.file_name for x in tq]}"
+    assert tq[0].episode == "S01E190"
+    assert tq[0].file_name == "S01E190.mkv"  # 规范命名优先
+
+
+def test_scan_one_numeric_fallback_only_for_unmatched_key(db, monkeypatch):
+    """S01E100 有规范命名、S01E190 仅纯数字 → 各自正确入队。
+
+    阶段 B 仅对未被规范命中的缺失集（S01E190）启用纯数字兜底；S01E100
+    走规范命名。两条 task_queue 各自 file_name 正确。
+    """
+    rid, mid = _seed_and_run_scan(monkeypatch, db,
+                                  missing_codes=["S01E100", "S01E190"], files=[
+        {"fileName": "S01E100.mkv", "fileId": "f1", "fileIdToken": "ft",
+         "isFolder": False, "size": 1024 * 1024 * 1024},
+        {"fileName": "190.mkv", "fileId": "f2", "fileIdToken": "ft2",
+         "isFolder": False, "size": 1024 * 1024 * 1024},
+    ])
+    tr = run(_read_runs(db, mid))[0]
+    assert tr.id == rid and tr.status == "success"
+    tq = _read_tq_entries(db, mid)
+    assert len(tq) == 2
+    by_ep = {x.episode: x for x in tq}
+    assert by_ep["S01E100"].file_name == "S01E100.mkv"  # 规范命名
+    assert by_ep["S01E190"].file_name == "190.mkv"      # 纯数字兜底（未规范命中）
