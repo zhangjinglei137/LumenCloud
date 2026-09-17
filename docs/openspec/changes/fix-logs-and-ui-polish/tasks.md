@@ -16,9 +16,9 @@
 
 ## 4. 邀请码管理迁移到用户管理页（specs/user-invite-management）
 
-- [ ] 4.1 `UsersView.vue` 增加邀请码管理区块：复用 `stores/settings.ts` invite actions，迁移 `SettingsView.vue` 的 `generateCount`/`generate`/`removeInvite`/`copyText`/`copyInviteCode`/`copyRegisterLink` 与 invites 表格模板；`onMounted` 同时拉取用户列表与邀请码；验证用户管理页可完成生成/复制/复制链接/删除，`npm run test`（含 `UsersView.test.ts`）通过
-- [ ] 4.2 移除 `SettingsView.vue` 的「邀请码管理」tab（脚本与模板），`onMounted` 去掉 `fetchInvites()`；验证设置页不再展示该 tab 且 `SettingsView.test.ts` 通过
-- [ ] 4.3 核对邀请码后端 API（`backend/app/routers/admin.py` invites 三接口）契约未变，既有后端测试通过
+- [x] 4.1 `UsersView.vue` 增加邀请码管理区块：复用 `stores/settings.ts` invite actions，迁移 `SettingsView.vue` 的 `generateCount`/`generate`/`removeInvite`/`copyText`/`copyInviteCode`/`copyRegisterLink` 与 invites 表格模板；`onMounted` 同时拉取用户列表与邀请码；验证用户管理页可完成生成/复制/复制链接/删除，`npm run test`（含 `UsersView.test.ts`）通过
+- [x] 4.2 移除 `SettingsView.vue` 的「邀请码管理」tab（脚本与模板），`onMounted` 去掉 `fetchInvites()`；验证设置页不再展示该 tab 且 `SettingsView.test.ts` 通过
+- [x] 4.3 核对邀请码后端 API（`backend/app/routers/admin.py` invites 三接口）契约未变，既有后端测试通过
 
 ## 5. 影视库卡片集数统计文案去重（specs/media-status）
 

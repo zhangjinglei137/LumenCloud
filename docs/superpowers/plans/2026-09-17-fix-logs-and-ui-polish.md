@@ -363,7 +363,7 @@ git commit -m "feat(settings): 运行日志保留天数支持动态配置"
 - Consumes: `stores/settings.ts` invite actions（fetchInvites/createInvites/deleteInvite）；`InviteCode` 类型
 - Produces: `UsersView` 内 invites 表格区块（生成/复制/复制注册链接/删除）
 
-- [ ] **Step 1: UsersView 增加邀请码区块**
+- [x] **Step 1: UsersView 增加邀请码区块**
 
 `frontend/src/views/UsersView.vue`：
 - import 增加 `useSettingsStore`、`formatTime`（已有）、Element Plus 图标（Refresh 已有；复制不需图标）
@@ -437,7 +437,7 @@ async function copyRegisterLink(code: string): Promise<void> {
 
 `onMounted` 改为：`Promise.all([store.fetchList(), settings.fetchInvites()])`。
 
-- [ ] **Step 2: 移除 SettingsView invites tab**
+- [x] **Step 2: 移除 SettingsView invites tab**
 
 `frontend/src/views/SettingsView.vue`：
 - 删除模板 728-779「邀请码管理」el-tab-pane 整块
@@ -445,7 +445,7 @@ async function copyRegisterLink(code: string): Promise<void> {
 - `onMounted`（397-401 行）：`await Promise.all([store.fetchSettings(), store.fetchInvites()])` → `await store.fetchSettings()`
 - 检查 `store.invites` 引用是否全部移除
 
-- [ ] **Step 3: 更新前端测试**
+- [x] **Step 3: 更新前端测试**
 
 `SettingsView.test.ts`：
 - mock 中 `invites: []`、`fetchInvites`、`createInvites`、`deleteInvite` 可保留（多余 mock 无害）或清理；重点确认移除 invites tab 后既有断言仍通过（`el-tab-pane` stub 已存在）
@@ -455,12 +455,12 @@ async function copyRegisterLink(code: string): Promise<void> {
 - 增加断言：渲染「邀请码管理」区块骨架（生成按钮存在），或邀请码列表渲染（mock 传入一条 invite 后表格展示 code）
 - EP_STUBS 补充 `el-input-number`（若缺）、`el-divider`、`el-empty`（若缺）
 
-- [ ] **Step 4: 验证前端**
+- [x] **Step 4: 验证前端**
 
 Run: `cd frontend && npx vue-tsc --noEmit && npx vitest run src/views/UsersView.test.ts src/views/SettingsView.test.ts`
 Expected: 通过
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add frontend/src/views/UsersView.vue frontend/src/views/SettingsView.vue frontend/src/views/UsersView.test.ts frontend/src/views/SettingsView.test.ts
