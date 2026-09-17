@@ -593,3 +593,15 @@ export function notificationTypeMeta(event_type?: string | null): NotificationTy
   }
   return NOTIFICATION_TYPE_DEFAULT
 }
+
+/**
+ * 登录跳转目标白名单（fix-audit-issues / B5）：仅接受站内相对路径
+ * （`/` 开头且非 `//` 开头），防外部/协议相对/javascript: 等钓鱼跳转；
+ * 非法值（含缺失、非字符串）回退默认首页 `/`。
+ */
+export function safeRedirect(raw: unknown): string {
+  if (typeof raw === 'string' && raw.startsWith('/') && !raw.startsWith('//')) {
+    return raw
+  }
+  return '/'
+}

@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import { useAuthStore } from '../stores/auth'
+import { safeRedirect } from '../utils/format'
 
 const router = useRouter()
 const route = useRoute()
@@ -25,7 +26,8 @@ async function submit() {
   try {
     await auth.login(form.value.username, form.value.password)
     ElMessage.success('登录成功')
-    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/'
+    // redirect 白名单校验：仅接受站内相对路径，非法值（外部 URL/协议相对/javascript: 等）回退首页
+    const redirect = safeRedirect(route.query.redirect)
     router.push(redirect)
   } catch {
     // 拦截器已提示错误
