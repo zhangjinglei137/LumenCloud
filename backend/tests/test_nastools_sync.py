@@ -178,3 +178,44 @@ def test_sync_success_updates_cooldown_timestamp(db, monkeypatch):
     assert (now - last).total_seconds() < 60  # 时间戳为最近（同步完成时刻）
     records = run(_read_task_run_records(db))
     assert ("sync_nastools", "success") in records
+
+
+def test_in_progress_flag_cleared_even_when_error_record_fails(db, monkeypatch):
+    """失败路径中 record_task_run 自身抛异常（DB 不可用）也不泄漏在途标志。
+
+    review R1（Important）：`_sync_in_progress` 清除必须上 try/finally——若失败
+    路径的 task_run(error) 记录 / DB 会话抛异常，控制流跳出 except 块、标志永久
+    置位，后续所有同步（含 force 刮削触发）都被「在途跳过」永久吞掉，需进程
+    重启才恢复。断言：第一次同步（同步失败 + 失败记录也失败）异常上抛后，
+    `_sync_in_progress` 已清除——第二次同步能正常进入执行，restart 与
+    run_directory_sync 均执行 2 次（而非第二次被在途跳过）。
+    """
+    _reset_sync_state(monkeypatch)
+    _make_sync_env(db, monkeypatch)
+    monkeypatch.setattr(ns_mod.asyncio, "sleep", AsyncMock())
+
+    # 客户端同步失败（run_directory_sync 首次抛，之后成功——同一 mock 计数）
+    run_sync = AsyncMock(side_effect=[RuntimeError("目录同步失败（模拟）"), {}])
+    monkeypatch.setattr(ns_mod.nastools.client, "run_directory_sync", run_sync)
+    # 首次失败记录（task_run error 落库）时 DB 不可用 → record_task_run 抛异常。
+    # flaky_record 为 async 函数：后续（第 2 次起）正常返回，不干扰第二次调用。
+    calls = {"n": 0}
+
+    async def flaky_record(session, task_type, status, message, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("DB 暂不可用（模拟）")
+        return 1
+
+    monkeypatch.setattr(ns_mod, "record_task_run", flaky_record)
+
+    # 同步失败 + 失败记录失败 → 异常上抛（DB 不可用语义）
+    with pytest.raises(RuntimeError, match="DB 暂不可用"):
+        run(ns_mod.nastools_sync())
+
+    # 第二次：run_directory_sync 已恢复正常 → 应正常进入执行（而非因标志泄漏
+    # 被在途跳过）；同一 mock 累计计数断言两次真正执行
+    run(ns_mod.nastools_sync())
+
+    assert ns_mod.nastools.client.restart.await_count == 2
+    assert run_sync.await_count == 2
