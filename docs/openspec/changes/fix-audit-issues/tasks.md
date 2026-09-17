@@ -19,13 +19,13 @@
 - [x] 3.4 新增/改造登出接口清除 httpOnly cookie，前端 logout 先调登出再清 localStorage，验证登出后残留 cookie 无法通过鉴权
 - [x] 3.5 登录 redirect 参数白名单校验（`/` 开头且非 `//`），非法回退首页，验证新增跳转安全测试通过
 - [x] 3.6 并发审批同 tmdb_id 捕获 IntegrityError 返回 409（approvals.py），验证新增并发审批测试无 500
-- [ ] 3.7 admin 初始密码改为一次性 token 落盘 `data/` 下 chmod 600 文件（或等价方案），不再明文刷日志，验证启动日志不含密码且文件权限正确
+- [x] 3.7 admin 初始密码改为一次性 token 落盘 `data/` 下 chmod 600 文件（或等价方案），不再明文刷日志，验证启动日志不含密码且文件权限正确
 - [ ] 3.8 审查并确认登录限流反代头信任链（或注释明示单 worker/反代局限），验证配置文档更新
 
 ## 4. 配置/凭据/设置
 
 - [ ] 4.1 后端 `_WHITELIST_EXACT` 补 `download_queue_paused`（且不进 `_EDITABLE_KEYS` 凭据表单），验证设置页保存该开关返回 200 且立即生效
-- [ ] 4.2 将 `internal_aria2_webhook_secret`、`internal_nastools_webhook_token` 纳入 `_SENSITIVE_KEYS` 遮蔽，前端表单改密码框/「已配置」占位、留空不修改，验证 GET 不回显明文且保存不覆盖
+- [x] 4.2 将 `internal_aria2_webhook_secret`、`internal_nastools_webhook_token` 纳入 `_SENSITIVE_KEYS` 遮蔽，前端表单改密码框/「已配置」占位、留空不修改，验证 GET 不回显明文且保存不覆盖
 - [ ] 4.3 邀请码生成上限前后端统一（后端 50、前端同步），验证 UI 可生成后端允许全部数量
 - [ ] 4.4 移除 pushplus.py 模块级单例或使单例每次重读 token，验证配置热更新后新通知使用新 token
 

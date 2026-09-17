@@ -171,12 +171,12 @@ base-ref: 114b8081c182581a02a49435cfd4f317b58ac2f5
 - Consumes: `_SENSITIVE_KEYS`、`_WHITELIST_EXACT`、`_EDITABLE_KEYS`、config_store
 - Produces: 初始密码写入 `data/` 600 权限文件；`internal_aria2_webhook_secret`/`internal_nastools_webhook_token` 纳入敏感键
 
-- [ ] **Step 1** 写失败/前置测试：GET /api/settings 不再明文返回 webhook 密钥（`***`）；启动初始密码不再出现在日志
-- [ ] **Step 2** 初始密码生成改写入 `data/.initial_admin_credential` 600 权限文件（日志仅提示文件路径）
-- [ ] **Step 3** settings.py 将两个 webhook 键加入 `_SENSITIVE_KEYS`
-- [ ] **Step 4** 前端凭据表单：两键以密码框/「已配置」占位，留空 = 不修改（`dirtyCredKeys` 机制复用）
-- [ ] **Step 5** 运行测试 + 前端 build 通过
-- [ ] **Step 6** Commit：`fix: admin 初始密码落盘与 webhook 密钥遮蔽`
+- [x] **Step 1** 写失败/前置测试：GET /api/settings 不再明文返回 webhook 密钥（`***`）；启动初始密码不再出现在日志
+- [x] **Step 2** 初始密码生成改写入 `data/.initial_admin_credential` 600 权限文件（日志仅提示文件路径）
+- [x] **Step 3** settings.py 将两个 webhook 键加入 `_SENSITIVE_KEYS`
+- [x] **Step 4** 前端凭据表单：两键以密码框/「已配置」占位，留空 = 不修改（`dirtyCredKeys` 机制复用）
+- [x] **Step 5** 运行测试 + 前端 build 通过
+- [x] **Step 6** Commit：`fix: admin 初始密码落盘与 webhook 密钥遮蔽`
 
 ---
 
