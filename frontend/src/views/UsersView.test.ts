@@ -56,7 +56,7 @@ const EP_STUBS = {
   'el-icon': { template: '<span><slot /></span>' },
   'el-empty': { template: '<div>{{ description }}<slot /></div>', props: ['description'] },
   'el-divider': { template: '<div><slot /></div>' },
-  'el-input-number': { template: '<input />', props: ['modelValue'] },
+  'el-input-number': { template: '<input :data-max="max" />', props: ['modelValue', 'max'] },
   // el-select stub：渲染可识别的 <select class="el-select">，用于断言「角色列不再出现下拉框」
   'el-select': { template: '<select class="el-select"><slot /></select>', props: ['modelValue'] },
   'el-option': { template: '<option />', props: ['value', 'label'] },
@@ -166,5 +166,16 @@ describe('UsersView 邀请码管理（fix-logs-and-ui-polish）', () => {
     expect(text).toContain('已使用')
     expect(text).toContain('guest1')
     expect(text).toContain('复制注册链接')
+  })
+})
+
+describe('UsersView 邀请码生成上限与后端对齐（fix-audit-issues C11）', () => {
+  it('邀请码数量输入上限为 50（与后端 InviteCreate.le=50 对齐）', async () => {
+    wrapper = mountView()
+    await flushPromises()
+    // el-input-number 的 max 属性对齐后端权威值 50（此前为 20）
+    const input = wrapper.find('input[data-max]')
+    expect(input.exists()).toBe(true)
+    expect(input.attributes('data-max')).toBe('50')
   })
 })

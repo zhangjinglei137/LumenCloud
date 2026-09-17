@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
-import { computed, inject, provide, reactive } from 'vue'
+import { computed, inject, nextTick, provide, reactive } from 'vue'
 import QueueView from './QueueView.vue'
 import type { DownloadQueueItem, QueueTaskItem } from '../types'
 
@@ -286,5 +286,32 @@ describe('QueueView 下载队列拆列（queue-size-and-progress）', () => {
     const text = wrapper.text()
     expect(text).toContain('2.00 GB')
     expect(text).not.toContain('约')
+  })
+})
+
+describe('QueueView 计时器按 activeTab 启停（fix-audit-issues C11 / 审查 B15）', () => {
+  it('progressTimer 仅下载 Tab 运行：初始任务 Tab 不启动，切下载 Tab 启动，切回停止', async () => {
+    const setSpy = vi.spyOn(globalThis, 'setInterval')
+    const clearSpy = vi.spyOn(globalThis, 'clearInterval')
+    try {
+      storeState.downloadingItems = [makeDownload({ id: 1, status: 'downloading' })]
+      wrapper = mountView()
+      await flushPromises()
+
+      // 初始 activeTab='task'：仅 slowTimer 一个 interval（progressTimer 未启动）
+      expect(setSpy).toHaveBeenCalledTimes(1)
+
+      // 切到下载 Tab → progressTimer 启动（第二个 interval）
+      ;(wrapper.vm as unknown as { activeTab: string }).activeTab = 'download'
+      await nextTick()
+      expect(setSpy).toHaveBeenCalledTimes(2)
+
+      // 切回任务 Tab → progressTimer 停止（clearInterval 被调用）
+      ;(wrapper.vm as unknown as { activeTab: string }).activeTab = 'task'
+      await nextTick()
+      expect(clearSpy).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.restoreAllMocks()
+    }
   })
 })

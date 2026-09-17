@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { AxiosError } from 'axios'
 import { useQueueStore } from '../stores/queue'
@@ -241,6 +241,34 @@ function onTabChange(name: string | number) {
   }
 }
 
+// C11（审查 B15）：progressTimer 按 activeTab 动态启停——仅下载 Tab 激活时
+// 运行 2.5s 进度轮询，切回任务 Tab 立即停止（此前常驻空转浪费资源）。
+// slowTimer 保持常驻（列表/容量/暂停状态刷新两个 Tab 都需要）。
+function startProgressTimer() {
+  if (progressTimer) return
+  progressTimer = setInterval(() => {
+    // 仅在存在下载中行时发起请求（避免空轮询）
+    if (store.downloadingItems.length > 0) {
+      store.fetchProgress()
+    }
+  }, 2500)
+}
+
+function stopProgressTimer() {
+  if (progressTimer) {
+    clearInterval(progressTimer)
+    progressTimer = undefined
+  }
+}
+
+watch(activeTab, (tab) => {
+  if (tab === 'download') {
+    startProgressTimer()
+  } else {
+    stopProgressTimer()
+  }
+})
+
 onMounted(async () => {
   await Promise.all([store.fetchPage(), store.fetchCapacity(), store.fetchPauseState()])
   // 列表/容量/暂停状态 15 秒慢刷（保持当前页，不跳回第 1 页）
@@ -250,17 +278,13 @@ onMounted(async () => {
     store.fetchPauseState()
     if (activeTab.value === 'download') store.fetchDownloadPage(store.downloadPage)
   }, 15000)
-  // downloading 行 2.5 秒局部轮询实时进度（仅在下载 Tab 且有下载中行时发起）
-  progressTimer = setInterval(() => {
-    if (activeTab.value === 'download' && store.downloadingItems.length > 0) {
-      store.fetchProgress()
-    }
-  }, 2500)
+  // progressTimer 不在此启动：初始 activeTab='task'，由上方 watch(activeTab)
+  // 在用户首次切到下载 Tab 时启动（下载进度轮询仅下载 Tab 需要）
 })
 
 onUnmounted(() => {
   if (slowTimer) clearInterval(slowTimer)
-  if (progressTimer) clearInterval(progressTimer)
+  stopProgressTimer()
 })
 
 /** 手动刷新容量：带 force 语义（后端暂忽略，拿到的是最近一次统计），按钮 loading + 诚实提示缓存语义 */

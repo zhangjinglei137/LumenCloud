@@ -32,7 +32,15 @@ const router = useRouter()
 const store = useMediaStore()
 const auth = useAuthStore()
 
+// C11（审查 A14）：路由参数防御——非法 id（非有限数值，如 /media/abc → NaN）
+// 不发 GET /api/media/NaN 类请求，直接回列表页（不展示死页）。
+// 注意 Number(null)===0 / Number('')===0 为有限值，仍会发起请求（id=0 → 404 由
+// 拦截器提示），本守卫只拦截「非有限数值」这一明确的防御边界。
 const mediaId = Number(route.params.id)
+const mediaIdValid = Number.isFinite(mediaId)
+if (!mediaIdValid) {
+  router.push({ name: 'media-list' })
+}
 const saving = ref(false)
 const scanning = ref(false)
 const posterBroken = ref(false)
@@ -45,6 +53,7 @@ const form = ref({
 })
 
 onMounted(async () => {
+  if (!mediaIdValid) return
   await store.fetchDetail(mediaId)
   const d = store.detail
   if (d) {

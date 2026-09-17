@@ -20,15 +20,27 @@ const keyword = ref('')
 const results = ref<TmdbSearchResult[]>([])
 const searching = ref(false)
 const searched = ref(false)
+/** C11（审查 A13）：搜索失败错误态——展示内联反馈 + 清空上次结果。
+ * 选择说明：具体报错文案仍由 http 拦截器统一 toast（全站一致约定），组件内
+ * 联 alert 作为状态兜底（拦截器是全局单例，组件测试无法断言 toast；且内联
+ * 提示让「搜索失败」与「无结果」两种状态在 UI 上可区分）。 */
+const error = ref(false)
 const selectedId = ref<number | null>(null)
 
 async function search() {
   const q = keyword.value.trim()
   if (!q) return
   searching.value = true
+  error.value = false
   try {
     results.value = await searchTmdbApi(q)
     searched.value = true
+    selectedId.value = null
+  } catch {
+    // 搜索失败：置错误态并清空结果，不残留上次搜索的误导性结果
+    error.value = true
+    searched.value = false
+    results.value = []
     selectedId.value = null
   } finally {
     searching.value = false
@@ -62,6 +74,14 @@ function posterSrc(p: string | null): string | null {
         </el-input>
       </div>
     </div>
+    <el-alert
+      v-if="error && !searching"
+      type="error"
+      :closable="false"
+      show-icon
+      title="搜索失败，请稍后重试"
+      style="max-width: 420px; margin-top: 12px"
+    />
     <el-empty
       v-if="searched && results.length === 0 && !searching"
       description="没有找到相关影视"

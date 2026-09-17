@@ -5,9 +5,13 @@ import { reactive } from 'vue'
 import MediaDetailView from './MediaDetailView.vue'
 import type { ActiveTask } from '../types'
 
+// 可变 route mock：新增测试通过覆盖 mockRouteParams 模拟非法路由参数（C11 守卫）
+let mockRouteParams: Record<string, unknown> = { id: '1' }
+const pushMock = vi.fn()
+
 vi.mock('vue-router', () => ({
-  useRoute: () => ({ params: { id: '1' } }),
-  useRouter: () => ({ push: vi.fn() }),
+  useRoute: () => ({ params: mockRouteParams }),
+  useRouter: () => ({ push: pushMock }),
 }))
 
 // reactive 化：测试可注入 episode_state 触发组件 computed 重新求值（分组过滤断言依赖）
@@ -44,11 +48,13 @@ const detail = reactive<{
   active_tasks: [],
 })
 
+const fetchDetailMock = vi.fn().mockResolvedValue(undefined)
+
 vi.mock('../stores/media', () => ({
   useMediaStore: () => ({
     detail,
     loading: false,
-    fetchDetail: vi.fn().mockResolvedValue(undefined),
+    fetchDetail: fetchDetailMock,
     patch: vi.fn().mockResolvedValue(undefined),
     scan: vi.fn().mockResolvedValue(null),
     remove: vi.fn().mockResolvedValue(undefined),
@@ -237,6 +243,38 @@ describe('MediaDetailView 当前进行中任务区块（episode-status-and-detai
     const wrapper = mountView()
     await flushPromises()
     expect(wrapper.text()).not.toContain('当前进行中任务')
+  })
+})
+
+describe('MediaDetailView 路由参数防御（fix-audit-issues C11 / 审查 A14）', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    pushMock.mockClear()
+    fetchDetailMock.mockClear()
+  })
+
+  afterEach(() => {
+    mockRouteParams = { id: '1' }
+  })
+
+  it('非法 id（非有限数值）不发起 fetchDetail 请求，跳转列表页', async () => {
+    mockRouteParams = { id: 'abc' }
+    const wrapper = mountView()
+    await flushPromises()
+    // 不发 GET /api/media/NaN 类请求
+    expect(fetchDetailMock).not.toHaveBeenCalled()
+    // 守卫失败跳列表页（不展示死页）
+    expect(pushMock).toHaveBeenCalledWith({ name: 'media-list' })
+    wrapper.unmount()
+  })
+
+  it('合法 id 正常发起 fetchDetail 且不跳转', async () => {
+    mockRouteParams = { id: '7' }
+    const wrapper = mountView()
+    await flushPromises()
+    expect(fetchDetailMock).toHaveBeenCalledWith(7)
+    expect(pushMock).not.toHaveBeenCalled()
+    wrapper.unmount()
   })
 })
 

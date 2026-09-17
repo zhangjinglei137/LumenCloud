@@ -207,7 +207,8 @@ async function onRemove(row: UserItem): Promise<void> {
       <el-divider content-position="left">邀请码管理</el-divider>
       <div class="lc-toolbar" style="margin-bottom: 12px">
         <div class="left">
-          <el-input-number v-model="generateCount" :min="1" :max="20" size="small" style="width: 120px" />
+          <!-- C11：生成上限与后端对齐为 50（admin.py InviteCreate.le=50 为权威；此前 20 与后端不一致） -->
+          <el-input-number v-model="generateCount" :min="1" :max="50" size="small" style="width: 120px" />
           <el-button type="primary" size="small" :loading="settings.invites === undefined" @click="generate">生成邀请码</el-button>
         </div>
       </div>
