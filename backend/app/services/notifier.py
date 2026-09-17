@@ -11,6 +11,7 @@
 空跑 / 无遗漏 不推送（消灭 P1 噪音）。
 """
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any, Optional, Protocol, runtime_checkable
 
@@ -32,6 +33,14 @@ EVENT_TYPES = frozenset({
     EVENT_FLOW_ERROR,
     EVENT_APPROVAL_PENDING,
 })
+
+# PushPlus 失败降级节流窗（秒）：通道持续故障（无 media 维度、无自然冷却）时
+# 每次推送都会失败，10 分钟内只向站内补发一次「推送失败」告警，防刷屏
+# （对齐 transfer._alert_cooldown 模式：模块级 dict + TTL 清理 + 指纹）。
+_PUSHPLUS_ALERT_COOLDOWN_SECONDS = 600.0
+# PushPlus 失败降级节流表。key = "pushplus"（全局通道，无 media_id 维度）；
+# 值 = (最近补发的 monotonic 时间戳, 指纹)。窗口内同指纹重复失败 → 跳过补发。
+_pushplus_alert_cooldown: dict[str, tuple[float, str]] = {}
 
 
 @dataclass
@@ -103,6 +112,8 @@ class PushPlusNotifier:
 
     def __init__(self) -> None:
         self._client: Optional[PushPlusClient] = None
+        # 失败降级目标（惰性创建 InAppNotifier；测试可注入桩验证行为）
+        self._fallback: Optional[InAppNotifier] = None
 
     def _refresh_client(self) -> None:
         token = (config_store.get("pushplus_token", settings.PUSHPLUS_TOKEN) or "").strip()
@@ -118,8 +129,51 @@ class PushPlusNotifier:
             # 出口转换：纯文本 body + 标题 → 加粗/分段/高亮的 HTML，显式 template=html
             content = text_to_html(event.body or "", event.title)
             await self._client.send(title=event.title, content=content, template="html")
-        except Exception:
+        except Exception as exc:  # noqa: BLE001  通道失败 → 降级站内告警（审查 D7）
             logger.exception("PushPlus 推送失败（降级站内，event=%s）", event.event_type)
+            await self._notify_fallback(event, exc)
+
+    async def _notify_fallback(self, event: NotifyEvent, exc: Exception) -> None:
+        """推送失败降级：向站内补发一条 flow_error 告警（节流防刷屏，防递归）。
+
+        防递归：直接调 InAppNotifier.notify（写 notifications 表），**不经过
+        NotifierChain / PushPlusNotifier**——降级通知绝不重推 PushPlus 通道。
+        节流：对齐 transfer._alert_cooldown 模式（模块级 dict + TTL 清理 +
+        指纹 bucket）；PushPlus 为全局通道（无 media_id 维度），固定
+        key="pushplus"、指纹固定为 "pushplus_failed"，窗口内重复失败只补发一次。
+        """
+        now = time.monotonic()
+        # TTL 清理（停留超 2 倍窗口的条目不可能再命中，遍历删除防无界增长）
+        for _key, (_ts, _b) in list(_pushplus_alert_cooldown.items()):
+            if now - _ts > 2 * _PUSHPLUS_ALERT_COOLDOWN_SECONDS:
+                _pushplus_alert_cooldown.pop(_key, None)
+        key = "pushplus"
+        bucket = "pushplus_failed"
+        last_ts, last_bucket = _pushplus_alert_cooldown.get(key, (0.0, None))
+        if last_bucket == bucket and (now - last_ts) < _PUSHPLUS_ALERT_COOLDOWN_SECONDS:
+            logger.info(
+                "PushPlus 失败降级节流（%ds 内同类重复告警 %s）",
+                _PUSHPLUS_ALERT_COOLDOWN_SECONDS, key,
+            )
+            return
+        _pushplus_alert_cooldown[key] = (now, bucket)
+
+        if self._fallback is None:
+            self._fallback = InAppNotifier()
+        try:
+            from app.services.notify_templates import sanitize_error_text
+
+            await self._fallback.notify(NotifyEvent(
+                event_type=EVENT_FLOW_ERROR,
+                title="PushPlus 推送失败",
+                body=(
+                    f"PushPlus 推送失败（{event.event_type}），已降级站内通知，"
+                    f"请检查 PushPlus 通道配置。详情：{sanitize_error_text(str(exc))}"
+                ),
+                recipient=event.recipient,
+            ))
+        except Exception:  # noqa: BLE001  站内补发失败不影响主流程（原异常已记录日志）
+            logger.exception("PushPlus 失败降级站内告警发送失败（event=%s）", event.event_type)
 
 
 class NotifierChain:

@@ -12,6 +12,12 @@ import re
 _MEDIA_SEG_RE = re.compile(r"(媒体\s*[^\n]*)")
 _MEDIA_EP_RE = re.compile(r"(媒体\s*[^·\n]+·\s*S\d{2,3}E\d{2,3})")
 
+# 脱敏正则（sanitize_error_text 用）
+_URL_USERINFO_RE = re.compile(r"(https?://)[^/\s]+@")
+_QUERY_TOKEN_RE = re.compile(
+    r"([?&])(token|access_token|api_key|apikey|key|secret|sign|signature|auth|password|passwd|pwd|credential)(=|%3D)[^&\s]*"
+)
+
 # 入库完成类语义色（PushPlus HTML 高亮）
 _HIGHLIGHT_COLOR = "#4caf50"
 
@@ -54,9 +60,31 @@ def flow_error_capacity(rate_pct: float, used_gb: float, total_gb: float,
     )
 
 
+def sanitize_error_text(text: str, max_len: int = 500) -> str:
+    """异常/错误文本脱敏 + 截断（纯函数，可单测）。
+
+    脱敏规则（安全敏感面，审查 D8：极端情况若底层客户端把凭据拼入
+    URL——Basic Auth userinfo / query token——直接原样入库会泄露凭据）：
+    - 剥 URL userinfo：`https://user:pass@host/path` → `https://host/path`
+    - 脱敏 query 敏感参数值：`?token=secret&x=1` → `?token=<已脱敏>&x=1`
+    - 超长文本截断至 max_len 字符（保留省略标记）
+    """
+    text = str(text or "")
+    # 剥 userinfo：贪婪匹配到最后一个 @（段内含 @ 的凭据整体剥除）
+    text = _URL_USERINFO_RE.sub(r"\1", text)
+    # 脱敏 query 敏感参数值（参数名保留，值替换为占位符）
+    text = _QUERY_TOKEN_RE.sub(r"\1\2\3<已脱敏>", text)
+    if len(text) > max_len:
+        text = text[: max_len - 1] + "…"
+    return text
+
+
 def flow_error_nastools_sync(exc: str) -> tuple[str, str]:
-    """NasTools 目录同步失败。"""
-    return "NasTools 目录同步失败", f"同步失败，请检查 NasTools 服务与凭据：{exc}"
+    """NasTools 目录同步失败（异常文本经 sanitize_error_text 脱敏截断）。"""
+    return (
+        "NasTools 目录同步失败",
+        f"同步失败，请检查 NasTools 服务与凭据：{sanitize_error_text(exc)}",
+    )
 
 
 def flow_error_nastools_event(chinese_name: str, media_title: str) -> tuple[str, str]:
