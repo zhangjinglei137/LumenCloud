@@ -367,11 +367,11 @@ base-ref: 114b8081c182581a02a49435cfd4f317b58ac2f5
 - Consumes: `OrderedDict` LRU 工具、`_config_fingerprint()`
 - Produces: 有界缓存 + 配置变更失效 + Emby status 大小写对齐
 
-- [ ] **Step 1** 写失败测试：缓存超上限淘汰最旧；修改 Emby 配置后 server_id 重新获取；SeriesStatus 用 `Continuing/Ended` 传入
-- [ ] **Step 2** 实现 `BoundedLRUCache`（utils）并接入 tmdb/emby 各缓存；`_SERVER_ID`/`_USER_ID` key 附加 `_config_fingerprint()`；`_build_library_params` 对 status `.capitalize()`
-- [ ] **Step 3** `refresh_episode_info` 批量 upsert；`list_all_library` 拍平两段式赋值
-- [ ] **Step 4** 运行测试通过；test_emby_*/test_tmdb_* 无回归
-- [ ] **Step 5** Commit：`perf: 进程内缓存有界化与 Emby 配置失效联动`
+- [x] **Step 1** 写失败测试：缓存超上限淘汰最旧；修改 Emby 配置后 server_id 重新获取；SeriesStatus 用 `Continuing/Ended` 传入
+- [x] **Step 2** 实现 `BoundedLRUCache`（utils）并接入 tmdb/emby 各缓存；`_SERVER_ID`/`_USER_ID` key 附加 `_config_fingerprint()`；`_build_library_params` 对 status `.capitalize()`
+- [x] **Step 3** `refresh_episode_info` 批量 upsert；`list_all_library` 拍平两段式赋值
+- [x] **Step 4** 运行测试通过；test_emby_*/test_tmdb_* 无回归
+- [x] **Step 5** Commit：`perf: 进程内缓存有界化与 Emby 配置失效联动`
 
 ### Task D2: scan.py PG 到期过滤修正 + _enqueue 提交语义
 

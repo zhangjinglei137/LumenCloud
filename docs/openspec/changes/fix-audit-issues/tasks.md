@@ -45,13 +45,13 @@
 
 ## 6. Emby/TMDB 一致性与缓存（emby-library-browse 等能力）
 
-- [ ] 6.1 Emby server_id/user_id 全局缓存键附加 `_config_fingerprint()`（或配置变更时重置），验证切换配置后详情/库列表指向新服务器
-- [ ] 6.2 `_build_library_params` status 值按 Emby 契约对齐大小写（验证后 `.capitalize()` 或映射），验证在更/完结筛选生效
-- [ ] 6.3 tmdb.py `_SEASON_AIR_CACHE`/`_ALL_EPS_CACHE` 加容量上限+LRU 淘汰，验证长跑内存受控（单测覆盖淘汰）
-- [ ] 6.4 `refresh_episode_info` 批量 upsert 消除 N+1（PG ON CONFLICT 或 bulk），验证相同数据批量/逐条结果一致且查询数下降
-- [ ] 6.5 emby `_INGESTED_CACHE`/`_recent_empty_check` 有界化（与 6.3 同模式），验证淘汰行为
-- [ ] 6.6 library_check 批量预取 media 减少 N+1 session，验证行为一致
-- [ ] 6.7 `list_all_library` 两段式赋值冗余精简（先取 server_id 再归一化），验证 emby_web_url 结果一致
+- [x] 6.1 Emby server_id/user_id 全局缓存键附加 `_config_fingerprint()`（或配置变更时重置），验证切换配置后详情/库列表指向新服务器
+- [x] 6.2 `_build_library_params` status 值按 Emby 契约对齐大小写（验证后 `.capitalize()` 或映射），验证在更/完结筛选生效
+- [x] 6.3 tmdb.py `_SEASON_AIR_CACHE`/`_ALL_EPS_CACHE` 加容量上限+LRU 淘汰，验证长跑内存受控（单测覆盖淘汰）
+- [x] 6.4 `refresh_episode_info` 批量 upsert 消除 N+1（PG ON CONFLICT 或 bulk），验证相同数据批量/逐条结果一致且查询数下降
+- [x] 6.5 emby `_INGESTED_CACHE`/`_recent_empty_check` 有界化（与 6.3 同模式），验证淘汰行为
+- [x] 6.6 library_check 批量预取 media 减少 N+1 session，验证行为一致
+- [x] 6.7 `list_all_library` 两段式赋值冗余精简（先取 server_id 再归一化），验证 emby_web_url 结果一致
 
 ## 7. 通知/日志/海报（notifications/poster-proxy/run-logs 能力）
 
