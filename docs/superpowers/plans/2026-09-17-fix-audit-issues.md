@@ -93,12 +93,12 @@ base-ref: 114b8081c182581a02a49435cfd4f317b58ac2f5
 - Consumes: 现有 `_login_rate_key` 语义
 - Produces: `RateLimiter` 类（`check(key)`/`hit(key)`），注册 429 行为
 
-- [ ] **Step 1** 抽 `rate_limit.py`：进程内 dict + 窗口计数 + 过期清理，接口 `check(key)->bool`、`hit(key)`、`reset(key)`
-- [ ] **Step 2** 写失败测试：窗口内连续无效邀请码 → 429；正常注册不受影响
-- [ ] **Step 3** 运行确认失败
-- [ ] **Step 4** 注册端点邀请码校验失败路径 `hit`，超限 `raise 429`；登录限流迁移到新实现（阈值语义不变）
-- [ ] **Step 5** 运行测试确认通过；test_auth 无回归
-- [ ] **Step 6** Commit：`feat: 注册接口邀请码爆破限流`
+- [x] **Step 1** 抽 `rate_limit.py`：进程内 dict + 窗口计数 + 过期清理，接口 `check(key)->bool`、`hit(key)`、`reset(key)`
+- [x] **Step 2** 写失败测试：窗口内连续无效邀请码 → 429；正常注册不受影响
+- [x] **Step 3** 运行确认失败
+- [x] **Step 4** 注册端点邀请码校验失败路径 `hit`，超限 `raise 429`；登录限流迁移到新实现（阈值语义不变）
+- [x] **Step 5** 运行测试确认通过；test_auth 无回归
+- [x] **Step 6** Commit：`feat: 注册接口邀请码爆破限流`
 
 ### Task B3: 登录时序侧信道抹平
 
