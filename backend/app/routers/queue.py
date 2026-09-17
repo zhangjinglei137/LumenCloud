@@ -351,12 +351,67 @@ async def cancel_task(
     """取消单任务（§8.2，不可逆）：DownloadQueue 进行中/排队 → status='failed' +
     error='人工取消'；事务提交后清 aria2 任务 + 删夸克残留（reserved 由 DB 聚合
     自动释放）；task_queue 对应行同步 done（探测视图不再入队）。task_id 也可指
-    task_queue 行（探测视图取消 → done，不再探测）。"""
+    task_queue 行（探测视图取消 → done，不再探测）。
+
+    C4（fix-audit-issues，delta spec pipeline-transfer「取消已下载完成任务不误标
+    失败」/ 审查 B5）：downloading 行先向 aria2.tell_status 确认实际状态——aria2
+    已 complete 但 DB 轮询未及时推进（downloading→scrape 窗口）时，取消会把已完成
+    下载误标 failed、完成态丢失；此时改走 _complete_download 完成路径（不标 failed、
+    不 remove）。aria2 查询失败时 fail-closed 保守处理（见下）：不确定完成态就不
+    修改任务状态，宁可保守不误删完成态。"""
     now = _now()
     dq = await session.get(DownloadQueue, task_id)
     if dq is not None:
         if dq.status in ("done", "skipped", "failed"):
             raise HTTPException(status_code=409, detail="终态任务不可取消")
+        # C4：downloading 行 + 有 aria2 gid → 先确认 aria2 实际状态（无 gid 无从
+        # 查询，直接走下方取消逻辑）。
+        if dq.status == "downloading" and dq.aria2_gid:
+            aria2_complete = False
+            real_size: Optional[int] = None
+            try:
+                st = await aria2.client.tell_status(dq.aria2_gid) or {}
+                if (st.get("status") or "") == "complete":
+                    aria2_complete = True
+                    # Task 2 同款：totalLength 回填真实大小并清估算标记；缺失/非法
+                    # → real_size=None（保持估算值，与轮询/回调路径口径一致）。
+                    try:
+                        real_size = int(st.get("totalLength") or 0) or None
+                    except (TypeError, ValueError):
+                        real_size = None
+            except Exception as exc:  # noqa: BLE001
+                # fail-closed 取舍：查询失败无法确认是否已 complete——不把查询失败
+                # 当作「已完成」证据跳走完成路径，也不把可能已完成的下载误标 failed。
+                # 宁可保守中止取消（409 请用户刷新重试），不误删完成态。
+                logger.warning(
+                    "[queue] cancel 查询 aria2 状态失败 %s（fail-closed 中止取消，不误删完成态）: %s",
+                    dq.aria2_gid, exc,
+                )
+                raise HTTPException(
+                    status_code=409, detail="无法确认 aria2 任务状态，取消已中止，请刷新后重试",
+                )
+            if aria2_complete:
+                # aria2 已 complete（DB 状态回写滞后）→ 按完成路径推进：复用
+                # _complete_download（downloading→scrape，独立事务、条件更新幂等），
+                # 不标 failed、不执行 aria2.remove、不删夸克（G6）。
+                # 先提交当前 session 的只读事务（本分支尚无任何写入），释放连接
+                # 避免与 _complete_download 的独立事务在单连接（StaticPool）下冲突。
+                await session.commit()
+                from app.tasks.transfer import _complete_download  # noqa: PLC0415 延迟导入防循环
+                await _complete_download(
+                    dq.id, dq.media_id, dq.episode, dq.file_name, dq.quark_path,
+                    dq.retry_count or 0, dq.node_attempt or 0,
+                    real_size=real_size,
+                )
+                # TaskQueue 同步 done（探测视图不再入队；完成路径自身不处理 tq，
+                # 与失败路径保持一致的人工取消收尾语义）。
+                await session.execute(
+                    update(TaskQueue)
+                    .where(TaskQueue.media_id == dq.media_id, TaskQueue.episode == dq.episode)
+                    .values(status="done", updated_at=now)
+                )
+                await session.commit()
+                return {"ok": True}
         err = "人工取消"
         r = await session.execute(
             update(DownloadQueue)
