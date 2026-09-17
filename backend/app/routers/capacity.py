@@ -18,7 +18,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import DownloadQueue, QuarkCapacityLog, User
 from app.routers.deps import get_current_user, get_session
-from app.routers.queue import _load_transfer_queue_model
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +37,7 @@ async def capacity(
 ) -> dict:
     """容量状态。
 
-    - pending_estimate：transfer_queue 中 status=pending 的 file_size 之和（折 GB）；
+    - pending_estimate：download_queue 中 status=pending 的 file_size 之和（折 GB）；
       **pending = 未消费积压，不代表真实占用**（仅搜索入队，尚未转存/下载）。
     - 实时容量不可用（alist 故障/未配置）→ source=unavailable、used_gb=None
       （fail-closed 展示，不误导；不抛 500）。
@@ -196,19 +195,18 @@ async def _get_usage() -> dict:
 
 
 async def _pending_estimate_gb(session: AsyncSession) -> float | None:
-    """pending 队列 file_size（字节）之和 → GB。
+    """download_queue 中 status=pending 行 file_size（字节）之和 → GB。
 
-    pending = 未消费积压，不代表真实占用，仅作参考预估。
+    pending = 未消费积压（等待准入），不代表真实占用，仅作前端容量条参考预估。
+    与 _reserved_gb 同为 DB 聚合口径（审查 B1：迁移后旧 transfer_queue 无数据，
+    须改查 download_queue），但语义区分：pending 未占容量、不纳入 reserved；
+    在途（transferring/scrape/library）才计入 reserved。
     """
-    TransferQueue = _load_transfer_queue_model()
-    if TransferQueue is None:
-        # 骨架期模型未建
-        return None
     try:
         total_bytes = (
             await session.execute(
-                select(func.coalesce(func.sum(TransferQueue.file_size), 0)).where(
-                    TransferQueue.status == "pending"
+                select(func.coalesce(func.sum(DownloadQueue.file_size), 0)).where(
+                    DownloadQueue.status == "pending"
                 )
             )
         ).scalar_one()
