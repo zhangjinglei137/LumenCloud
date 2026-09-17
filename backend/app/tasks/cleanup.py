@@ -21,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import delete, select
 
 from app.database import async_session
-from app.models import DownloadQueue, QuarkCapacityLog, TaskRun
+from app.models import DownloadQueue, Notification, QuarkCapacityLog, TaskRun
 from app.services import alist
 from app.tasks import record_task_run
 
@@ -150,16 +150,20 @@ async def release_space_cleanup_job() -> None:
     logger.info("[cleanup] 清理孤儿文件 %d 个: %s", len(orphans), preview)
 
 
-# D-1（P2）：task_run / quark_capacity_log 定期清理（保留天数可经 system_config
-# task_run_retention_days 覆盖，缺省 30 天）。注册：IntervalTrigger(days=1)。
+# D-1（P2）：task_run / quark_capacity_log / notifications 定期清理（保留天数可经
+# system_config task_run_retention_days 覆盖，缺省 30 天）。注册：IntervalTrigger(days=1)。
 _RETENTION_DAYS = 30
 _RETENTION_CONFIG_KEY = "task_run_retention_days"
 
 
 async def prune_history_job() -> None:
-    """清理超期历史记录：task_run（按 started_at）与 quark_capacity_log（按 checked_at），
-    各保留最近 retention_days 天；一次批量 delete。失败/异常 → task_run(error) 不抛。
-    清理任务自身的记录在次日清理中自然过期，无需特殊处理。"""
+    """清理超期历史记录：task_run（按 started_at）、quark_capacity_log（按 checked_at）
+    与 notifications（按 created_at），各保留最近 retention_days 天；一次批量 delete。
+    失败/异常 → task_run(error) 不抛。
+    清理任务自身的记录在次日清理中自然过期，无需特殊处理。
+    C7：notifications 补入同一保留期口径——站内通知无外键引用（收件人指向 users 的
+    是通知行而非反向，删除通知不影响用户），不设引用保护，仅按 created_at < cutoff
+    一次批量删除（防大事务：单条 delete 语句，交由 DB 原子执行）。"""
     t0 = time.monotonic()  # Q8①：真实耗时
     retention = _RETENTION_DAYS
     try:
@@ -183,14 +187,19 @@ async def prune_history_job() -> None:
                     QuarkCapacityLog.checked_at.is_not(None), QuarkCapacityLog.checked_at < cutoff
                 )
             )
-            n1, n2 = r1.rowcount or 0, r2.rowcount or 0
+            r3 = await s.execute(
+                delete(Notification).where(
+                    Notification.created_at.is_not(None), Notification.created_at < cutoff
+                )
+            )
+            n1, n2, n3 = r1.rowcount or 0, r2.rowcount or 0, r3.rowcount or 0
             await s.commit()
         async with async_session() as s:
             await record_task_run(s, "prune_history", "success",
-                                  f"清理历史记录 task_run {n1} 条 / 容量快照 {n2} 条（保留 {retention} 天）",
+                                  f"清理历史记录 task_run {n1} 条 / 容量快照 {n2} 条 / 通知 {n3} 条（保留 {retention} 天）",
                                   duration_seconds=time.monotonic() - t0)
             await s.commit()
-        logger.info("[prune] 清理 task_run %d 条、容量快照 %d 条（保留 %d 天）", n1, n2, retention)
+        logger.info("[prune] 清理 task_run %d 条、容量快照 %d 条、通知 %d 条（保留 %d 天）", n1, n2, n3, retention)
     except Exception as exc:  # noqa: BLE001
         logger.exception("[prune] 清理历史记录失败: %s", exc)
         async with async_session() as s:

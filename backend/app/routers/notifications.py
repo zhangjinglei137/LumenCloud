@@ -1,11 +1,14 @@
 """站内通知 API（docs/新系统设计.md §7 前端铃铛）。
 
-- GET  /api/notifications             当前用户站内信（本人 + 全体 recipient=NULL），未读优先，附 unread_count
+- GET  /api/notifications             当前用户站内信（本人 + 全体 recipient=NULL），未读优先，
+                                      分页（limit/offset + total），附全量 unread_count
 - POST /api/notifications/{id}/read   标记已读（仅本人或全体消息）
 - POST /api/notifications/read-all    全部标记已读
 """
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import or_, select, update
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Notification, User
@@ -41,29 +44,54 @@ def _scope(user_id: int):
 async def list_notifications(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
+    # Annotated + 普通默认值（queue.py 同款分页写法）：走 FastAPI 时 Query 元数据
+    # 提供校验（ge/le），直接调用路由函数（测试绕过 Depends）时默认值即为普通 int。
+    limit: Annotated[int, Query(ge=1, le=500)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
 ) -> dict:
-    """当前用户站内信列表（未读优先）+ unread_count。
+    """当前用户站内信列表（未读优先，limit/offset 分页）+ total + unread_count。
 
-    Q10：LEFT JOIN users 取收件人 username（recipient=NULL 的全体消息 → None）。
+    分页契约与 /logs 一致（{items, total}）：total 为同一范围（本人+全体）的真实
+    总数，不随 limit/offset 截断；unread_count 独立统计全量未读，分页只影响列表、
+    不影响未读计数。Q10：LEFT JOIN users 取收件人 username（recipient=NULL 的
+    全体消息 → None）。
     """
+    scope = _scope(user.id)
+    # 未读数：全量范围独立统计（与列表分页解耦，语义不变）
+    unread = (
+        await session.execute(
+            select(func.count())
+            .select_from(Notification)
+            .where(scope, Notification.is_read.is_(False))
+        )
+    ).scalar() or 0
+    # 分页真实 total：同一筛选范围 count（复用 _scope 单点维护）
+    total = (
+        await session.execute(
+            select(func.count()).select_from(Notification).where(scope)
+        )
+    ).scalar() or 0
     rows = (
         (
             await session.execute(
                 select(Notification, User.username)
                 .join(User, Notification.recipient == User.id, isouter=True)
-                .where(_scope(user.id))
+                .where(scope)
                 .order_by(
                     Notification.is_read.asc(),  # 未读在前
                     Notification.created_at.desc(),
                     Notification.id.desc(),
                 )
+                .limit(limit)
+                .offset(offset)
             )
         )
         .all()
     )
     return {
         "items": [_notif_dto(r[0], r[1]) for r in rows],
-        "unread_count": sum(1 for r in rows if not r[0].is_read),
+        "total": total,
+        "unread_count": unread,
     }
 
 
