@@ -626,12 +626,16 @@ async def retry_task(
     if es_result.rowcount == 0:
         raise HTTPException(status_code=409, detail="episode_state 状态不一致，请稍后重试")
     if tq_old is not None:
-        await session.execute(
+        # CAS 门控（Design D5 / 审查 B10）：transfer_queue 状态已变（非 failed/done）
+        # → rowcount==0 → 409（episode_state 重置同事务回滚），重试反馈真实结果
+        r = await session.execute(
             update(_TQ)
             .where(_TQ.id == tq_old.id, _TQ.status.in_(("failed", "done")))
             .values(status="pending", quota_reject_count=0, error=None,
                     save_task_id=None, save_attempt_at=None, updated_at=now)
         )
+        if r.rowcount == 0:
+            raise HTTPException(status_code=409, detail="任务状态已变化，请刷新后重试")
     await session.commit()
     await _trigger_consume()
     return {"ok": True}
@@ -746,12 +750,19 @@ async def add_queue_task(
         )
     ).scalars().first()
     if existing is not None:
-        await session.execute(
+        # CAS 门控（Design D5 / 审查 B4）：仅排队/终态状态集可重置——probing 等运行态
+        # 拒绝重置（rowcount==0 → 409），探测结果不落库错位
+        r = await session.execute(
             update(TaskQueue)
-            .where(TaskQueue.id == existing.id)
+            .where(
+                TaskQueue.id == existing.id,
+                TaskQueue.status.in_(("pending", "error", "unmatched", "ready")),
+            )
             .values(status="pending", probe_attempt=0, error=None, silent_until=None,
                     updated_at=now)
         )
+        if r.rowcount == 0:
+            raise HTTPException(status_code=409, detail="任务状态已变化，请刷新后重试")
     else:
         session.add(TaskQueue(
             media_id=body.media_id, episode=episode, status="pending",
@@ -837,12 +848,22 @@ async def sort_task(
         return {"ok": True}
     a, b = pending[idx], pending[target]
     ts_a, ts_b = a.enqueued_at, b.enqueued_at
-    await session.execute(
-        update(DownloadQueue).where(DownloadQueue.id == a.id).values(enqueued_at=ts_b, updated_at=now)
+    # CAS 门控（Design D5 / 审查 B3）：交换前两行必须仍为 pending——并发方已推进
+    # （transferring/downloading）→ rowcount==0 → 409，不污染在途任务排序键
+    r = await session.execute(
+        update(DownloadQueue)
+        .where(DownloadQueue.id == a.id, DownloadQueue.status == "pending")
+        .values(enqueued_at=ts_b, updated_at=now)
     )
-    await session.execute(
-        update(DownloadQueue).where(DownloadQueue.id == b.id).values(enqueued_at=ts_a, updated_at=now)
+    if r.rowcount == 0:
+        raise HTTPException(status_code=409, detail="任务状态已变化，请刷新后重试")
+    r = await session.execute(
+        update(DownloadQueue)
+        .where(DownloadQueue.id == b.id, DownloadQueue.status == "pending")
+        .values(enqueued_at=ts_a, updated_at=now)
     )
+    if r.rowcount == 0:
+        raise HTTPException(status_code=409, detail="任务状态已变化，请刷新后重试")
     await session.commit()
     return {"ok": True}
 
