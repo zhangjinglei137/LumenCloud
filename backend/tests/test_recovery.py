@@ -68,7 +68,11 @@ def env(monkeypatch):
     fakes = {
         "alist": types.SimpleNamespace(remove=AsyncMock(return_value={})),
         "aria2": types.SimpleNamespace(
-            client=types.SimpleNamespace(remove=AsyncMock(return_value={}))
+            client=types.SimpleNamespace(
+                remove=AsyncMock(return_value={}),
+                # D11：downloading 超时回退前探活 aria2（默认可用 → 正常回退）
+                get_global_stat=AsyncMock(return_value={}),
+            )
         ),
         "emby": types.SimpleNamespace(
             find_emby_id=AsyncMock(return_value=None),

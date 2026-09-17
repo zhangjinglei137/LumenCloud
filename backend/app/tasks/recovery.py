@@ -42,6 +42,7 @@ from app.config import settings
 from app.database import async_session
 from app.models import DownloadQueue, Media, SystemConfig
 from app.services import alist, aria2, emby
+from app.services.aria2 import Aria2Unavailable
 from app.tasks import record_task_run
 # tasks 层公共纯函数（app.utils，仅标准库）：统一时间源与夸克路径拆分
 from app.utils import now_utc_naive as _now, split_quark_path
@@ -221,6 +222,29 @@ async def recover_stale_tasks() -> int:
             continue
         to_revert.append((r, hours))
 
+    # D11（2026-09）：downloading 超时回退前先探活 aria2，区分「aria2 服务不可用」
+    # 与「任务长时间无进展」。
+    # 取舍：aria2 长时间故障（> episode_state_timeout_hours）时，download 任务无进展
+    # 是服务不可用所致而非任务自身卡死——若照常回退 pending，transfer 会重新准入并
+    # 再次转存（cloudsaver.save + alist 轮询 300s×3 轮），aria2 仍故障 → 再次回退，
+    # 每轮消耗 retry_count 且浪费转存。故 aria2 探活失败（Aria2Unavailable）时跳过
+    # 本轮回退：downloading 任务保持 downloading，等 aria2 恢复后继续跟踪；仅 aria2
+    # 可用且任务确无进展才回退。探活只影响「是否跳过本轮回退」，不改变任务状态机
+    # 其他部分（transferring/scrape/library 回退逻辑不变，不对其探活）。
+    downloading_candidates = [item for item in to_revert if item[0].status == "downloading"]
+    skipped_aria2 = 0
+    if downloading_candidates:
+        try:
+            await aria2.client.get_global_stat()
+        except Aria2Unavailable as exc:
+            skipped_aria2 = len(downloading_candidates)
+            to_revert = [item for item in to_revert if item[0].status != "downloading"]
+            logger.warning(
+                "[recover] aria2 不可用，跳过 downloading 超时回退 %d 条"
+                "（保持 downloading，待 aria2 恢复后继续跟踪）: %s",
+                skipped_aria2, exc,
+            )
+
     # 阶段③：新事务逐行 CAS 回退（rows 为上一 session 快照，必须 execute(update)
     # 按 id 更新）。CAS 语义：WHERE 含 status+retry_count 双快照——并发方已推进状态
     # （如 transfer 把 downloading→scrape）或已回退（retry_count 已变）的行 rowcount=0
@@ -270,6 +294,8 @@ async def recover_stale_tasks() -> int:
                 message += f"；library 已收录直接完成 {finalized} 条（不回退）"
             if skipped:
                 message += f"；Emby 故障/异常跳过 {skipped} 条"
+            if skipped_aria2:
+                message += f"；aria2 故障跳过 downloading {skipped_aria2} 条（不误回退）"
             if cas_conflicts:
                 message += f"；CAS 冲突跳过 {cas_conflicts} 条（状态已被并发推进）"
             await record_task_run(  # Q8①：真实耗时
