@@ -165,6 +165,31 @@ def test_downloading_aria2_unavailable_no_resave_spawn(db, env, monkeypatch):
     env["aria2"].client.remove.assert_not_awaited()
 
 
+def test_probe_unexpected_error_skips_downloading_only(db, env, monkeypatch):
+    """探活链路未归一的意外异常（非 Aria2Unavailable，如 config_store DB 异常）→
+    downloading 同样跳过本轮回退，且不拖垮同轮 transferring 回退（整轮 recovery 不崩溃）。"""
+    patch_db(monkeypatch, db)
+    mid1, dl_id = run(seed_dq(db, episode="S01E01", status="downloading", gid="gid-dl",
+                              file_name="dl-ep.mkv", quark_path="/quark/dl-ep.mkv",
+                              updated_at=_now() - timedelta(hours=3)))
+    mid2, tr_id = run(seed_dq(db, episode="S01E02", status="transferring", gid="gid-tr",
+                              file_name="tr-ep.mkv", quark_path="/quark/tr-ep.mkv",
+                              updated_at=_now() - timedelta(hours=3)))
+    env["aria2"].client.get_global_stat = AsyncMock(side_effect=RuntimeError("DB 连接失败"))
+
+    count = run(recovery_mod.recover_stale_tasks())
+
+    # 整轮不崩溃：transferring 照常回退；downloading 因探活异常视为 aria2 不可用 → 跳过
+    assert count == 1
+    assert run(read_dq(db, dl_id)).status == "downloading"
+    assert run(read_dq(db, dl_id)).retry_count == 0
+    assert run(read_dq(db, tr_id)).status == "pending"
+    env["aria2"].client.get_global_stat.assert_awaited_once()
+    # downloading 未被回退 → 其残留/aria2 任务不清除；仅 transferring 行触发 B-3 清理
+    env["alist"].remove.assert_awaited_once_with(["tr-ep.mkv"], "/quark/")
+    env["aria2"].client.remove.assert_awaited_once_with("gid-tr")
+
+
 # ---------------------------------------------------------------------------
 # 边界：探活只作用于 downloading，其余状态回退逻辑不变
 # ---------------------------------------------------------------------------

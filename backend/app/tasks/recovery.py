@@ -237,13 +237,29 @@ async def recover_stale_tasks() -> int:
         try:
             await aria2.client.get_global_stat()
         except Aria2Unavailable as exc:
+            # 预期故障：aria2 服务不可用（_rpc 已将 HTTPError/非2xx/JSON 异常/
+            # JSON-RPC error/配置缺失归一为 Aria2Unavailable），本轮跳过 downloading
+            # 回退，等 aria2 恢复后继续跟踪。
             skipped_aria2 = len(downloading_candidates)
-            to_revert = [item for item in to_revert if item[0].status != "downloading"]
             logger.warning(
                 "[recover] aria2 不可用，跳过 downloading 超时回退 %d 条"
                 "（保持 downloading，待 aria2 恢复后继续跟踪）: %s",
                 skipped_aria2, exc,
             )
+        except Exception as exc:  # noqa: BLE001
+            # 兜底：探活链路未归一的意外异常（config_store DB 异常 / httpx 客户端
+            # 构造异常 / Aria2Client 属性读取异常 / 未来 _rpc 重构漏归一的新异常类型）
+            # 同样视为 aria2 不可用——跳过 downloading 本轮回退（探活只影响是否跳过
+            # 本轮），避免异常冒泡使 recover_stale_tasks 整体抛出、拖垮同轮其余
+            # transferring/scrape/library 候选的回退。
+            skipped_aria2 = len(downloading_candidates)
+            logger.exception(
+                "[recover] aria2 探活意外异常（按不可用处理），跳过 downloading "
+                "超时回退 %d 条（保持 downloading）",
+                skipped_aria2,
+            )
+        if skipped_aria2:
+            to_revert = [item for item in to_revert if item[0].status != "downloading"]
 
     # 阶段③：新事务逐行 CAS 回退（rows 为上一 session 快照，必须 execute(update)
     # 按 id 更新）。CAS 语义：WHERE 含 status+retry_count 双快照——并发方已推进状态
