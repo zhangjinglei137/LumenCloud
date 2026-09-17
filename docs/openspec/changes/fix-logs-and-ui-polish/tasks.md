@@ -22,8 +22,8 @@
 
 ## 5. 影视库卡片集数统计文案去重（specs/media-status）
 
-- [ ] 5.1 `MediaListView.vue:165` 移除模板硬编码「已有 」前缀，仅输出 `episodeText(m)`（其内部已含「已有 N 缺失 M」）；验证卡片显示「已有 15 缺失 0」而非「已有 已有 15 缺失 0」，`format.test.ts` 既有断言保持通过
-- [ ] 5.2 `format.test.ts` 补充/确认「已有 N 缺失 M」单前缀场景断言（覆盖 missing=0 与 missing>0），`npm run test` 通过
+- [x] 5.1 `MediaListView.vue:165` 移除模板硬编码「已有 」前缀，仅输出 `episodeText(m)`（其内部已含「已有 N 缺失 M」）；验证卡片显示「已有 15 缺失 0」而非「已有 已有 15 缺失 0」，`format.test.ts` 既有断言保持通过
+- [x] 5.2 `format.test.ts` 补充/确认「已有 N 缺失 M」单前缀场景断言（覆盖 missing=0 与 missing>0），`npm run test` 通过
 
 ## 6. 集成验证与收尾
 

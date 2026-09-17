@@ -479,7 +479,7 @@ git commit -m "feat(users): 邀请码管理从设置页迁移至用户管理页"
 - Consumes: `episodeText(m)`（内部调 `episodeSummaryText`，返回已含前缀的「已有 N 缺失 M」）
 - Produces: 模板仅输出 `episodeText(m)`
 
-- [ ] **Step 1: 修改模板**
+- [x] **Step 1: 修改模板**
 
 `frontend/src/views/MediaListView.vue:165`：
 
@@ -489,7 +489,7 @@ git commit -m "feat(users): 邀请码管理从设置页迁移至用户管理页"
 
 （移除硬编码 `已有 ` 前缀；`episodeSummaryText` 本身返回「已有 N 缺失 M」。）
 
-- [ ] **Step 2: 补充 format 断言**
+- [x] **Step 2: 补充 format 断言**
 
 `frontend/src/utils/format.test.ts` 的 `episodeSummaryText` describe 中补充：
 
@@ -499,12 +499,12 @@ it('missing=0 依然单前缀「已有 N 缺失 0」', () => {
 })
 ```
 
-- [ ] **Step 3: 验证**
+- [x] **Step 3: 验证**
 
 Run: `cd frontend && npx vitest run src/utils/format.test.ts`
 Expected: 通过
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add frontend/src/views/MediaListView.vue frontend/src/utils/format.test.ts
