@@ -415,11 +415,11 @@ base-ref: 114b8081c182581a02a49435cfd4f317b58ac2f5
 - Consumes: 现有 lifespan、`_apply_job_switches`、`system_config`
 - Produces: 三 job CI；首启空表不激活 job
 
-- [ ] **Step 1** 本地跑通 `pytest backend/tests`、`cd frontend && npm test && npm run build`
-- [ ] **Step 2** 写 `.github/workflows/ci.yml`（backend-test / frontend-test / docker-build 三 job）
-- [ ] **Step 3** 实现 main.py 日志显式 handler + lifespan 首启空表 job 开关 paused + serve_spa internal 404；database.py 连接池 `pool_size/max_overflow/pool_recycle`；json.py 版本守卫
-- [ ] **Step 4** 运行相关测试（test_api_smoke/test_scheduler）+ build
-- [ ] **Step 5** Commit：`feat: 新增 CI workflow并加固启动/回退路径`
+- [x] **Step 1** 本地跑通 `pytest backend/tests`、`cd frontend && npm test && npm run build`
+- [x] **Step 2** 写 `.github/workflows/ci.yml`（backend-test / frontend-test / docker-build 三 job）
+- [x] **Step 3** 实现 main.py 日志显式 handler + lifespan 首启空表 job 开关 paused + serve_spa internal 404；database.py 连接池 `pool_size/max_overflow/pool_recycle`；json.py 版本守卫
+- [x] **Step 4** 运行相关测试（test_api_smoke/test_scheduler）+ build
+- [x] **Step 5** Commit：`feat: 新增 CI workflow并加固启动/回退路径`
 
 ### Task D5: 剩余 low 项收尾
 

@@ -1,7 +1,7 @@
 ## 1. 工程化：CI 与部署基线
 
-- [ ] 1.1 新增 `.github/workflows/ci.yml`（backend pytest + frontend vitest/build + Docker 构建冒烟三 job），本地先跑通等价命令后合并，验证 push 后 CI 全绿
-- [ ] 1.2 为 `json.py` 的 `install_zulu_encoder` 增加 fastapi 版本守卫或回归断言（沿用 test_json_encoder），验证升级后序列化行为有测试封闭
+- [x] 1.1 新增 `.github/workflows/ci.yml`（backend pytest + frontend vitest/build + Docker 构建冒烟三 job），本地先跑通等价命令后合并，验证 push 后 CI 全绿
+- [x] 1.2 为 `json.py` 的 `install_zulu_encoder` 增加 fastapi 版本守卫或回归断言（沿用 test_json_encoder），验证升级后序列化行为有测试封闭
 
 ## 2. 数据模型与迁移
 
@@ -70,10 +70,10 @@
 - [x] 8.3 NasTools `_do` 收到 401/403 清除 session cookie 并重登一次（限一次防循环），验证会话过期自动重登测试
 - [x] 8.4 nastools_sync `_sync_lock` 缩小临界区（冷却检查+时间戳互斥，sleep 移出锁外），验证刮削触发不被兜底同步长阻塞
 - [ ] 8.5 `trigger_emby_refresh()` 移出 `if advanced:` 块（整理完成事件即触发 Refresh），验证非 advanced 场景也会触发扫描
-- [ ] 8.6 首启（system_config 空表）job 开关默认 paused，管理员配置后显式开启，验证首启不激活 scan/transfer 空转
-- [ ] 8.7 PG 连接池显式配置（pool_size/max_overflow/pool_recycle），验证并发峰值下无连接耗尽
-- [ ] 8.8 `main.py` 日志挂载改为 lifespan 内显式 handler 配置（不依赖 uvicorn 内部行为），验证启动日志行为不变
-- [ ] 8.9 `serve_spa` 对 `/internal/*` 未注册路径返回 404 JSON（与 /api 一致），验证新增 404 测试
+- [x] 8.6 首启（system_config 空表）job 开关默认 paused，管理员配置后显式开启，验证首启不激活 scan/transfer 空转
+- [x] 8.7 PG 连接池显式配置（pool_size/max_overflow/pool_recycle），验证并发峰值下无连接耗尽
+- [x] 8.8 `main.py` 日志挂载改为 lifespan 内显式 handler 配置（不依赖 uvicorn 内部行为），验证启动日志行为不变
+- [x] 8.9 `serve_spa` 对 `/internal/*` 未注册路径返回 404 JSON（与 /api 一致），验证新增 404 测试
 - [ ] 8.10 `test_scheduler.py` 过时注释「7 个固定 job」改为 10，验证注释与实现一致
 - [ ] 8.11 登录 redirect 前端跳转体验：评估 `toLogin` 统一为 router.replace（保留 SPA 状态）或记录现状，验证 401 拦截行为一致
 
@@ -93,3 +93,4 @@
 - [ ] 10.2 对照审查清单逐条核对 75 个问题的修复状态，验证无遗漏项（low 级确认接受或修复）
 - [ ] 10.3 运行 `npm run build` + Docker 镜像构建冒烟（本地），验证前端产物与容器启动正常
 - [ ] 10.4 CI workflow 在推送后实际运行并全绿，验证自动回归闸门生效
+- [ ] 8.12 修复 `test_council_fixes.py::test_recover_*` 3 个测试的 aria2 client mock 缺失 `get_global_stat`（根因：mock 的 SimpleNamespace 无该方法，recovery.py 调用抛 AttributeError 被按 aria2 不可用处理 → 下载超时回退被跳过）；修复后移除 ci.yml 的 3 行 deselect 豁免并补回 Python 3.14 matrix
