@@ -125,11 +125,11 @@ base-ref: 114b8081c182581a02a49435cfd4f317b58ac2f5
 - Consumes: 现有 logout 端点、httpOnly cookie 名称（settings）
 - Produces: `POST /api/auth/logout` 成功时响应 `delete_cookie`
 
-- [ ] **Step 1** 写失败测试：登出后携带残留 cookie 请求受保护端点 → 401
-- [ ] **Step 2** logout 端点响应 `delete_cookie(settings cookie 名, path=...)`
-- [ ] **Step 3** 前端 `auth.ts logout`：await 登出接口（失败仅 warn）→ 清 localStorage → 跳登录
-- [ ] **Step 4** 运行测试通过；前端 build 通过
-- [ ] **Step 5** Commit：`fix: 登出清除 httpOnly cookie 会话`
+- [x] **Step 1** 写失败测试：登出后携带残留 cookie 请求受保护端点 → 401
+- [x] **Step 2** logout 端点响应 `delete_cookie(settings cookie 名, path=...)`
+- [x] **Step 3** 前端 `auth.ts logout`：await 登出接口（失败仅 warn）→ 清 localStorage → 跳登录
+- [x] **Step 4** 运行测试通过；前端 build 通过
+- [x] **Step 5** Commit：`fix: 登出清除 httpOnly cookie 会话`
 
 ### Task B5: 登录 redirect 白名单
 
