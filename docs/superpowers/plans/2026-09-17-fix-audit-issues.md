@@ -345,12 +345,12 @@ base-ref: 114b8081c182581a02a49435cfd4f317b58ac2f5
 - Consumes: 各视图现有行为
 - Produces: 上限一致、NaN 防御、计时器启停、搜索错误反馈
 
-- [ ] **Step 1** 邀请码 `:max="50"` 与后端对齐（前端测试更新）
-- [ ] **Step 2** MediaDetailView 加 `Number.isFinite(mediaId)` 守卫（非法 → 回列表页）
-- [ ] **Step 3** QueueView 计时器按 activeTab watch 启停
-- [ ] **Step 4** TmdbSearch 加 catch 错误态标记
-- [ ] **Step 5** 前端测试 + build 通过
-- [ ] **Step 6** Commit：`fix: 邀请码上限对齐与前端防御性修复`
+- [x] **Step 1** 邀请码 `:max="50"` 与后端对齐（前端测试更新）
+- [x] **Step 2** MediaDetailView 加 `Number.isFinite(mediaId)` 守卫（非法 → 回列表页）
+- [x] **Step 3** QueueView 计时器按 activeTab watch 启停
+- [x] **Step 4** TmdbSearch 加 catch 错误态标记
+- [x] **Step 5** 前端测试 + build 通过
+- [x] **Step 6** Commit：`fix: 邀请码上限对齐与前端防御性修复`
 
 ---
 

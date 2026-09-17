@@ -26,7 +26,7 @@
 
 - [ ] 4.1 后端 `_WHITELIST_EXACT` 补 `download_queue_paused`（且不进 `_EDITABLE_KEYS` 凭据表单），验证设置页保存该开关返回 200 且立即生效
 - [x] 4.2 将 `internal_aria2_webhook_secret`、`internal_nastools_webhook_token` 纳入 `_SENSITIVE_KEYS` 遮蔽，前端表单改密码框/「已配置」占位、留空不修改，验证 GET 不回显明文且保存不覆盖
-- [ ] 4.3 邀请码生成上限前后端统一（后端 50、前端同步），验证 UI 可生成后端允许全部数量
+- [x] 4.3 邀请码生成上限前后端统一（后端 50、前端同步），验证 UI 可生成后端允许全部数量
 - [ ] 4.4 移除 pushplus.py 模块级单例或使单例每次重读 token，验证配置热更新后新通知使用新 token
 
 ## 5. 队列/容量/转存（pipeline 系能力）
@@ -79,12 +79,12 @@
 
 ## 9. 前端低风险防御
 
-- [ ] 9.1 MediaDetailView 路由参数 `Number.isFinite` 守卫（非法回退列表页），验证 `/media/abc` 不发非法请求
-- [ ] 9.2 TmdbSearch `search()` 增加错误态标记（searched 错误分支），验证搜索失败有内联反馈
-- [ ] 9.3 QueueView 计时器按 activeTab watch 启停（progressTimer 切 Tab 暂停），验证切 Tab 无空转请求
+- [x] 9.1 MediaDetailView 路由参数 `Number.isFinite` 守卫（非法回退列表页），验证 `/media/abc` 不发非法请求
+- [x] 9.2 TmdbSearch `search()` 增加错误态标记（searched 错误分支），验证搜索失败有内联反馈
+- [x] 9.3 QueueView 计时器按 activeTab watch 启停（progressTimer 切 Tab 暂停），验证切 Tab 无空转请求
 - [x] 9.4 前端 `taskTypes` 硬编码移除（承接 7.7 后端下发），验证 LogsView 筛选项动态渲染
-- [ ] 9.5 admin PATCH 用户角色死接口：补前端入口或删除端点（按产品决策，文档标记），验证无漂移残留
-- [ ] 9.6 tmdb_id 为 None 时审批查重以 title 模糊兜底（或要求必填），验证无 tmdb_id 防重复提交
+- [x] 9.5 admin PATCH 用户角色死接口：补前端入口或删除端点（按产品决策，文档标记），验证无漂移残留
+- [x] 9.6 tmdb_id 为 None 时审批查重以 title 模糊兜底（或要求必填），验证无 tmdb_id 防重复提交
 - [ ] 9.7 补充 QueueView 控制面操作（cancel/prioritize/sort/retry）交互测试与路由守卫/http 401 单测，验证关键交互路径有覆盖
 
 ## 10. 全量验证与收尾
