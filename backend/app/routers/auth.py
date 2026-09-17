@@ -9,8 +9,6 @@
 """
 import logging
 import secrets
-import time
-from collections import deque
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -26,52 +24,48 @@ from app.config import _JWT_SECRET, load_or_create_jwt_secret, settings
 from app.database import async_session
 from app.models import InviteCode, User
 from app.routers.deps import get_current_user, get_session
+from app.services.rate_limit import RateLimiter
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 # ---------------------------------------------------------------------------
-# 登录失败限流（安全加固，单 worker 进程内内存）
+# 失败限流（安全加固，单 worker 进程内内存，Task B2 抽公共 RateLimiter）
 # ---------------------------------------------------------------------------
-# 与 config_store 同风格注释：单 worker 部署（uvicorn --workers 1）下模块级 dict
-# 读写原子性足够，不引入锁/外部存储。键 = f"{client.host}:{username}"，值 =
-# 最近失败时间戳 deque。先判后记：窗口内失败数 >= LOGIN_FAIL_LIMIT 直接 429 且
-# 不再记录（deque 天然封顶在 LIMIT，防单键高频灌入内存膨胀）；未超限才记录失败
-# 事件并 401；校验成功清除该键（成功登录重置计数器）。
-# 边界：_LOGIN_FAIL_MAX_KEYS 上限防恶意海量用户名撑爆内存——超限时清空整表并
-# 告警（简单方案；攻击者需伪造大量不同用户名才触发，清空即失效，可接受）。
-_LOGIN_FAIL_MAX_KEYS = 10000
-_login_failures: dict[str, deque] = {}
+# 单 worker 部署（uvicorn --workers 1）下模块级 dict 读写原子性足够，不引入
+# 锁/外部存储（与 config_store 同风格注释；多 worker 需共享存储，属后续演进）。
+#
+# - 登录键 = f"{client.host}:{username}"：先判后记——未超限记录失败并 401，
+#   窗口内失败数达 LOGIN_FAIL_LIMIT 直接 429 且不再记录（单键 deque 以
+#   max_failures 封顶防内存膨胀）；成功登录 reset 清零。语义与迁移前一致。
+# - 注册键 = client.host（审查 C1：防单 IP 高频枚举邀请码，邀请码
+#   token_urlsafe(8) 64bit 熵单点爆破不可行，主要防高频探测与资源消耗）：
+#   请求入口 check，邀请码无效/已用 hit，校验通过 reset。
+# - 429 提示统一「尝试过于频繁，请稍后再试」，不泄露邀请码有效性差异。
+_login_limiter = RateLimiter(
+    max_failures=settings.LOGIN_FAIL_LIMIT,
+    window_seconds=settings.LOGIN_FAIL_WINDOW_SECONDS,
+)
+
+# 注册邀请码失败限流：阈值/窗口独立于登录（注册攻击面 = 单 IP 枚举任意邀请码，
+# 键用纯 IP；阈值 10 比登录 5 宽松——邀请码熵高，限流主为防资源消耗与误伤）。
+_REGISTER_FAIL_LIMIT = 10
+_REGISTER_FAIL_WINDOW_SECONDS = 300
+_register_limiter = RateLimiter(
+    max_failures=_REGISTER_FAIL_LIMIT,
+    window_seconds=_REGISTER_FAIL_WINDOW_SECONDS,
+)
 
 
-def _record_login_failure(key: str) -> None:
-    """记录一次登录失败事件（仅保留窗口内时间戳，超限清空全表防内存膨胀）。"""
-    now = time.monotonic()
-    if key not in _login_failures and len(_login_failures) >= _LOGIN_FAIL_MAX_KEYS:
-        logger.warning("登录失败限流表超 %d 键，清空重建", _LOGIN_FAIL_MAX_KEYS)
-        _login_failures.clear()
-    dq = _login_failures.setdefault(key, deque())
-    dq.append(now)
-    cutoff = now - settings.LOGIN_FAIL_WINDOW_SECONDS
-    while dq and dq[0] < cutoff:
-        dq.popleft()
-
-
-def _login_failure_count(key: str) -> int:
-    """窗口内该键累计失败次数。"""
-    return len(_login_failures.get(key, ()))
-
-
-def _reset_login_failures(key: str) -> None:
-    """登录成功清除该键（成功登录重置失败计数器）。"""
-    _login_failures.pop(key, None)
+def _client_host(request: Request) -> str:
+    """客户端标识：client IP（client 缺失时兜底 "unknown"）。"""
+    return request.client.host if request.client is not None else "unknown"
 
 
 def _login_rate_key(request: Request, username: str) -> str:
-    """限流键：client IP + 用户名（client 缺失时兜底 "unknown"）。"""
-    host = request.client.host if request.client is not None else "unknown"
-    return f"{host}:{username}"
+    """登录限流键：client IP + 用户名。"""
+    return f"{_client_host(request)}:{username}"
 
 # ---------------------------------------------------------------------------
 # 密码哈希（bcrypt）
@@ -149,15 +143,25 @@ class ChangePasswordRequest(BaseModel):
 @router.post("/register")
 async def register(
     payload: RegisterRequest,
+    request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """邀请码注册（§9.1 原子性）：条件更新消耗码 + 建用户 在同一事务。
 
     条件更新 `UPDATE invite_codes SET used_by=?, used_at=? WHERE code=? AND used_by IS NULL`
     捕获并发复用；行数=0 → 422 邀请码无效/已用。
+    Task B2（邀请码爆破限流）：请求入口先查注册限流（键=client IP），窗口内
+    无效邀请码失败达上限 → 429；邀请码校验失败 hit、校验通过 reset（成功即
+    清零的温和策略，防误伤正常用户连续注册）。
     """
     username = payload.username.strip()
     invite_code = payload.invite_code.strip()
+
+    # Task B2 限流预检（先判后记，与登录一致）：窗口内失败已达上限 → 429。
+    # 429 提示与登录统一，不泄露邀请码有效性差异。
+    key = _client_host(request)
+    if not _register_limiter.check(key):
+        raise HTTPException(status_code=429, detail="尝试过于频繁，请稍后再试")
 
     # 用户名唯一预检（并发冲突由 UNIQUE 约束 + IntegrityError 兜底）
     existing = await session.scalar(select(User.id).where(User.username == username))
@@ -182,12 +186,16 @@ async def register(
             .values(used_by=user.id, used_at=_now())
         )
         if result.rowcount == 0:
+            # 邀请码无效/已用 → 计一次失败（Task B2）
+            _register_limiter.hit(key)
             raise HTTPException(status_code=422, detail="邀请码无效或已被使用")
         await session.commit()
     except IntegrityError:
         # 并发注册撞 UNIQUE(username) 兜底
         raise HTTPException(status_code=422, detail="用户名已存在")
 
+    # 校验成功 → 清除该键（成功即清零，防误伤正常用户连续注册的温和策略）
+    _register_limiter.reset(key)
     return {"id": user.id, "username": user.username, "role": user.role}
 
 
@@ -210,15 +218,16 @@ async def login(
 
     user = await session.scalar(select(User).where(User.username == username))
     if user is None or not verify_password(payload.password, user.password_hash):
-        # 先判后记：未超限才记录失败事件（deque 封顶在 LOGIN_FAIL_LIMIT，
-        # 防单键窗口内无界增长）；已超限直接 429，不再 append。
-        if _login_failure_count(key) >= settings.LOGIN_FAIL_LIMIT:
+        # 先判后记（Task B2 迁移通用 RateLimiter 后语义不变）：未超限才记录失败
+        # 事件（单键 deque 以 max_failures 封顶，防单键窗口内无界增长）；已超限
+        # 直接 429，不再记录。
+        if not _login_limiter.check(key):
             raise HTTPException(status_code=429, detail="尝试过于频繁，请稍后再试")
-        _record_login_failure(key)
+        _login_limiter.hit(key)
         raise HTTPException(status_code=401, detail="用户名或密码错误")
 
     # 校验成功 → 清除该键（成功登录重置失败计数器）
-    _reset_login_failures(key)
+    _login_limiter.reset(key)
 
     token = create_access_token(user)
     # cookie 有效期与 JWT 一致：config 无 JWT_EXPIRE_MINUTES 字段，用现有
