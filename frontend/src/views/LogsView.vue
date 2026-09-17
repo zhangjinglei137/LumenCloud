@@ -14,8 +14,8 @@ const filter = reactive<LogFilter>({
   title: undefined,
 })
 
-// 与后端任务类型取值对齐（backend/app/tasks/*）；media_scan/recovery 为历史别名
-const taskTypes = ['scan_media', 'scan_all_media', 'media_scan', 'transfer', 'transfer_retry', 'download', 'cleanup', 'nastools_sync', 'notification_scan', 'capacity_alert', 'recover', 'recovery']
+// 与后端任务类型取值对齐（backend/app/tasks/*）；不含 media_scan/recovery 历史别名
+const taskTypes = ['scan_media', 'scan_all_media', 'transfer', 'cleanup', 'prune_history', 'capacity_alert', 'recover', 'sync_nastools', 'notify']
 
 // 状态筛选选项：与 task_run 实际状态值对齐（record_task_run 精确匹配，见
 // backend/app/routers/logs.py status 过滤；「失败」记录实际 status=error，非 failed）

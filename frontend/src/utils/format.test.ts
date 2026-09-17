@@ -159,6 +159,24 @@ describe('mediaStatusLabel 兜底（fix-online-issues）', () => {
   })
 })
 
+import { taskTypeLabel, taskTypeType } from './format'
+
+describe('taskTypeLabel / taskTypeType（任务类型映射）', () => {
+  it('新键 sync_nastools / notify / prune_history 映射中文', () => {
+    expect(taskTypeLabel('sync_nastools')).toBe('目录同步入库')
+    expect(taskTypeLabel('notify')).toBe('通知')
+    expect(taskTypeLabel('prune_history')).toBe('历史清理')
+  })
+  it('历史别名 media_scan / recovery 兜底不显示英文', () => {
+    expect(taskTypeLabel('media_scan')).toBe('影视巡检')
+    expect(taskTypeLabel('recovery')).toBe('超时恢复')
+  })
+  it('已移除键 transfer_retry / left未知 回退原值 + info', () => {
+    expect(taskTypeLabel('transfer_retry')).toBe('transfer_retry') // 存量数据原值兜底
+    expect(taskTypeType('whatever_unknown')).toBe('info')
+  })
+})
+
 import { notificationTypeMeta } from './format'
 
 describe('通知事件类型 → 铃铛呈现（fix-notification-templates）', () => {

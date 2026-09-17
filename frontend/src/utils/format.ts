@@ -413,19 +413,25 @@ export function taskStatusType(status: string | null | undefined): string {
   return TASK_STATUS_MAP[status]?.[1] ?? 'info'
 }
 
-/** 任务类型 → 中文标签 + Element Plus tag type（未知类型回退原值 / info） */
+/**
+ * 任务类型 → 中文标签 + Element Plus tag type（未知类型回退原值 / info）。
+ * 键集与 backend/app/tasks/*.py 的 record_task_run 写入值一一对应：
+ * scan.py(scan_media/scan_all_media) transfer.py(transfer) cleanup.py(cleanup/prune_history)
+ * capacity_alert.py(capacity_alert) recovery.py(recover) nastools_sync.py(sync_nastools)
+ * notification_scan.py(notify)。media_scan/recovery 为历史别名兜底（存量数据可能残留）。
+ */
 const TASK_TYPE_MAP: Record<string, [string, string]> = {
   scan_media: ['影视巡检', 'primary'],
-  media_scan: ['影视巡检', 'primary'],
   scan_all_media: ['定时巡检', 'primary'],
   transfer: ['转存', 'warning'],
-  transfer_retry: ['转存重试', 'warning'],
-  download: ['下载', 'primary'],
-  nastools_sync: ['目录同步入库', 'success'],
   cleanup: ['空间清理', 'info'],
-  notification_scan: ['通知扫描', 'info'],
+  prune_history: ['历史清理', 'info'],
   capacity_alert: ['容量告警', 'danger'],
   recover: ['超时恢复', 'danger'],
+  sync_nastools: ['目录同步入库', 'success'],
+  notify: ['通知', 'info'],
+  // 历史别名兜底（已不再写入，仅存量数据展示）
+  media_scan: ['影视巡检', 'primary'],
   recovery: ['超时恢复', 'danger'],
 }
 
