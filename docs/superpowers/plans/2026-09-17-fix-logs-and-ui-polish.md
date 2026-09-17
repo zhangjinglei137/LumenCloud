@@ -298,7 +298,7 @@ git commit -m "feat(logs): 前端消费运行日志真实 total 分页"
 - Consumes: 既有 settings GET/PATCH 机制、`saveKey` 渲染
 - Produces: `task_run_retention_days` 可 PATCH 且落入业务参数 Tab
 
-- [ ] **Step 1: 后端白名单**
+- [x] **Step 1: 后端白名单**
 
 `backend/app/routers/settings.py` `_WHITELIST_EXACT` 增加一行（放在 `capacity_alert_threshold` 附近）：
 
@@ -315,7 +315,7 @@ _EDITABLE_KEYS = frozenset(_WHITELIST_EXACT - {"emby_series_library_ids", "task_
 
 （若不排除，该键会进入 configEntries 的排除分支——`editable_keys.includes(k) && !selectOptions` ——导致业务参数区不渲染。）
 
-- [ ] **Step 2: settingsMeta 元数据**
+- [x] **Step 2: settingsMeta 元数据**
 
 `frontend/src/config/settingsMeta.ts` 增加：
 
@@ -330,18 +330,18 @@ _EDITABLE_KEYS = frozenset(_WHITELIST_EXACT - {"emby_series_library_ids", "task_
 
 （值为字符串输入即可：后端 `max(1, int(...))` 已防 0/非数字。设置页 GET 返回 system_config 值会落入 `businessEntries` → 文本输入渲染。）
 
-- [ ] **Step 3: 后端测试**
+- [x] **Step 3: 后端测试**
 
 新增/补充 settings PATCH 测试（可挂在既有 settings 测试文件或 `test_prune_history.py`）：
 - PATCH `{"task_run_retention_days": "60"}` → 200 + `{"ok": true}`
 - `prune_history_job` 使用配置值：`test_prune_history.py` 已有用例，补充「system_config 写入 60 后 cutoff 按 60 天」断言（如已有则该测试仍应通过）。
 
-- [ ] **Step 4: 运行后端测试**
+- [x] **Step 4: 运行后端测试**
 
 Run: `python -m pytest tests/test_prune_history.py tests/test_task_cleanup.py -q`（有 venv 时）
 Expected: 通过
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/app/routers/settings.py frontend/src/config/settingsMeta.ts backend/tests/

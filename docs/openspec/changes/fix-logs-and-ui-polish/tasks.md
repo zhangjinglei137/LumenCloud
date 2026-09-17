@@ -10,9 +10,9 @@
 
 ## 3. 日志保留天数动态配置（specs/run-logs ④）
 
-- [ ] 3.1 后端 `backend/app/routers/settings.py`：`task_run_retention_days` 加入 `_WHITELIST_EXACT`，并从 `_EDITABLE_KEYS`（服务凭据表单）排除，确保业务参数可 PATCH 且不被当作凭据字段渲染；验证 PATCH 白名单单元测试/接口用例
-- [ ] 3.2 前端 `frontend/src/config/settingsMeta.ts` 增加 `task_run_retention_days` 元数据（中文标签「运行日志保留天数」、说明、默认 30），`SettingsView.vue` 业务参数区按既有数字/保存 pattern 渲染；验证设置页可见该配置并可保存、`npm run test` 通过
-- [ ] 3.3 验证 `prune_history_job`（`backend/tests/test_prune_history.py`、`test_task_cleanup.py`）在配置键存在/缺省两种情况下按预期清理（确认无需改动 cleanup.py 逻辑）
+- [x] 3.1 后端 `backend/app/routers/settings.py`：`task_run_retention_days` 加入 `_WHITELIST_EXACT`，并从 `_EDITABLE_KEYS`（服务凭据表单）排除，确保业务参数可 PATCH 且不被当作凭据字段渲染；验证 PATCH 白名单单元测试/接口用例
+- [x] 3.2 前端 `frontend/src/config/settingsMeta.ts` 增加 `task_run_retention_days` 元数据（中文标签「运行日志保留天数」、说明、默认 30），`SettingsView.vue` 业务参数区按既有数字/保存 pattern 渲染；验证设置页可见该配置并可保存、`npm run test` 通过
+- [x] 3.3 验证 `prune_history_job`（`backend/tests/test_prune_history.py`、`test_task_cleanup.py`）在配置键存在/缺省两种情况下按预期清理（确认无需改动 cleanup.py 逻辑）
 
 ## 4. 邀请码管理迁移到用户管理页（specs/user-invite-management）
 
