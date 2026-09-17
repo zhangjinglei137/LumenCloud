@@ -529,11 +529,12 @@ def test_logs_detail_returns_full_record_with_phases(_router_db):
             except HTTPException as exc:
                 assert exc.status_code == 404
             # list_logs 亦附 phases/scan_detail
-            rows = await list_logs(
+            res = await list_logs(
                 admin=MagicMock(), session=s,
                 task_type=None, status=None, media_id=media_id, tmdb_id=None, title=None,
                 limit=50, offset=0,
             )
+            rows = res["items"]
             assert len(rows) == 1
             assert rows[0]["phases"]["check"]["status"] == "done"
             assert rows[0]["scan_detail"]["enqueued"] == 1

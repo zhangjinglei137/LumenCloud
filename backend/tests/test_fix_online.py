@@ -209,7 +209,9 @@ def test_logs_tmdb_filter_and_title(_db_maker):
     async def _case():
         async with _db_maker() as session:
             # tmdb_id=42 → m1 的两条，均带 media_title/tmdb_id
-            rows = await _call_list_logs(session, tmdb_id=42)
+            res = await _call_list_logs(session, tmdb_id=42)
+            rows = res["items"]
+            assert res["total"] == 2
             assert len(rows) == 2
             assert all(r["media_title"] == "剧A" for r in rows)
             assert all(r["tmdb_id"] == 42 for r in rows)
@@ -217,20 +219,29 @@ def test_logs_tmdb_filter_and_title(_db_maker):
             assert {r["task_type"] for r in rows} == {"scan_media", "transfer"}
 
             # 无过滤 → 全部 4 条；无关联 media 的行 media_title/tmdb_id 为 None（outer join）
-            all_rows = await _call_list_logs(session)
+            res = await _call_list_logs(session)
+            all_rows = res["items"]
+            assert res["total"] == 4
             assert len(all_rows) == 4
             orphan = [r for r in all_rows if r["message"] == "orphan"][0]
             assert orphan["media_title"] is None and orphan["tmdb_id"] is None
 
+            # limit 分页：items 截断为 2 条，total 仍为真实总数 4
+            res = await _call_list_logs(session, limit=2)
+            assert len(res["items"]) == 2
+            assert res["total"] == 4
+
             # media_id 过滤保持兼容
-            by_mid = await _call_list_logs(session, media_id=all_rows[0]["media_id"])
+            res = await _call_list_logs(session, media_id=all_rows[0]["media_id"])
+            by_mid = res["items"]
             assert all(r["media_id"] == all_rows[0]["media_id"] for r in by_mid)
 
             # media_id + tmdb_id 同时传 → AND（m1 而非 m2）
             m1_id = [r for r in all_rows if r["message"] == "A1"][0]["media_id"]
-            both = await _call_list_logs(session, media_id=m1_id, tmdb_id=42)
+            res = await _call_list_logs(session, media_id=m1_id, tmdb_id=42)
+            both = res["items"]
             assert len(both) >= 1 and all(r["tmdb_id"] == 42 for r in both)
             none_case = await _call_list_logs(session, media_id=m1_id, tmdb_id=43)
-            assert none_case == []
+            assert none_case["total"] == 0 and none_case["items"] == []
 
     run(_case())

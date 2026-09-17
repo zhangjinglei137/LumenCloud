@@ -44,8 +44,12 @@ async def list_logs(
     title: str | None = Query(default=None, max_length=128),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
-) -> list[dict]:
-    """task_run 查询记录（task_type/status/media_id/tmdb_id/title 可选过滤，均 AND；time 倒序分页）。"""
+) -> dict:
+    """task_run 查询记录（task_type/status/media_id/tmdb_id/title 可选过滤，均 AND；time 倒序分页）。
+
+    返回 {"items": list[dict], "total": int}：total 为同一筛选条件下的真实总数（不随 limit/offset
+    截断），供前端分页展示。
+    """
     stmt = select(TaskRun, Media.title, Media.tmdb_id).join(
         Media, TaskRun.media_id == Media.id, isouter=True
     )
@@ -66,29 +70,35 @@ async def list_logs(
         # （原 ilike(f"%{title}%") 拼接会把 % 当通配符注入）。
         # 保留原 ilike 的大小写不敏感语义：两侧 lower 后再 contains。
         stmt = stmt.where(func.lower(Media.title).contains(title.lower(), autoescape=True))
+    # 分页真实 total：基于同一筛选条件 count（复用 stmt 子查询，筛选单点维护）
+    count_stmt = select(func.count()).select_from(stmt.subquery())
+    total = (await session.execute(count_stmt)).scalar() or 0
     stmt = (
         stmt.order_by(TaskRun.started_at.desc(), TaskRun.id.desc())
         .limit(limit)
         .offset(offset)
     )
     rows = (await session.execute(stmt)).all()
-    return [
-        {
-            "id": r[0].id,
-            "task_type": r[0].task_type,
-            "media_id": r[0].media_id,
-            "status": r[0].status,
-            "message": r[0].message,
-            "started_at": r[0].started_at,
-            "finished_at": r[0].finished_at,
-            "duration_seconds": r[0].duration_seconds,  # Q8①：真实耗时（job 入口计时；历史为 None）
-            "media_title": r[1],  # Q8：影视名称（join media；无关联为 None）
-            "tmdb_id": r[2],      # Q8：TMDB id（join media；无关联为 None）
-            "phases": _json_or_none(r[0].phases),        # 巡检 5 阶段进度 JSON（dict/None）
-            "scan_detail": _json_or_none(r[0].scan_detail),  # 巡检结果摘要 JSON（dict/None）
-        }
-        for r in rows
-    ]
+    return {
+        "items": [
+            {
+                "id": r[0].id,
+                "task_type": r[0].task_type,
+                "media_id": r[0].media_id,
+                "status": r[0].status,
+                "message": r[0].message,
+                "started_at": r[0].started_at,
+                "finished_at": r[0].finished_at,
+                "duration_seconds": r[0].duration_seconds,  # Q8①：真实耗时（job 入口计时；历史为 None）
+                "media_title": r[1],  # Q8：影视名称（join media；无关联为 None）
+                "tmdb_id": r[2],      # Q8：TMDB id（join media；无关联为 None）
+                "phases": _json_or_none(r[0].phases),        # 巡检 5 阶段进度 JSON（dict/None）
+                "scan_detail": _json_or_none(r[0].scan_detail),  # 巡检结果摘要 JSON（dict/None）
+            }
+            for r in rows
+        ],
+        "total": total,
+    }
 
 
 @router.get("/{task_run_id}")

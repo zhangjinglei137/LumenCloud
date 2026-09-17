@@ -104,7 +104,7 @@ def test_logs_dto_includes_duration_seconds(_db_maker):
 
     async def _case():
         async with _db_maker() as session:
-            rows = await list_logs(
+            res = await list_logs(
                 admin=MagicMock(),
                 session=session,
                 task_type=None,
@@ -115,6 +115,7 @@ def test_logs_dto_includes_duration_seconds(_db_maker):
                 limit=50,
                 offset=0,
             )
+            rows = res["items"]
             assert len(rows) == 1
             assert "duration_seconds" in rows[0]
             assert rows[0]["duration_seconds"] == 3.14
