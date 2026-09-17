@@ -47,7 +47,8 @@ export type MediaType = 'tv' | 'movie'
 export interface MediaItem {
   id: number
   title: string
-  tmdb_id: number
+  /** TMDB ID（后端 Media.tmdb_id nullable：Emby 条目无 TMDB 关联时为 null） */
+  tmdb_id: number | null
   media_type: MediaType | string
   status: string
   in_emby: boolean
