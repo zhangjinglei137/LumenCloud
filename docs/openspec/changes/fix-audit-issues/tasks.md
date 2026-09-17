@@ -20,14 +20,15 @@
 - [x] 3.5 登录 redirect 参数白名单校验（`/` 开头且非 `//`），非法回退首页，验证新增跳转安全测试通过
 - [x] 3.6 并发审批同 tmdb_id 捕获 IntegrityError 返回 409（approvals.py），验证新增并发审批测试无 500
 - [x] 3.7 admin 初始密码改为一次性 token 落盘 `data/` 下 chmod 600 文件（或等价方案），不再明文刷日志，验证启动日志不含密码且文件权限正确
-- [ ] 3.8 审查并确认登录限流反代头信任链（或注释明示单 worker/反代局限），验证配置文档更新
+- [x] 3.8 审查并确认登录限流反代头信任链（或注释明示单 worker/反代局限），验证配置文档更新
 
 ## 4. 配置/凭据/设置
 
-- [ ] 4.1 后端 `_WHITELIST_EXACT` 补 `download_queue_paused`（且不进 `_EDITABLE_KEYS` 凭据表单），验证设置页保存该开关返回 200 且立即生效
+- [x] 4.1 后端 `_WHITELIST_EXACT` 补 `download_queue_paused`（且不进 `_EDITABLE_KEYS` 凭据表单），验证设置页保存该开关返回 200 且立即生效
 - [x] 4.2 将 `internal_aria2_webhook_secret`、`internal_nastools_webhook_token` 纳入 `_SENSITIVE_KEYS` 遮蔽，前端表单改密码框/「已配置」占位、留空不修改，验证 GET 不回显明文且保存不覆盖
 - [x] 4.3 邀请码生成上限前后端统一（后端 50、前端同步），验证 UI 可生成后端允许全部数量
-- [ ] 4.4 移除 pushplus.py 模块级单例或使单例每次重读 token，验证配置热更新后新通知使用新 token
+- [x] 4.4 移除 pushplus.py 模块级单例或使单例每次重读 token，验证配置热更新后新通知使用新 token
+    - 注：核查结论为「仅兼容导出无调用」→ 加注释说明持有旧 token、新代码用 PushPlusNotifier（ora-33 已确认）
 
 ## 5. 队列/容量/转存（pipeline 系能力）
 
@@ -40,7 +41,7 @@
 - [x] 5.7 retry_task 旧三表分支检查 rowcount，==0 返回 409「状态已变化」，验证新增冲突测试
 - [x] 5.8 下载完成回调端点补鉴权与 gid 维度校验（确认 notify.py 现状后），验证非法回调被拒测试
 - [x] 5.9 recovery 回退前区分「aria2 故障」与「任务无进展」（aria2 探活），验证 aria2 故障期间不触发回退循环
-- [ ] 5.10 容量告警冷却：注释+文档明示单 worker/多 worker trade-off（或 DB 落冷却），验证告警逻辑不受影响
+- [x] 5.10 容量告警冷却：注释+文档明示单 worker/多 worker trade-off（或 DB 落冷却），验证告警逻辑不受影响
 - [ ] 5.11 probe_media 加 per-media 频率限制或 scan 内去重，验证连续 probe 被限流
 
 ## 6. Emby/TMDB 一致性与缓存（emby-library-browse 等能力）
@@ -69,7 +70,7 @@
 - [x] 8.2 `_enqueue` 移除显式 `tx.commit()`、统一由上下文管理器管理（冲突捕获降级单条跳过），验证入队冲突不中断整轮巡检
 - [x] 8.3 NasTools `_do` 收到 401/403 清除 session cookie 并重登一次（限一次防循环），验证会话过期自动重登测试
 - [x] 8.4 nastools_sync `_sync_lock` 缩小临界区（冷却检查+时间戳互斥，sleep 移出锁外），验证刮削触发不被兜底同步长阻塞
-- [ ] 8.5 `trigger_emby_refresh()` 移出 `if advanced:` 块（整理完成事件即触发 Refresh），验证非 advanced 场景也会触发扫描
+- [x] 8.5 `trigger_emby_refresh()` 移出 `if advanced:` 块（整理完成事件即触发 Refresh），验证非 advanced 场景也会触发扫描
 - [x] 8.6 首启（system_config 空表）job 开关默认 paused，管理员配置后显式开启，验证首启不激活 scan/transfer 空转
 - [x] 8.7 PG 连接池显式配置（pool_size/max_overflow/pool_recycle），验证并发峰值下无连接耗尽
 - [x] 8.8 `main.py` 日志挂载改为 lifespan 内显式 handler 配置（不依赖 uvicorn 内部行为），验证启动日志行为不变
