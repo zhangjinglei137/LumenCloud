@@ -56,9 +56,9 @@ base-ref: 114b8081c182581a02a49435cfd4f317b58ac2f5
 - Consumes: `MediaItem` 接口定义
 - Produces: `tmdb_id: number | null`（与后端 Media.tmdb_id nullable 对齐）
 
-- [ ] **Step 1** 将 `MediaItem.tmdb_id` 改为 `number | null`
-- [ ] **Step 2** 验证 `cd frontend && npx vue-tsc --noEmit`（或 `npm run build` 的类型检查）通过
-- [ ] **Step 3** Commit：`fix: 前端 MediaItem.tmdb_id 类型对齐后端 nullable 契约`
+- [x] **Step 1** 将 `MediaItem.tmdb_id` 改为 `number | null`
+- [x] **Step 2** 验证 `cd frontend && npx vue-tsc --noEmit`（或 `npm run build` 的类型检查）通过
+- [x] **Step 3** Commit：`fix: 前端 MediaItem.tmdb_id 类型对齐后端 nullable 契约`
 
 ---
 

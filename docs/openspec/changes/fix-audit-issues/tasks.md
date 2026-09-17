@@ -8,7 +8,7 @@
 - [x] 2.1 编写单一 alembic 迁移 `audit_fixes`：为 EpisodeState/TransferQueue/DownloadQueue/DownloadTask/TaskQueue 等子表外键声明 `ondelete=CASCADE`，引用类（WatchRequest.requested_by/reviewed_by、InviteCode.used_by）声明 `SET NULL`；升级/降级成对，验证 `alembic upgrade/downgrade` 空跑通过
 - [x] 2.2 将 `TaskRun.media_id` 类型对齐为 BigInteger（`BIG_PK`），验证 PG 建表类型一致
 - [x] 2.3 为 EpisodeState/TaskQueue/TransferQueue 等缺失的 `media_id` 外键列补独立索引，验证 EXPLAIN 按 media_id 过滤走索引
-- [ ] 2.4 前端 `MediaItem.tmdb_id` 类型改为 `number | null` 与后端 nullable 契约对齐，验证 `npm run build` 类型检查通过
+- [x] 2.4 前端 `MediaItem.tmdb_id` 类型改为 `number | null` 与后端 nullable 契约对齐，验证 `npm run build` 类型检查通过
 - [x] 2.5 运行 `test_delete_media_fk.py` 及媒体删除相关测试，验证 CASCADE 改动后删除语义无回归
 
 ## 3. 鉴权与会话安全（auth-session 能力）
