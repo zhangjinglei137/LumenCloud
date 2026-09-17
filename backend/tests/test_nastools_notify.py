@@ -169,11 +169,19 @@ class FakeResult:
 
 
 def make_client(secret: str | None, monkeypatch) -> TestClient:
-    """构建最小 app；settings.NASTOOLS_WEBHOOK_SECRET 注入/清空（_secret 的 env fallback 源）。"""
+    """构建最小 app；settings.NASTOOLS_WEBHOOK_SECRET 注入/清空（_secret 的 env fallback 源）。
+
+    默认把 nn_mod.async_session 替换为 fake（system_config 无行）：_secret() 优先
+    读 DB 的 internal_nastools_webhook_token，本文件与 test_settings_webhook_redaction
+    共享同一临时 DB（conftest），后者运行时会写入该键，污染本文件未显式替换
+    async_session 的测试（auth 断言 401/503 错乱）——fake 使 _secret() 稳定回退
+    env 路径。需要真实 DB 的测试自行覆盖 async_session（后设覆盖先设）。
+    """
     if secret is None:
         monkeypatch.setattr(nn_mod.settings, "NASTOOLS_WEBHOOK_SECRET", None)
     else:
         monkeypatch.setattr(nn_mod.settings, "NASTOOLS_WEBHOOK_SECRET", secret)
+    monkeypatch.setattr(nn_mod, "async_session", lambda: FakeSession(get_result=None))
     app = FastAPI()
     app.include_router(nn_mod.router)
     return TestClient(app)
@@ -366,7 +374,12 @@ def test_transfer_finished_advances_and_triggers_library_check(monkeypatch):
 
 
 def test_transfer_finished_no_advance_still_triggers_library_check(monkeypatch):
-    """无 scrape 任务可推进（0 推进）→ 不触发 Emby Refresh，但仍触发 library_check 轮询加速。"""
+    """无 scrape 任务可推进（0 推进）→ 仍触发 Emby 全库 Refresh + library_check 轮询加速。
+
+    fix-audit-issues 8.5（审查 C12）：整理完成事件本身意味媒体库目录有新文件——
+    无论是否定位到本系统的 scrape 行，都应触发 Emby 全库 Refresh（原先仅在
+    advanced 分支触发，非 advanced 场景新文件入库依赖轮询，存在延迟）。
+    """
     cli = make_client(_TOKEN, monkeypatch)
     async_session_fake = FakeSession(execute_result=FakeResult(88))
     monkeypatch.setattr(nn_mod, "async_session", lambda: async_session_fake)
@@ -385,7 +398,8 @@ def test_transfer_finished_no_advance_still_triggers_library_check(monkeypatch):
 
     assert resp.status_code == 200
     assert resp.json()["advanced"] == 0
-    assert refresh_calls == []
+    # 8.5：即使 0 推进也触发 Emby 全库 Refresh（整理完成 = 媒体库有新文件）
+    assert refresh_calls == [1]
     # 无法定位/无任务 → 触发 library_check 轮询加速（不丢任务，协调者裁定 4）
     assert triggered == [88]
 

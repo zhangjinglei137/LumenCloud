@@ -65,6 +65,11 @@ _WHITELIST_EXACT = {
     # 参数」——不进 editable_keys（见 _EDITABLE_KEYS 注释），避免前端误渲染为
     # 服务凭据文本框。
     "emby_series_library_ids",
+    # fix-audit-issues 4.1（审查 D3）：播放队列暂停开关——transfer.py _admit_batch
+    # 入口直读 system_config download_queue_paused 决定本轮是否取新任务（queue.py
+    # 同样读取）。此前漏入 PATCH 白名单，设置页该开关保存必 422。属业务开关
+    # （非服务凭据）→ 不进 _EDITABLE_KEYS 凭据表单（见下方排除集）。
+    "download_queue_paused",
 }
 
 # Phase 8 配置入库：前端可配置键清单（= config_store 可管理键，scheduler.* 前缀
@@ -73,8 +78,11 @@ _WHITELIST_EXACT = {
 # 必须从 editable_keys 排除——若进入该清单，前端会把此键当作服务凭据字段渲染成文本框。
 # D-A3：task_run_retention_days 同为业务参数（设置页「业务参数」区渲染），若进入
 # editable_keys，前端 configEntries 排除分支会把它过滤掉，业务参数区不显示。
+# fix-audit-issues 4.1：download_queue_paused 同为业务开关（队列暂停），前端以
+# 开关组件渲染，不进 editable_keys（避免误渲染为服务凭据文本框）。
 _EDITABLE_KEYS = frozenset(
-    _WHITELIST_EXACT - {"emby_series_library_ids", "task_run_retention_days"}
+    _WHITELIST_EXACT
+    - {"emby_series_library_ids", "task_run_retention_days", "download_queue_paused"}
 )
 
 # 已废弃设置键：system_config 存量保留，但 GET 响应不再透传（避免前端

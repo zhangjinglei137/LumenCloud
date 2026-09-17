@@ -7,7 +7,9 @@
   该 media 的 download_queue `scrape` 行推进为 `library`（按载荷文件名/集号
   定位单行，CAS 推进）→ fire-and-forget 触发 `library_check()`（Emby 入库确认
   → done + 删夸克 + 释放容量预留），并同步触发 Emby 全库 Refresh（Task 8，
-  加速新文件入库；失败仅告警，轮询兜底）。
+  加速新文件入库；失败仅告警，轮询兜底）。注意 8.5：Refresh 的触发与是否
+  定位到 scrape 行无关——整理完成事件本身意味媒体库目录有新文件，非 advanced
+  场景同样触发（见 _handle_transfer_finished）。
 - `transfer.fail` / `download.fail`：flow_error 通知（节流沿用）。
 - 其它事件：记录后忽略（返回 ok）。
 
@@ -272,21 +274,27 @@ async def _handle_transfer_finished(data: dict) -> "tuple[int, str]":
     )
     advanced = await _advance_scrape_to_library(media, file_name)
 
-    # 无论是否推进，均触发 library_check 轮询加速：无法定位文件名的场景
-    # 由既有轮询路径推进（不丢任务），成功推进场景也顺带复查入库。
+    # 无论是否推进，均触发 library_check 轮询加速 + Emby 全库 Refresh：
+    # - library_check 轮询：无法定位文件名的场景由既有轮询路径推进（不丢任务），
+    #   成功推进场景也顺带复查入库；
+    # - Emby Refresh（fix-audit-issues 8.5，审查 C12）：整理完成事件本身意味
+    #   媒体库目录有新文件——无论是否定位到本系统的 scrape 行都应触发全库
+    #   Refresh 加速入库（原先仅在 advanced 分支触发，非 advanced 场景新文件
+    #   收录只依赖 library_check 轮询，存在可见延迟）。fire-and-forget + 互斥锁
+    #   在 library_check 内；触发失败仅告警，Emby 收录仍由 library_check 轮询
+    #   兜底确认（降级语义不变，不阻断应答）。
     task = asyncio.create_task(_check_library_background(media))
     _background.add(task)
     task.add_done_callback(_background.discard)
 
-    if advanced:
-        # Task 8：推进成功后同样触发 Emby 全库 Refresh（fire-and-forget + 互斥锁在
-        # library_check 内；失败仅告警，Emby 收录由 library_check 轮询兜底确认）
-        try:
-            from app.tasks import library_check as lc
+    try:
+        from app.tasks import library_check as lc
 
-            lc.trigger_emby_refresh()
-        except Exception as exc:  # noqa: BLE001  触发失败不阻断应答（轮询兜底）
-            logger.warning("[nastools] media=%s 触发 Emby 全库扫描失败（轮询兜底）: %s", media, exc)
+        lc.trigger_emby_refresh()
+    except Exception as exc:  # noqa: BLE001  触发失败不阻断应答（轮询兜底）
+        logger.warning("[nastools] media=%s 触发 Emby 全库扫描失败（轮询兜底）: %s", media, exc)
+
+    if advanced:
         return advanced, f"推进 {advanced} 条 scrape→library 并触发入库确认"
     return 0, "未定位到匹配的 scrape 任务（无法匹配载荷文件/已推进），已触发入库轮询"
 

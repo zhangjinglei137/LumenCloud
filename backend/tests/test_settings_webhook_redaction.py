@@ -131,3 +131,41 @@ def test_masking_does_not_affect_internal_read():
         assert r.status_code == 200
         for key, expected in values.items():
             assert config_store.get(key) == expected
+
+
+# ---------------------------------------------------------------------------
+# 4.1：download_queue_paused 为 PATCH 白名单键（设置页队列暂停开关）
+# ---------------------------------------------------------------------------
+
+def test_patch_download_queue_paused_returns_200():
+    """PATCH download_queue_paused → 200 且立即生效（config_store 缓存刷新）。
+
+    fix-audit-issues 4.1（审查 D3）：该键此前不在 _WHITELIST_EXACT，设置页
+    队列暂停开关保存必 422。期望：
+    - PATCH 保存返回 200，且 config_store 缓存刷新后立即读到新值（保存即生效）；
+    - 该键是业务开关（transfer.py / queue.py 读取暂停下载队列），非服务凭据——
+      不进 _EDITABLE_KEYS 凭据表单（避免前端渲染成凭据文本框）。
+    """
+    with TestClient(app) as client:
+        tok = _login_admin(client)
+        r = client.patch(
+            "/api/settings",
+            json={"download_queue_paused": "true"},
+            headers=_auth(tok),
+        )
+        assert r.status_code == 200, r.text
+        # 保存即生效：进程内配置缓存已刷新
+        assert config_store.get("download_queue_paused") == "true"
+
+        # 白名单契约：可写但非凭据表单（editable_keys 不含该键）
+        r = client.get("/api/settings", headers=_auth(tok))
+        assert r.status_code == 200
+        assert "download_queue_paused" not in r.json()["editable_keys"]
+
+        # 还原为 false，避免残留影响共享库后续测试
+        r = client.patch(
+            "/api/settings",
+            json={"download_queue_paused": "false"},
+            headers=_auth(tok),
+        )
+        assert r.status_code == 200, r.text
