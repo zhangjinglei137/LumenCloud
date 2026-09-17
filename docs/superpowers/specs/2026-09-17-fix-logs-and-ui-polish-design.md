@@ -2,6 +2,8 @@
 comet_change: fix-logs-and-ui-polish
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-09-17-fix-logs-and-ui-polish
+status: final
 ---
 
 # 运行日志与界面修复 — 深度技术设计

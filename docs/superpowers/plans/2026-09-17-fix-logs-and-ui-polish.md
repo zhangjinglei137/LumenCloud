@@ -2,6 +2,7 @@
 change: fix-logs-and-ui-polish
 design-doc: docs/superpowers/specs/2026-09-17-fix-logs-and-ui-polish-design.md
 base-ref: 38fa9d14a22eba3fb789b31e0a6ac552a8294f24
+archived-with: 2026-09-17-fix-logs-and-ui-polish
 ---
 
 # fix-logs-and-ui-polish 实施计划
