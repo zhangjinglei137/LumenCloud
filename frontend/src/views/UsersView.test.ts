@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { computed, inject, provide, reactive } from 'vue'
 import UsersView from './UsersView.vue'
-import type { UserItem } from '../types'
+import type { InviteCode, UserItem } from '../types'
 
 // ---------- 可变 store mock（reactive：注入数据后模板可响应更新） ----------
 const storeState = reactive({
@@ -21,6 +21,18 @@ const authState = reactive({ user: null as { id: number } | null })
 
 vi.mock('../stores/auth', () => ({
   useAuthStore: () => authState,
+}))
+
+// ---------- settings store mock：邀请码管理迁移到用户管理页后复用 ----------
+const settingsState = reactive({
+  invites: [] as InviteCode[],
+  fetchInvites: vi.fn().mockResolvedValue(undefined),
+  createInvites: vi.fn().mockResolvedValue(['ABC123']),
+  deleteInvite: vi.fn().mockResolvedValue(undefined),
+})
+
+vi.mock('../stores/settings', () => ({
+  useSettingsStore: () => settingsState,
 }))
 
 function makeUser(over: Partial<UserItem> = {}): UserItem {
@@ -42,7 +54,9 @@ const EP_STUBS = {
   'el-tooltip': { template: '<span><slot /></span>', props: ['disabled', 'content'] },
   'el-tag': { template: '<span><slot /></span>', props: ['type'] },
   'el-icon': { template: '<span><slot /></span>' },
-  'el-empty': { template: '<div><slot /></div>' },
+  'el-empty': { template: '<div>{{ description }}<slot /></div>', props: ['description'] },
+  'el-divider': { template: '<div><slot /></div>' },
+  'el-input-number': { template: '<input />', props: ['modelValue'] },
   // el-select stub：渲染可识别的 <select class="el-select">，用于断言「角色列不再出现下拉框」
   'el-select': { template: '<select class="el-select"><slot /></select>', props: ['modelValue'] },
   'el-option': { template: '<option />', props: ['value', 'label'] },
@@ -84,6 +98,7 @@ beforeEach(() => {
   storeState.items = []
   storeState.loading = false
   authState.user = null
+  settingsState.invites = []
 })
 
 afterEach(() => {
@@ -121,5 +136,35 @@ describe('UsersView 角色只读展示（fix-online-issues）', () => {
     wrapper = mountView()
     await flushPromises()
     expect(wrapper.text()).toContain('删除')
+  })
+})
+
+describe('UsersView 邀请码管理（fix-logs-and-ui-polish）', () => {
+  it('渲染邀请码管理区块骨架：生成按钮与空态；onMounted 同时拉取用户与邀请码', async () => {
+    settingsState.invites = []
+    wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('邀请码管理')
+    expect(wrapper.text()).toContain('生成邀请码')
+    expect(wrapper.text()).toContain('暂无邀请码')
+    expect(settingsState.fetchInvites).toHaveBeenCalled()
+  })
+
+  it('邀请码列表渲染：展示 code、状态、使用者与操作按钮', async () => {
+    settingsState.invites = [
+      { code: 'TEST-CODE-1', used_by: null, used_at: null },
+      { code: 'USED-CODE', used_by: '2', used_by_username: 'guest1', used_at: '2026-01-02T00:00:00Z' },
+    ]
+    wrapper = mountView()
+    await flushPromises()
+
+    const text = wrapper.text()
+    expect(text).toContain('TEST-CODE-1')
+    expect(text).toContain('可用')
+    expect(text).toContain('USED-CODE')
+    expect(text).toContain('已使用')
+    expect(text).toContain('guest1')
+    expect(text).toContain('复制注册链接')
   })
 })

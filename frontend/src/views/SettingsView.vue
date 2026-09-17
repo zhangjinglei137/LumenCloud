@@ -7,7 +7,6 @@ import { useSettingsStore } from '../stores/settings'
 import { useAuthStore } from '../stores/auth'
 import { listEmbyLibrariesApi, verifyQuarkFolderApi } from '../api'
 import type { EmbyLibraryFolder, QuarkVerifyResult } from '../types'
-import { formatTime } from '../utils/format'
 import {
   CRED_GROUP_LABELS,
   CRED_GROUP_ORDER,
@@ -19,7 +18,6 @@ const auth = useAuthStore()
 
 const activeTab = ref('credentials')
 
-const generateCount = ref(1)
 const savingKeys = ref<Set<string>>(new Set())
 
 const SERVICE_LABELS: Record<string, string> = {
@@ -395,7 +393,7 @@ async function submitPwd(): Promise<void> {
 // ---------- 通用 ----------
 
 onMounted(async () => {
-  await Promise.all([store.fetchSettings(), store.fetchInvites()])
+  await store.fetchSettings()
   syncCredValues()
   syncMultiSelectValues()
 })
@@ -413,60 +411,6 @@ async function saveKey(key: string, value: unknown) {
     const done = new Set(savingKeys.value)
     done.delete(key)
     savingKeys.value = done
-  }
-}
-
-async function generate() {
-  const codes = await store.createInvites(generateCount.value)
-  ElMessage.success(`已生成 ${codes.length} 个邀请码`)
-}
-
-async function removeInvite(code: string) {
-  await ElMessageBox.confirm(`确定删除邀请码 ${code} 吗？`, '删除邀请码', {
-    confirmButtonText: '删除',
-    cancelButtonText: '取消',
-    type: 'warning',
-  })
-  await store.deleteInvite(code)
-  ElMessage.success('已删除')
-}
-
-/** Q6：复制文本；navigator.clipboard 在非安全上下文（http 非 localhost）不可用，回退隐藏 textarea + execCommand */
-async function copyText(text: string): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(text)
-    return true
-  } catch {
-    try {
-      const ta = document.createElement('textarea')
-      ta.value = text
-      ta.style.position = 'fixed'
-      ta.style.opacity = '0'
-      document.body.appendChild(ta)
-      ta.select()
-      const ok = document.execCommand('copy')
-      document.body.removeChild(ta)
-      return ok
-    } catch {
-      return false
-    }
-  }
-}
-
-async function copyInviteCode(code: string): Promise<void> {
-  if (await copyText(code)) {
-    ElMessage.success('已复制邀请码')
-  } else {
-    ElMessage.error('复制失败，请手动复制')
-  }
-}
-
-async function copyRegisterLink(code: string): Promise<void> {
-  const link = `${location.origin}/register?code=${encodeURIComponent(code)}`
-  if (await copyText(link)) {
-    ElMessage.success('已复制注册链接')
-  } else {
-    ElMessage.error('复制失败，请手动复制')
   }
 }
 
@@ -722,59 +666,6 @@ function serviceLabel(key: string): string {
                 />
               </div>
             </div>
-          </div>
-        </el-tab-pane>
-
-        <!-- 邀请码管理 -->
-        <el-tab-pane label="邀请码管理" name="invites">
-          <div class="lc-panel">
-
-        <div class="lc-toolbar" style="margin-bottom: 16px">
-          <h3 class="lc-panel-title" style="margin: 0">邀请码管理</h3>
-          <div class="right">
-            <el-input-number v-model="generateCount" :min="1" :max="20" size="small" style="width: 120px" />
-            <el-button type="primary" size="small" @click="generate">生成邀请码</el-button>
-          </div>
-        </div>
-        <el-empty v-if="store.invites.length === 0" description="暂无邀请码" :image-size="60" />
-        <el-table v-else :data="store.invites" size="small">
-          <el-table-column label="邀请码" min-width="160">
-            <template #default="{ row }">
-              <span style="font-family: monospace">{{ row.code }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="状态" width="100">
-            <template #default="{ row }">
-              <el-tag v-if="row.used_by" type="info" size="small" effect="plain">已使用</el-tag>
-              <el-tag v-else type="success" size="small" effect="plain">可用</el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column label="使用者" width="140">
-            <template #default="{ row }">{{ row.used_by_username ?? row.used_by ?? '—' }}</template>
-          </el-table-column>
-          <el-table-column label="使用时间" width="160">
-            <template #default="{ row }">{{ row.used_at ? formatTime(row.used_at) : '—' }}</template>
-          </el-table-column>
-          <el-table-column label="操作" min-width="200" align="right">
-            <template #default="{ row }">
-              <el-button size="small" link type="primary" @click="copyInviteCode(row.code)">
-                复制
-              </el-button>
-              <el-button size="small" link type="primary" @click="copyRegisterLink(row.code)">
-                复制注册链接
-              </el-button>
-              <el-button
-                v-if="!row.used_by"
-                size="small"
-                link
-                type="danger"
-                @click="removeInvite(row.code)"
-              >
-                删除
-              </el-button>
-            </template>
-          </el-table-column>
-        </el-table>
           </div>
         </el-tab-pane>
       </el-tabs>
