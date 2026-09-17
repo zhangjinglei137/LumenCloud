@@ -18,7 +18,7 @@
 - [x] 3.3 users 表新增 `token_version`，JWT payload 带 `ver`、`get_current_user` 校验，改密时递增，验证改密后旧 token 返回 401
 - [x] 3.4 新增/改造登出接口清除 httpOnly cookie，前端 logout 先调登出再清 localStorage，验证登出后残留 cookie 无法通过鉴权
 - [x] 3.5 登录 redirect 参数白名单校验（`/` 开头且非 `//`），非法回退首页，验证新增跳转安全测试通过
-- [ ] 3.6 并发审批同 tmdb_id 捕获 IntegrityError 返回 409（approvals.py），验证新增并发审批测试无 500
+- [x] 3.6 并发审批同 tmdb_id 捕获 IntegrityError 返回 409（approvals.py），验证新增并发审批测试无 500
 - [ ] 3.7 admin 初始密码改为一次性 token 落盘 `data/` 下 chmod 600 文件（或等价方案），不再明文刷日志，验证启动日志不含密码且文件权限正确
 - [ ] 3.8 审查并确认登录限流反代头信任链（或注释明示单 worker/反代局限），验证配置文档更新
 

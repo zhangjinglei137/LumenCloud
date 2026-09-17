@@ -156,10 +156,10 @@ base-ref: 114b8081c182581a02a49435cfd4f317b58ac2f5
 - Consumes: `Media.tmdb_id` UNIQUE 约束、现有审批 CAS
 - Produces: 冲突返回 409「该影视已在影视库」
 
-- [ ] **Step 1** 写失败测试：两并发 approve 同 tmdb_id，后者收到 409 而非 500
-- [ ] **Step 2** 实现：`try/except IntegrityError` → 409（事务回滚后 wr 状态回 pending）
-- [ ] **Step 3** 运行测试通过；test_approval_dup 无回归
-- [ ] **Step 4** Commit：`fix: 并发审批同 tmdb_id 返回 409 而非 500`
+- [x] **Step 1** 写失败测试：两并发 approve 同 tmdb_id，后者收到 409 而非 500
+- [x] **Step 2** 实现：`try/except IntegrityError` → 409（事务回滚后 wr 状态回 pending）
+- [x] **Step 3** 运行测试通过；test_approval_dup 无回归
+- [x] **Step 4** Commit：`fix: 并发审批同 tmdb_id 返回 409 而非 500`
 
 ### Task B7: admin 初始密码落盘 + webhook 密钥遮蔽
 
