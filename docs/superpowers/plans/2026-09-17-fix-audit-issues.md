@@ -207,10 +207,10 @@ base-ref: 114b8081c182581a02a49435cfd4f317b58ac2f5
 - Consumes: 后端 `_DQ_ACTIVE`（含 pending）
 - Produces: `DOWNLOAD_ACTIVE_STATUSES` 含 `'pending'`
 
-- [ ] **Step 1** 写失败测试：仅看活跃时 pending 行被展示
-- [ ] **Step 2** `DOWNLOAD_ACTIVE_STATUSES` 补 `'pending'`
-- [ ] **Step 3** 前端测试 + build 通过
-- [ ] **Step 4** Commit：`fix: 仅看活跃包含排队中任务（pending）`
+- [x] **Step 1** 写失败测试：仅看活跃时 pending 行被展示
+- [x] **Step 2** `DOWNLOAD_ACTIVE_STATUSES` 补 `'pending'`
+- [x] **Step 3** 前端测试 + build 通过
+- [x] **Step 4** Commit：`fix: 仅看活跃包含排队中任务（pending）`
 
 ### Task C3: 队列控制面 CAS 门控（sort/add/retry）
 
