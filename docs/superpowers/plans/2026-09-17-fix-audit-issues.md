@@ -110,10 +110,10 @@ base-ref: 114b8081c182581a02a49435cfd4f317b58ac2f5
 - Consumes: bcrypt `verify_password`
 - Produces: 无（行为等价，时序一致）
 
-- [ ] **Step 1** 写失败测试：不存在用户路径调用 `verify_password(dummy_pw_digest, input)` 至少一次（mock 断言）
-- [ ] **Step 2** 实现：用户不存在时对固定 dummy bcrypt hash 执行一次校验再返回统一 401
-- [ ] **Step 3** 运行测试通过；test_auth 无回归
-- [ ] **Step 4** Commit：`fix: 抹平用户名枚举时序侧信道`
+- [x] **Step 1** 写失败测试：不存在用户路径调用 `verify_password(dummy_pw_digest, input)` 至少一次（mock 断言）
+- [x] **Step 2** 实现：用户不存在时对固定 dummy bcrypt hash 执行一次校验再返回统一 401
+- [x] **Step 3** 运行测试通过；test_auth 无回归
+- [x] **Step 4** Commit：`fix: 抹平用户名枚举时序侧信道`
 
 ### Task B4: 登出清 cookie
 
