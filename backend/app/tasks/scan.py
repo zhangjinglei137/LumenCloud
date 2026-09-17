@@ -1301,71 +1301,77 @@ async def _enqueue(media_id: int, episode_key: str, file_name: str, file_size: i
     返回 'enqueued' / 'existing' / 'conflict'。
     """
     async with async_session() as tx:
-        async with tx.begin():
-            has = (
-                await tx.execute(
-                    select(TaskQueue.id).where(
-                        TaskQueue.media_id == media_id,
-                        TaskQueue.episode == episode_key,
+        try:
+            async with tx.begin():
+                has = (
+                    await tx.execute(
+                        select(TaskQueue.id).where(
+                            TaskQueue.media_id == media_id,
+                            TaskQueue.episode == episode_key,
+                        )
                     )
-                )
-            ).first()
-            if has:
-                return "existing"
+                ).first()
+                if has:
+                    return "existing"
 
-            # 跨键防重：同 media 下已有同 file_name 记录 → 视为已存在（同一物理文件，
-            # 无论此前以文件名键还是 SxxExx 键入队，均不重复入队）。
-            has_file = (
-                await tx.execute(
-                    select(TaskQueue.id).where(
-                        TaskQueue.media_id == media_id,
-                        TaskQueue.file_name == file_name,
+                # 跨键防重：同 media 下已有同 file_name 记录 → 视为已存在（同一物理文件，
+                # 无论此前以文件名键还是 SxxExx 键入队，均不重复入队）。
+                has_file = (
+                    await tx.execute(
+                        select(TaskQueue.id).where(
+                            TaskQueue.media_id == media_id,
+                            TaskQueue.file_name == file_name,
+                        )
                     )
-                )
-            ).first()
-            if has_file:
-                return "existing"
+                ).first()
+                if has_file:
+                    return "existing"
 
-            # 补集号归一化防重（T8.8）：同 media 下该集（归一化集号匹配，跨文件名）
-            # 已在 download_queue 任意状态 → 视为已存在，不入队。download_queue 为防重
-            # 权威源（UNIQUE(media_id, episode)），其 episode 列与 task_queue 同形态
-            # （SxxExx 或全量模式文件名键），比对前统一经 _same_episode_ref 归一化。
-            dq_eps = (
-                await tx.execute(
-                    select(DownloadQueue.episode).where(
-                        DownloadQueue.media_id == media_id,
+                # 补集号归一化防重（T8.8）：同 media 下该集（归一化集号匹配，跨文件名）
+                # 已在 download_queue 任意状态 → 视为已存在，不入队。download_queue 为防重
+                # 权威源（UNIQUE(media_id, episode)），其 episode 列与 task_queue 同形态
+                # （SxxExx 或全量模式文件名键），比对前统一经 _same_episode_ref 归一化。
+                dq_eps = (
+                    await tx.execute(
+                        select(DownloadQueue.episode).where(
+                            DownloadQueue.media_id == media_id,
+                        )
                     )
-                )
-            ).scalars().all()
-            if any(_same_episode_ref(episode_key, dq_ep) for dq_ep in dq_eps):
-                return "existing"
+                ).scalars().all()
+                if any(_same_episode_ref(episode_key, dq_ep) for dq_ep in dq_eps):
+                    return "existing"
 
-            tx.add(TaskQueue(
-                media_id=media_id,
-                episode=episode_key,
-                file_name=file_name,
-                file_size=file_size,
-                size_estimated=size_estimated,
-                share_code=share_code,
-                status="ready",  # 凭据收集完毕，等待下载队列取件（queue-flow-rework Task 2）
-                pwd_id=payload.get("pwd_id") or payload.get("pwdId"),
-                stoken=payload.get("stoken"),
-                receive_code=payload.get("receive_code") or payload.get("receiveCode"),
-                fids=_json_dumps(payload.get("fids")),
-                fid_tokens=_json_dumps(payload.get("fid_tokens") or payload.get("fidTokens")),
-                folder_id=payload.get("folder_id") or payload.get("folderId")
-                or config_store.get("quark_default_folder", settings.QUARK_DEFAULT_FOLDER)
-                or None,
-                probe_attempt=0,
-                created_at=_now(),
-                updated_at=_now(),
-            ))
-            try:
-                await tx.commit()
-                return "enqueued"
-            except IntegrityError:
-                await tx.rollback()
-                # 并发冲突后补查 task_queue 记录（只写表，同键即已有任务；不做自动修复）
+                tx.add(TaskQueue(
+                    media_id=media_id,
+                    episode=episode_key,
+                    file_name=file_name,
+                    file_size=file_size,
+                    size_estimated=size_estimated,
+                    share_code=share_code,
+                    status="ready",  # 凭据收集完毕，等待下载队列取件（queue-flow-rework Task 2）
+                    pwd_id=payload.get("pwd_id") or payload.get("pwdId"),
+                    stoken=payload.get("stoken"),
+                    receive_code=payload.get("receive_code") or payload.get("receiveCode"),
+                    fids=_json_dumps(payload.get("fids")),
+                    fid_tokens=_json_dumps(payload.get("fid_tokens") or payload.get("fidTokens")),
+                    folder_id=payload.get("folder_id") or payload.get("folderId")
+                    or config_store.get("quark_default_folder", settings.QUARK_DEFAULT_FOLDER)
+                    or None,
+                    probe_attempt=0,
+                    created_at=_now(),
+                    updated_at=_now(),
+                ))
+                # 显式 flush 使 INSERT 立即执行（提交交由 `async with tx.begin()` 上下文
+                # 管理器统一处理，不再显式 commit——审查 A17）。撞 UNIQUE(media_id, episode)
+                # 时抛 IntegrityError 逃出 begin 块，由 begin 异常退出自动回滚（回滚清理
+                # 本事务内 pending 对象，不残留半状态）——单条冲突跳过、整轮不中断。
+                await tx.flush()
+            return "enqueued"
+        except IntegrityError:
+            # 并发冲突补查 task_queue 记录（只写表，同键即已有任务；不做自动修复）。
+            # 冲突已使写入事务回滚闭合（begin 上下文管理 rollback），补查在独立短事务
+            # 内进行，不影响后续入队（整轮不中断）。
+            async with tx.begin():
                 try:
                     has_tq = (
                         await tx.execute(
@@ -1377,12 +1383,12 @@ async def _enqueue(media_id: int, episode_key: str, file_name: str, file_size: i
                     ).first() is not None
                 except Exception:  # noqa: BLE001
                     has_tq = None
-                logger.warning(
-                    "[scan] media=%s episode=%s 并发冲突（UNIQUE），本轮跳过；task_queue 记录%s",
-                    media_id, episode_key,
-                    "存在（并发入队已完成，正常）" if has_tq else "不存在（请人工核查）",
-                )
-                return "conflict"
+            logger.warning(
+                "[scan] media=%s episode=%s 并发冲突（UNIQUE），本轮跳过；task_queue 记录%s",
+                media_id, episode_key,
+                "存在（并发入队已完成，正常）" if has_tq else "不存在（请人工核查）",
+            )
+            return "conflict"
 
 
 # queue-flow-rework Task 3：unmatched 静默机制已移除。缺失集搜索确认无资源后**不再**
@@ -1529,13 +1535,18 @@ def _due_filter():
     时间基准与 _finish_scan_run 写入 last_scan_at 同源（_now()，naive UTC）。
     SQLite（测试）用 func.datetime 修饰符；PostgreSQL（生产）用 now 绑定参数 - interval。
     """
-    from sqlalchemy import String, bindparam, func, literal, or_, text
+    from sqlalchemy import String, bindparam, func, literal, or_
 
     minutes = func.coalesce(Media.scan_interval_minutes, settings.SCAN_INTERVAL_MINUTES)
     if engine.dialect.name == "postgresql":
         # PG：timestamp 列 - interval 无隐式时区 cast，now 绑定参数与写入端同源（naive UTC）
+        # make_interval 用位置参数（SQLAlchemy 2.0 的 func 不支持 kwargs）——签名
+        # make_interval(years, months, weeks, days, hours, mins)，第 6 位即分钟数。
+        # 旧写法 minutes * text("interval '1 minute'") 编译为 integer * interval，
+        # PG 仅支持 interval * numeric（审查 A16，实库报错），此处修正为原生构造。
         due_expr = Media.last_scan_at <= (
-            bindparam("now", _now()) - (minutes * text("interval '1 minute'"))
+            bindparam("now", _now())
+            - func.make_interval(0, 0, 0, 0, 0, minutes)
         )
     else:
         # SQLite：datetime(now_iso, '-' || minutes || ' minutes') 修饰符
