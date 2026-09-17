@@ -522,17 +522,17 @@ git commit -m "fix(media): 修复影视库卡片「已有」重复前缀"
 - Consumes: Task 1-6 产物
 - Produces: verify 阶段证据（构建/测试输出、commit 列表、关键 diff）
 
-- [ ] **Step 1: 前端全量构建与测试**
+- [x] **Step 1: 前端全量构建与测试**
 
 Run: `cd frontend && npm run build 2>&1 | tail -20 && npx vitest run 2>&1 | tail -30`
 Expected: build 成功，全部测试通过
 
-- [ ] **Step 2: 后端测试（有 venv 时）**
+- [x] **Step 2: 后端测试（有 venv 时）**
 
 Run: `python -m pytest tests/test_fix_online.py tests/test_prune_history.py tests/test_task_cleanup.py tests/test_task_run_duration.py -q`
 Expected: 通过（无环境则记录受限说明）
 
-- [ ] **Step 3: 记录构建证据**
+- [x] **Step 3: 记录构建证据**
 
 若项目无自动探测构建命令或需显式证据：
 
@@ -542,12 +542,12 @@ comet state record-check fix-logs-and-ui-polish build --command "cd frontend && 
 
 （仅在实际运行成功且 exit 0 时记录；后端 pytest 同理可记录。）
 
-- [ ] **Step 4: 收尾审视**
+- [x] **Step 4: 收尾审视**
 
 - `git log --oneline -8` 覆盖 6 个功能 commit
 - `git diff 38fa9d14a22eba3fb789b31e0a6ac552a8294f24 --stat` 确认改动文件都在计划内
 - tasks.md 勾选全部任务（1.1-6.2）
 
-- [ ] **Step 5: Commit 收尾（如有）**
+- [x] **Step 5: Commit 收尾（如有）**
 
 若勾选 tasks.md 产生 diff：`git add docs/openspec/changes/fix-logs-and-ui-polish/tasks.md && git commit -m "chore(fix-logs-and-ui-polish): 勾选 build 阶段任务"`
