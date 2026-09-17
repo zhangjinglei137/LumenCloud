@@ -33,19 +33,26 @@ _cache: dict[str, str] = {}
 _loaded: bool = False
 
 # Phase 8 配置入库：system_config 中不回显值的敏感键（settings GET 用 "***" 占位）。
-# 遮蔽原则（Q5 收紧为仅系统内部密钥遮蔽）：
+# 遮蔽原则（Q5 收紧为仅系统内部密钥遮蔽，Task B7 审查 C7 扩至内部回调鉴权密钥）：
 #   - 仅 jwt_secret（JWT 签名密钥，运行期文件落盘）与 init_admin_password
 #     （初始管理员密码，仅首启预置）隐藏——二者为系统内部密钥，不在可编辑
 #     白名单表单中，保持 "***" 占位；
-#   - 服务凭据键（alist_token / cloudsaver_password / aria2_token / nastools_password /
-#     emby_api_key / tmdb_api_key / pushplus_token）、内部服务地址（alist_base_url /
-#     aria2_rpc_url）与默认目录（quark_default_folder）一律明文回显——settings GET
-#     返回真实值，前端表单直接预填可编辑（Q5 用户确认：地址/令牌/用户/密码/token
-#     全部明文显示，仅 jwt_secret 与 init_admin_password 隐藏）；
+#   - internal_aria2_webhook_secret / internal_nastools_webhook_token（内部回调
+#     鉴权密钥）同为系统内部密钥：GET 以 "***" 占位不回显真实值（审查 C7），
+#     但仍在 _EDITABLE_KEYS 可编辑白名单中，settings 页以密码框/「已配置」展示；
+#     遮蔽仅为 GET 展示层——config_store.get / notify.py / nastools_notify.py
+#     内部读取不受影响（真实值不变）；
+#   - 其余服务凭据键（alist_token / cloudsaver_password / aria2_token /
+#     nastools_password / emby_api_key / tmdb_api_key / pushplus_token）、内部
+#     服务地址（alist_base_url / aria2_rpc_url）与默认目录（quark_default_folder）
+#     明文回显——settings GET 返回真实值，前端表单直接预填可编辑
+#     （Q5 用户确认：地址/令牌/用户/密码/token 全部明文显示，仅系统内部密钥隐藏）；
 #   - username / URL 类键本就不在此列，始终明文回显。
 _SENSITIVE_KEYS = frozenset({
     "jwt_secret",
     "init_admin_password",
+    "internal_aria2_webhook_secret",
+    "internal_nastools_webhook_token",
 })
 
 

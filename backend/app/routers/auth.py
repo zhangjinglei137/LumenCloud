@@ -10,6 +10,7 @@
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional
 
 import bcrypt
@@ -381,10 +382,39 @@ async def change_password(
 # Phase 8：初始密码字符集——剔除易混淆字符（0/O、1/l/I、o、8/B 附近等）
 _ADMIN_PASSWORD_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789"
 
+# Task B7（审查 C7）：首启初始凭据落盘文件名（<data_dir>/.initial_admin_credential，
+# 与 .jwt_secret 同风格隐藏文件），一次性生成后已存在不覆盖（幂等）。
+_INITIAL_ADMIN_CREDENTIAL_FILE = ".initial_admin_credential"
+
 
 def _generate_random_password(length: int = 16) -> str:
     """生成 16 位随机初始密码（secrets 加密随机，避免易混淆字符）。"""
     return "".join(secrets.choice(_ADMIN_PASSWORD_CHARS) for _ in range(length))
+
+
+def _persist_initial_admin_credential(
+    data_dir: str, username: str, password: str
+) -> Optional[Path]:
+    """把首启初始凭据写入 <data_dir>/.initial_admin_credential（chmod 600）。
+
+    - 文件已存在 → 不覆盖（幂等，保留首次内容），返回该路径；
+    - 成功写入 → 返回路径；
+    - I/O 失败 → warning 日志 + 返回 None（密码仍经 ensure_admin 返回值交给
+      lifespan/调用方，文件是额外渠道，不阻断首次启动）。
+    密码只落盘、绝不进日志（审查 C7）。
+    """
+    path = Path(data_dir) / _INITIAL_ADMIN_CREDENTIAL_FILE
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "x", encoding="utf-8") as f:  # "x" 独占创建：已存在抛 FileExistsError
+            f.write(f"username: {username}\npassword: {password}\n")
+        path.chmod(0o600)
+        return path
+    except FileExistsError:
+        return path  # 幂等：已存在不覆盖（首次内容为准）
+    except OSError as exc:
+        logger.warning("初始管理员凭据文件 %s 写入失败（%s）", path, exc)
+        return None
 
 
 def _assert_secure_secrets() -> None:
@@ -411,8 +441,9 @@ async def ensure_admin() -> Optional[str]:
 
     幂等：已存在任一 admin → 返回 None；重复执行安全（并发撞 UNIQUE 由
     IntegrityError 兜底，返回 None）。首次创建时随机生成初始密码并 bcrypt
-    入库，通过 logger.info 打印一次（含用户名/初始密码/登录提示）——这是用户
-    唯一能拿到初始密码的渠道；同时返回该密码供调用方/测试确定性使用。
+    入库，落盘到 <data_dir>/.initial_admin_credential（chmod 600，一次性凭据，
+    Task B7 审查 C7：不再明文刷日志）——日志仅提示文件路径；同时返回该密码
+    供调用方/lifespan 确定性使用。
     """
     try:
         async with async_session() as session:
@@ -436,17 +467,25 @@ async def ensure_admin() -> Optional[str]:
                 )
             )
             await session.commit()
-            logger.info(
-                "\n"
-                "============================================================\n"
-                "已初始化管理员账号（首次启动）\n"
-                "  用户名: %s\n"
-                "  初始密码: %s\n"
-                "请立即登录 https://<host>:8000 并修改密码（/api/auth/change-password 或页面）\n"
-                "============================================================",
-                username,
-                password,
+            # Task B7（审查 C7）：初始密码不再明文刷日志——落盘一次性凭据文件
+            # （已存在不覆盖，幂等），日志仅提示文件路径（密码同时随返回值交
+            # 由 lifespan/调用方处理）。
+            credential_path = _persist_initial_admin_credential(
+                settings.LUMENCLOUD_DATA_DIR, username, password
             )
+            if credential_path is not None:
+                logger.info(
+                    "\n"
+                    "============================================================\n"
+                    "已初始化管理员账号（首次启动）\n"
+                    "  用户名: %s\n"
+                    "  初始管理员凭据已写入: %s\n"
+                    "请立即登录 https://<host>:8000 并修改密码"
+                    "（/api/auth/change-password 或页面；修改密码后建议删除该凭据文件）\n"
+                    "============================================================",
+                    username,
+                    credential_path,
+                )
             return password
     except IntegrityError:
         # 并发启动兜底（用户名撞 UNIQUE），幂等可接受

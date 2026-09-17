@@ -161,6 +161,65 @@ def test_ensure_admin_existing_logs_skip(auth_db, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Task B7：首启初始密码落盘（不再明文刷日志，审查 C7）
+# ---------------------------------------------------------------------------
+
+def test_ensure_admin_writes_credential_file_not_in_log(auth_db, tmp_path, monkeypatch):
+    """首启生成密码后：凭据写入 data/ 下一次性文件（chmod 600），日志不含密码明文。
+
+    日志只提示文件路径（「初始管理员凭据已写入 <路径>」）——密码不再刷日志（C7）。
+    """
+    import stat as stat_mod
+
+    from app.config import settings as app_settings
+
+    monkeypatch.setattr(app_settings, "LUMENCLOUD_DATA_DIR", str(tmp_path))
+
+    logged: list[str] = []
+    monkeypatch.setattr(
+        auth_mod.logger, "info",
+        lambda *a, **k: logged.append(" ".join(str(x) for x in a)),
+    )
+
+    password = run(auth_mod.ensure_admin())
+    assert password is not None
+
+    # 日志绝不包含密码明文，且提示凭据文件路径
+    assert all(password not in m for m in logged), "日志中出现初始密码明文"
+    assert any(".initial_admin_credential" in m for m in logged), "日志应提示凭据文件路径"
+
+    # 凭据文件存在、权限 600、内容含用户名与密码
+    path = tmp_path / ".initial_admin_credential"
+    assert path.exists()
+    assert stat_mod.S_IMODE(path.stat().st_mode) == 0o600
+    content = path.read_text(encoding="utf-8")
+    assert "admin" in content
+    assert password in content
+
+
+def test_ensure_admin_credential_file_idempotent(auth_db, tmp_path, monkeypatch):
+    """凭据文件幂等：文件已存在（残留）不覆盖，保留首次内容（boundary 要求）。"""
+    from app.config import settings as app_settings
+    from sqlalchemy import delete
+
+    monkeypatch.setattr(app_settings, "LUMENCLOUD_DATA_DIR", str(tmp_path))
+    path = tmp_path / ".initial_admin_credential"
+    path.write_text("username: admin\npassword: OLD-FILE-PASSWORD\n", encoding="utf-8")
+    path.chmod(0o600)
+
+    async def _clear_admin():
+        async with auth_db() as session:
+            await session.execute(delete(User).where(User.role == "admin"))
+            await session.commit()
+    run(_clear_admin())
+
+    password = run(auth_mod.ensure_admin())
+    assert password is not None and password != "OLD-FILE-PASSWORD"
+    # 文件已存在 → 不覆盖，内容保持首次落盘值
+    assert path.read_text(encoding="utf-8") == "username: admin\npassword: OLD-FILE-PASSWORD\n"
+
+
+# ---------------------------------------------------------------------------
 # POST /api/auth/change-password（交付 2）
 # ---------------------------------------------------------------------------
 

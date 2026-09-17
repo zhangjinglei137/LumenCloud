@@ -109,6 +109,9 @@ def test_sensitive_keys_covered():
     # 其余服务凭据键（token/password/api_key/内部地址/默认目录）明文回显。
     for key in ("jwt_secret", "init_admin_password"):
         assert config_store.is_sensitive(key), key
+    # Task B7：内部回调鉴权密钥纳入遮蔽（GET 不回显真实值，展示层 *** 占位）
+    for key in ("internal_aria2_webhook_secret", "internal_nastools_webhook_token"):
+        assert config_store.is_sensitive(key), key
     # 服务凭据键明文回显（Q5：地址/令牌/用户/密码/token 全部明文显示）
     for key in (
         "alist_base_url", "alist_token",

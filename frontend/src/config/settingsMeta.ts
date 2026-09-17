@@ -8,11 +8,24 @@
  *   EPISODE_STATE_TIMEOUT_HOURS=2、CAPACITY_SAFETY_MARGIN_GB=0.05、
  *   CAPACITY_ALERT_THRESHOLD=0.90（代码常量）。
  *
- * 凭据说明（Phase 升级后）：后端 settings GET 已改为全明文回显所有凭据
- * （仅 jwt_secret/init_admin_password 隐藏），因此前端不再消费 sensitive 渲染密码框，
- * 占位文案统一为「不修改可保持原样」。sensitive: true 标记保留，仅作纵深防御参考。
+ * 凭据说明（Phase 升级后）：后端 settings GET 全明文回显所有凭据
+ * （仅 jwt_secret/init_admin_password/内部回调鉴权密钥隐藏），因此普通凭据
+ * 不消费 sensitive 渲染密码框，占位文案统一为「不修改可保持原样」。
+ * Task B7（审查 C7）起，内部回调鉴权密钥（internal_*_webhook_*）纳入遮蔽：
+ * GET 以 "***" 占位不回显真实值，表单以密码框渲染 +「已配置」展示，
+ * 留空（不修改）不提交——见下方 MASKED_CRED_KEYS 与 SettingsView.vue。
+ * sensitive: true 标记保留，仅作纵深防御参考。
  */
 import type { SettingFieldMeta } from '../types'
+
+/** Task B7：后端遮蔽回显（GET 返回 "***" 占位）的密钥键集合。
+ * 真实值不落前端：表单渲染为密码框，已配置时展示「已配置」占位，
+ * 输入框留空且不进入 dirtyCredKeys——保存时不提交、不覆盖既有值。
+ */
+export const MASKED_CRED_KEYS: ReadonlySet<string> = new Set([
+  'internal_aria2_webhook_secret',
+  'internal_nastools_webhook_token',
+])
 
 export const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
   // ---------- AList 网盘网关 ----------
@@ -128,17 +141,19 @@ export const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
   },
 
   // ---------- 内部回调鉴权（自动生成，editable_keys 白名单内） ----------
+  // Task B7（审查 C7）：这两个键后端 GET 以 "***" 遮蔽（MASKED_CRED_KEYS），
+  // 表单渲染密码框 +「已配置」占位，留空不修改；填写新值并保存才覆盖。
   internal_aria2_webhook_secret: {
     label: 'aria2 回调鉴权密钥',
-    desc: 'aria2 下载完成回调（webhook）的鉴权密钥，由系统自动生成，一般无需修改；如确认泄露，可重新填写并同步更新 aria2 侧配置。',
-    placeholder: '不修改可保持原样',
+    desc: 'aria2 下载完成回调（webhook）的鉴权密钥，由系统自动生成，一般无需修改；已配置时遮蔽显示，留空不修改；如确认泄露，可重新填写并同步更新 aria2 侧配置。',
+    placeholder: '已配置，留空不修改',
     default: '自动生成，无需修改',
     sensitive: true,
   },
   internal_nastools_webhook_token: {
     label: 'NasTools 回调鉴权令牌',
-    desc: 'NasTools 入库完成回调的鉴权令牌，由系统自动生成，一般无需修改；如确认泄露，可重新填写并同步更新 NasTools 侧配置。',
-    placeholder: '不修改可保持原样',
+    desc: 'NasTools 入库完成回调的鉴权令牌，由系统自动生成，一般无需修改；已配置时遮蔽显示，留空不修改；如确认泄露，可重新填写并同步更新 NasTools 侧配置。',
+    placeholder: '已配置，留空不修改',
     default: '自动生成，无需修改',
     sensitive: true,
   },

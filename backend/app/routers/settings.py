@@ -2,8 +2,10 @@
 
 - GET  /api/settings  system_config 全量 + services 凭据「是否已配置」布尔 +
                       editable_keys 前端可配置键清单（Phase 8）
-                      —— 仅 jwt_secret / init_admin_password 以 "***" 占位隐藏；
-                      其余服务凭据键明文回显（Q5：地址/令牌/用户/密码/token 全部明文）
+                      —— jwt_secret / init_admin_password / 内部回调鉴权密钥
+                      （internal_aria2_webhook_secret / internal_nastools_webhook_token，
+                      Task B7 审查 C7）以 "***" 占位隐藏；其余服务凭据键明文回显
+                      （Q5：地址/令牌/用户/密码/token 全部明文）
 - PATCH /api/settings 白名单键 UPSERT（Phase 8 起含服务凭据键）；commit 后刷新
                       进程内配置缓存（config_store.refresh，保存即生效）；含调度
                       相关键时事件驱动重新应用 job 开关（M2，Oracle Gate2）
@@ -129,9 +131,10 @@ async def get_settings(
 
     Phase 8 配置入库：
     - 首次 GET 惰性加载进程内配置缓存（config_store），services 判定需 DB 值；
-    - system_config 中敏感键（config_store._SENSITIVE_KEYS：仅 jwt_secret 与
-      init_admin_password，Q5 收紧）不回显值，以 "***" 占位；其余服务凭据键
-      （token/password/api_key 等）明文回显，前端表单直接预填可编辑；
+    - system_config 中敏感键（config_store._SENSITIVE_KEYS：jwt_secret、
+      init_admin_password 与内部回调鉴权密钥 internal_aria2_webhook_secret /
+      internal_nastools_webhook_token，Task B7 审查 C7）不回显值，以 "***" 占位；
+      其余服务凭据键（token/password/api_key 等）明文回显，前端表单直接预填可编辑；
     - 新增 editable_keys 字段：前端可配置的键清单（= config_store 可管理键）。
     """
     from app.services import config_store  # noqa: PLC0415 延迟导入

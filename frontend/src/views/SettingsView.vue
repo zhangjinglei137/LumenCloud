@@ -11,6 +11,7 @@ import {
   CRED_GROUP_LABELS,
   CRED_GROUP_ORDER,
   getSettingMeta,
+  MASKED_CRED_KEYS,
 } from '../config/settingsMeta'
 
 const store = useSettingsStore()
@@ -169,9 +170,27 @@ const credGroups = computed<{ prefix: string; label: string; keys: string[] }[]>
   return groups
 })
 
+/** Task B7：遮蔽回显键是否已配置——后端 GET 以 "***" 占位即表示有真实值 */
+function isCredConfigured(key: string): boolean {
+  return systemConfig.value[key] === '***'
+}
+
+/** 遮蔽回显键的输入框占位文案（已配置 / 未配置两种状态） */
+function maskedPlaceholder(key: string): string {
+  return isCredConfigured(key) ? '已配置，留空不修改' : '未配置，填写后保存'
+}
+
 function syncCredValues(): void {
   const sys = systemConfig.value
   for (const key of editableKeys.value) {
+    if (MASKED_CRED_KEYS.has(key) && sys[key] === '***') {
+      // Task B7：遮蔽回显键不回填 "***"——输入框留空，「已配置」状态由
+      // isCredConfigured 展示；留空字段不进入 dirtyCredKeys（未修改），
+      // 保存时不提交、不覆盖既有真实值。
+      credValues[key] = ''
+      credOriginal[key] = ''
+      continue
+    }
     const v = sys[key]
     const s = typeof v === 'string' ? v : v == null ? '' : String(v)
     credValues[key] = s
@@ -427,7 +446,7 @@ function serviceLabel(key: string): string {
         <h3 class="lc-panel-title" style="margin: 0">系统设置</h3>
         <div class="right">
           <el-tooltip
-            content="首次启动的初始密码记录在服务日志中，建议登录后立即修改"
+            content="首次启动的初始密码写入服务数据目录下的 .initial_admin_credential 文件（chmod 600），登录后请立即修改"
             placement="left"
           >
             <el-button size="small" @click="pwdVisible = true">修改密码</el-button>
@@ -458,7 +477,7 @@ function serviceLabel(key: string): string {
           type="info"
           :closable="false"
           show-icon
-          title="服务凭据在下方表单配置，保存后立即生效（无需重启）。凭据明文显示，请妥善保管本页面访问权限。"
+          title="服务凭据在下方表单配置，保存后立即生效（无需重启）。服务凭据明文显示，内部回调鉴权密钥遮蔽显示，请妥善保管本页面访问权限。"
           style="margin-top: 14px"
         />
         <!-- jwt_secret 为后端首启自动生成的文件，状态「未配置」并非缺漏 -->
@@ -513,6 +532,15 @@ function serviceLabel(key: string): string {
                   <el-tag v-if="getSettingMeta(key).default" size="small" effect="plain" type="info">
                     {{ getSettingMeta(key).default }}
                   </el-tag>
+                  <!-- Task B7：遮蔽回显键已配置时展示「已配置」占位（不回显真实值） -->
+                  <el-tag
+                    v-if="MASKED_CRED_KEYS.has(key) && isCredConfigured(key)"
+                    size="small"
+                    type="success"
+                    effect="plain"
+                  >
+                    已配置
+                  </el-tag>
                   <el-tag v-if="dirtyCredKeys.includes(key)" size="small" type="warning" effect="plain">
                     已修改
                   </el-tag>
@@ -521,9 +549,10 @@ function serviceLabel(key: string): string {
               <div class="cred-input-row">
                 <el-input
                   v-model="credValues[key]"
-                  type="text"
+                  :type="MASKED_CRED_KEYS.has(key) ? 'password' : 'text'"
+                  :show-password="MASKED_CRED_KEYS.has(key)"
                   autocomplete="off"
-                  :placeholder="getSettingMeta(key).placeholder ?? ''"
+                  :placeholder="MASKED_CRED_KEYS.has(key) ? maskedPlaceholder(key) : (getSettingMeta(key).placeholder ?? '')"
                   class="cred-input"
                   @keyup.enter="saveAll"
                 />
