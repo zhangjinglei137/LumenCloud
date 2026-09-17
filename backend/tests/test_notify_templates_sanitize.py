@@ -20,6 +20,32 @@ class TestSanitizeErrorText:
         assert "abc123" not in out
         assert "token=" in out  # 参数名保留、值脱敏
 
+    def test_redacts_uppercase_token_value(self):
+        """大小写变体参数名（Token=）同样脱敏，防脱敏绕过（R1 修复）。"""
+        text = "接口 https://host/api?Token=secret123 超时"
+        out = sanitize_error_text(text)
+        assert "secret123" not in out
+        assert "Token=" in out  # 参数名保留、值脱敏
+
+    def test_redacts_apikey_case_variant(self):
+        """驼峰大小写参数名（ApiKey=）同样脱敏，防脱敏绕过（R1 修复）。"""
+        text = "接口 https://host/api?ApiKey=topsecret 失败"
+        out = sanitize_error_text(text)
+        assert "topsecret" not in out
+
+    def test_redacts_uppercase_key_variant(self):
+        """全大写参数名（KEY=）同样脱敏，防脱敏绕过（R1 修复）。"""
+        text = "接口 https://host/api?KEY=zzz 失败"
+        out = sanitize_error_text(text)
+        assert "zzz" not in out
+
+    def test_strips_userinfo_any_scheme(self):
+        """任意 scheme 的 URL userinfo 均剥除（R1 顺手：非仅 http/https）。"""
+        text = "上传 ftp://user:pass@ftp.example.com/pub 失败"
+        out = sanitize_error_text(text)
+        assert "user:pass@" not in out
+        assert "ftp://ftp.example.com/pub" in out
+
     def test_truncates_long_text(self):
         text = "错误" * 500  # 1000 字符 > 500 上限
         out = sanitize_error_text(text)
