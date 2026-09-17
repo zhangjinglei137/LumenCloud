@@ -367,6 +367,12 @@ export interface LogItem {
   duration_seconds?: number | null
 }
 
+/** 运行日志分页响应（GET /api/logs 契约：后端返回 {items, total}） */
+export interface LogListResponse {
+  items: LogItem[]
+  total: number
+}
+
 export interface InviteCode {
   code: string
   used_by?: string | null

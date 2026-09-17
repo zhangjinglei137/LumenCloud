@@ -14,7 +14,7 @@ import type {
   EmbyLibrariesResponse,
   EmbySeriesStatus,
   InviteCode,
-  LogItem,
+  LogListResponse,
   LoginResponse,
   MediaDetail,
   MediaItem,
@@ -319,12 +319,12 @@ export function listLogsApi(params: {
   title?: string
   limit?: number
   offset?: number
-}) {
+}): Promise<LogListResponse> {
   // 仅将非空参数传给后端（undefined/null/空串一律剔除）
   const query = Object.fromEntries(
     Object.entries(params).filter(([, value]) => value !== undefined && value !== null && value !== ''),
   )
-  return http.get<LogItem[]>('/logs', { params: query }).then((r) => r.data)
+  return http.get<LogListResponse>('/logs', { params: query }).then((r) => r.data)
 }
 
 // ---------- 通知 ----------
