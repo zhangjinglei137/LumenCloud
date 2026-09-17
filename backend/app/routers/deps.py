@@ -50,25 +50,20 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
-async def _decode_user_id(token: str) -> Optional[int]:
-    """解析并校验 JWT，返回 sub（user_id）；任何非法输入返回 None。
+async def _decode_payload(token: str) -> Optional[dict]:
+    """解析并校验 JWT，返回 payload；任何非法输入返回 None。
 
     Phase 8：使用文件化密钥 _JWT_SECRET 验签（与 auth.create_access_token 一致）。
+    Task B1：调用方从 payload 中取 `sub`（user_id）与 `ver`（token_version）
+    做鉴权；无法解出 sub 视为非法令牌。
     """
     try:
-        payload = jwt.decode(
+        return jwt.decode(
             token,
             _JWT_SECRET,
             algorithms=[settings.JWT_ALGORITHM],
         )
     except JWTError:
-        return None
-    sub = payload.get("sub")
-    if sub is None:
-        return None
-    try:
-        return int(sub)
-    except (TypeError, ValueError):
         return None
 
 
@@ -77,11 +72,16 @@ async def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
     session: AsyncSession = Depends(get_session),
 ) -> User:
-    """JWT 鉴权依赖：token 缺失/非法/用户不存在 → 401。
+    """JWT 鉴权依赖：token 缺失/非法/用户不存在/版本不匹配 → 401。
 
     Task 3 双通道（渐进式）：Authorization header 优先；header 缺失时回退
     httpOnly cookie `access_token`（login 时 Set-Cookie）。header 优先于
     cookie——同时存在时以 header 为准，保持既有 401 语义。
+
+    Task B1（改密吊销）：payload 携带 `ver`（签发时的 users.token_version），
+    与当前用户 token_version 比对；不相等 → 401（令牌已吊销，语义同过期）。
+    存量 token 无 `ver` 字段 → `payload.get("ver")` 为 None，视为版本 0——
+    用户改密（版本递增 ≥1）前仍有效，改密后失效。
     """
     token = None
     if credentials is not None:
@@ -92,13 +92,28 @@ async def get_current_user(
     if not token:
         raise HTTPException(status_code=401, detail="未提供身份令牌")
 
-    user_id = await _decode_user_id(token)
-    if user_id is None:
+    payload = await _decode_payload(token)
+    if payload is None:
+        raise HTTPException(status_code=401, detail="令牌无效或已过期")
+
+    sub = payload.get("sub")
+    if sub is None:
+        raise HTTPException(status_code=401, detail="令牌无效或已过期")
+    try:
+        user_id = int(sub)
+    except (TypeError, ValueError):
         raise HTTPException(status_code=401, detail="令牌无效或已过期")
 
     user = await session.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=401, detail="用户不存在或已被删除")
+
+    # Task B1：token_version 吊销校验（None → 0，兼容存量无 ver token）
+    token_version = payload.get("ver")
+    if token_version is None:
+        token_version = 0
+    if user.token_version != token_version:
+        raise HTTPException(status_code=401, detail="令牌已吊销，请重新登录")
     return user
 
 

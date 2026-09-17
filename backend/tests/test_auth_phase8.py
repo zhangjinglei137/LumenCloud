@@ -227,7 +227,7 @@ def test_change_password_api_flow():
         )
         assert r.status_code == 200 and r.json() == {"ok": True}
 
-        # 旧密码失效、新密码可登录（token 不改动，仍有效）
+        # 旧密码失效、新密码可登录
         assert client.post(
             "/api/auth/login", json={"username": "admin", "password": admin_password}
         ).status_code == 401
@@ -235,4 +235,5 @@ def test_change_password_api_flow():
             "/api/auth/login", json={"username": "admin", "password": "newpass123"}
         )
         assert r.status_code == 200
-        assert client.get("/api/auth/me", headers=_auth(tok)).status_code == 200
+        # Task B1：改密递增 token_version → 改密前签发的旧 token 已被吊销（401）
+        assert client.get("/api/auth/me", headers=_auth(tok)).status_code == 401

@@ -104,13 +104,20 @@ def _now() -> datetime:
 
 
 def create_access_token(user: User) -> str:
-    """签发 JWT（sub=user.id，携带 role，exp=JWT_EXPIRE_HOURS）。
+    """签发 JWT（sub=user.id，role，ver=token_version，exp=JWT_EXPIRE_HOURS）。
 
     Phase 8：签名密钥来自文件化 _JWT_SECRET（config 导入时已解析），
     与 deps 验签使用的同一密钥。
+    Task B1：payload 携带 `ver`（users.token_version），deps.get_current_user
+    校验版本一致——改密时版本递增即吊销改密前签发的所有旧 token。
     """
     expire = datetime.now(timezone.utc) + timedelta(hours=settings.JWT_EXPIRE_HOURS)
-    payload = {"sub": str(user.id), "role": user.role, "exp": expire}
+    payload = {
+        "sub": str(user.id),
+        "role": user.role,
+        "ver": user.token_version,
+        "exp": expire,
+    }
     return jwt.encode(payload, _JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
 
@@ -247,10 +254,11 @@ async def change_password(
 ) -> dict:
     """登录用户修改自己的密码（Phase 8）。
 
-    校验旧密码（bcrypt）→ 条件更新 `UPDATE users SET password_hash=? WHERE
-    id=? AND password_hash=?` 防并发覆盖（行数=0 说明当前哈希已过期 → 409）。
-    取舍：不改动 JWT——改密不吊销已签发 token（单用户场景换免重新登录体验；
-    如需吊销可后续引入 token 版本号）。
+    校验旧密码（bcrypt）→ 条件更新 `UPDATE users SET password_hash=?,
+    token_version=token_version+1 WHERE id=? AND password_hash=?` 防并发覆盖
+    （行数=0 说明当前哈希已过期 → 409）。
+    Task B1：改密事务内同时递增 token_version——与密码更新同一条 UPDATE 原子
+    提交；此后改密前签发的旧 JWT（payload.ver 小于新版本）在鉴权时被吊销。
     """
     if not verify_password(payload.old_password, user.password_hash):
         raise HTTPException(status_code=401, detail="旧密码错误")
@@ -259,7 +267,7 @@ async def change_password(
     result = await session.execute(
         update(User)
         .where(User.id == user.id, User.password_hash == user.password_hash)
-        .values(password_hash=new_hash)
+        .values(password_hash=new_hash, token_version=User.token_version + 1)
     )
     if result.rowcount == 0:
         # 并发窗口内他人已改密，本次提交基于过期哈希 → 拒绝

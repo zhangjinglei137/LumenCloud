@@ -334,6 +334,9 @@ class User(Base):
         Text, nullable=False, server_default=text("'guest'")
     )
     invite_code = mapped_column(Text)  # 注册时使用的邀请码
+    # Task B1：修改密码吊销既有令牌——改密时递增，JWT payload 带 ver 比对
+    # （deps.get_current_user 校验；存量 token 无 ver 视为 0，改密前仍有效）
+    token_version = mapped_column(Integer, server_default=text("0"), nullable=False)
     created_at = mapped_column(DateTime, server_default=text("CURRENT_TIMESTAMP"))
 
 
