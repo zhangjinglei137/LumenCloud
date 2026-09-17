@@ -75,12 +75,12 @@ base-ref: 114b8081c182581a02a49435cfd4f317b58ac2f5
 - Consumes: `User` 模型、`get_current_user`、JWT 签发函数
 - Produces: JWT payload 新增 `ver` 键；User.token_version 递增逻辑
 
-- [ ] **Step 1** User 表加 `token_version = mapped_column(Integer, server_default=text("0"), nullable=False)`（含迁移）
-- [ ] **Step 2** 写失败测试：旧 token 在改密后请求受保护端点应 401
-- [ ] **Step 3** 运行确认失败
-- [ ] **Step 4** 签发时 payload 加 `ver`；`get_current_user` 解码后与 `user.token_version` 比对，不符 → 401；改密事务内 `token_version += 1`
-- [ ] **Step 5** 运行测试确认通过；跑 test_auth 全系列确认无回归
-- [ ] **Step 6** Commit：`feat: 修改密码吊销既有令牌（token_version）`
+- [x] **Step 1** User 表加 `token_version = mapped_column(Integer, server_default=text("0"), nullable=False)`（含迁移）
+- [x] **Step 2** 写失败测试：旧 token 在改密后请求受保护端点应 401
+- [x] **Step 3** 运行确认失败
+- [x] **Step 4** 签发时 payload 加 `ver`；`get_current_user` 解码后与 `user.token_version` 比对，不符 → 401；改密事务内 `token_version += 1`
+- [x] **Step 5** 运行测试确认通过；跑 test_auth 全系列确认无回归
+- [x] **Step 6** Commit：`feat: 修改密码吊销既有令牌（token_version）`
 
 ### Task B2: 注册邀请码限流 + 登录限流复用
 
