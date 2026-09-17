@@ -130,6 +130,9 @@ describe('episodeSummaryText（已有 N 缺失 M）', () => {
   it('tv + available/missing/total 已知 → 已有 N 缺失 M', () => {
     expect(episodeSummaryText({ available: 5, total: 20, missing: 15 }, 'tv', null)).toBe('已有 5 缺失 15')
   })
+  it('missing=0 依然单前缀「已有 N 缺失 0」', () => {
+    expect(episodeSummaryText({ available: 15, total: 15, missing: 0 }, 'tv', null)).toBe('已有 15 缺失 0')
+  })
   it('missing 缺失 → 回退旧「已有 N / total 集」', () => {
     expect(episodeSummaryText({ available: 5, total: 20 }, 'tv', null)).toBe('已有 5 / 20 集')
   })

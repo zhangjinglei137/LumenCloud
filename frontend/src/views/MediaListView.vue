@@ -162,7 +162,7 @@ async function onDelete(m: MediaItem, e: Event) {
                     {{ seriesStatusLabel(m.series_status, 'movie') }}
                   </el-tag>
                 </span>
-                <span v-else>已有 {{ episodeText(m) }}</span>
+                <span v-else>{{ episodeText(m) }}</span>
               </div>
               <div class="row">
                 <span v-if="m.in_emby" class="lc-muted">已在 Emby</span>
