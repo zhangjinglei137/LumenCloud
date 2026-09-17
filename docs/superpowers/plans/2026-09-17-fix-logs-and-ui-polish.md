@@ -210,7 +210,7 @@ git commit -m "feat(logs): /api/logs 返回 items+total 真实分页契约"
 - Consumes: 后端 `{items, total}` 响应
 - Produces: `listLogsApi` 返回 `Promise<LogListResponse>`；`fetchPage` 直接消费 `res.total`
 
-- [ ] **Step 1: types 增补响应类型**
+- [x] **Step 1: types 增补响应类型**
 
 `frontend/src/types/index.ts` 增补：
 
@@ -223,7 +223,7 @@ export interface LogListResponse {
 
 （`LogItem` 已存在于该文件。）
 
-- [ ] **Step 2: 改 api**
+- [x] **Step 2: 改 api**
 
 `frontend/src/api/index.ts` `listLogsApi`：
 
@@ -244,7 +244,7 @@ export function listLogsApi(params: {
 }
 ```
 
-- [ ] **Step 3: 改 store**
+- [x] **Step 3: 改 store**
 
 `frontend/src/stores/logs.ts` `fetchPage` 移除「limit+1 探测」：
 
@@ -272,12 +272,12 @@ async fetchPage(filter: LogFilter = {}, page = 1, pageSize?: number): Promise<vo
 
 同步更新 state 中 `total` 的注释（删除「估算」描述，改为「后端真实 total」）。
 
-- [ ] **Step 4: 验证前端构建**
+- [x] **Step 4: 验证前端构建**
 
 Run: `cd frontend && npx vue-tsc --noEmit && npx vitest run`
 Expected: 类型与单测通过（无 logs store 测试则至少 build 通过）
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add frontend/src/types/index.ts frontend/src/api/index.ts frontend/src/stores/logs.ts
