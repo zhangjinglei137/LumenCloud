@@ -213,3 +213,55 @@ def test_approve_dup_tmdb_409_keeps_pending(_db_maker, monkeypatch):
         assert trigger_calls == [res["media_id"]]
 
     run(_case_ok())
+
+
+# ---------------------------------------------------------------------------
+# 4) approve_approval 并发竞争窗口：查重通过（返回「无重复」）后另一路已建
+#    Media → 插入撞 UNIQUE → 捕获 IntegrityError 返回 409（而非裸 500），
+#    且事务回滚后 wr 保持 pending（可再次尝试）
+# ---------------------------------------------------------------------------
+
+def test_approve_dup_race_window_409(_db_maker, monkeypatch):
+    """并发审批同 tmdb_id：模拟「查重与插入之间的竞争窗口」。
+
+    两个 admin 并发批准引用同一 tmdb_id 的两个不同 wr 时，双方查重都在对方
+    commit 前通过（monkeypatch 让查重恒返回「无重复」），后提交者在 flush 时
+    撞 Media.tmdb_id UNIQUE → IntegrityError。要求：捕获后返回 409（替代裸
+    500），事务回滚使 wr 保持 pending（可再次尝试），且不触发批准后巡检。
+    """
+    _seed_media(_db_maker, tmdb_id=42)  # 实际 DB 已存在同 tmdb_id 的 Media
+    monkeypatch.setattr("app.routers.approvals.notifier.notify", AsyncMock())
+    trigger_calls: list[int] = []
+    monkeypatch.setattr(
+        "app.tasks.scan.trigger_scan_background",
+        lambda media_id, **kwargs: trigger_calls.append(media_id),
+    )
+
+    async def _seed_wr(tmdb_id: int) -> int:
+        async with _db_maker() as session:
+            wr = WatchRequest(
+                requested_by=1, title=f"想看{tmdb_id}", tmdb_id=tmdb_id,
+                media_type="movie", status="pending",
+            )
+            session.add(wr)
+            await session.commit()
+            return wr.id
+
+    wr_id = run(_seed_wr(tmdb_id=42))
+
+    async def _case():
+        async with _db_maker() as session:
+            # 模拟竞争窗口：查重恒返回「无重复」（近似并发下查重先于对方 commit
+            # 通过），但 DB 实际已有 Media(tmdb_id=42) → flush 撞 UNIQUE
+            monkeypatch.setattr(session, "scalar", AsyncMock(return_value=None))
+            with pytest.raises(HTTPException) as ei:
+                await approve_approval(wr_id, admin=AKA, session=session)
+            assert ei.value.status_code == 409
+            assert ei.value.detail == DUP_DETAIL
+        # 独立会话复查：事务已回滚，pending→approved 更新未落盘 → 仍 pending
+        async with _db_maker() as session:
+            assert (await session.get(WatchRequest, wr_id)).status == "pending"
+        # 409 在事务副作用之前抛出，绝不触发巡检
+        assert trigger_calls == []
+
+    run(_case())

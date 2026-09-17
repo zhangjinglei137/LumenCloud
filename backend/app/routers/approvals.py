@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Media, User, WatchRequest
@@ -30,6 +31,20 @@ router = APIRouter(prefix="/approvals", tags=["approvals"])
 
 def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _is_unique_violation(exc: IntegrityError) -> bool:
+    """区分 UNIQUE 约束冲突与其他 IntegrityError（FK/NOT NULL 等）。
+
+    只对 UNIQUE 冲突映射 409，其余重新抛出——避免捕获过宽掩盖真实 DB 错误。
+    - PostgreSQL（psycopg2 / asyncpg）：sqlstate / pgcode 23505 = unique_violation
+    - SQLite：错误信息含 "UNIQUE constraint failed"
+    """
+    orig = exc.orig
+    code = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
+    if code == "23505":
+        return True
+    return "UNIQUE constraint failed" in str(orig)
 
 
 class WatchRequestCreate(BaseModel):
@@ -198,9 +213,22 @@ async def approve_approval(
         in_emby=False,
     )
     session.add(media)
-    await session.flush()
-    media_id = media.id
-    await session.commit()
+    try:
+        await session.flush()  # 撞 Media.tmdb_id UNIQUE 在这里抛出
+        media_id = media.id
+        await session.commit()
+    except IntegrityError as exc:
+        # 并发审批兜底（审查 C8）：两个 admin 并发批准引用同一 tmdb_id 的不同
+        # wr 时，查重都在对方 commit 前通过 → 后提交者 flush 撞 UNIQUE。
+        # 事务回滚使 wr 的 pending→approved 更新一并撤销（保持 pending，可再次
+        # 尝试），返回 409「该影视已在影视库」替代裸 500。只对 UNIQUE 冲突 409，
+        # 其余 IntegrityError 重新抛出（避免掩盖 FK/NOT NULL 等真实 DB 错误）。
+        if not _is_unique_violation(exc):
+            raise
+        await session.rollback()
+        raise HTTPException(
+            status_code=409, detail="该影视已在影视库，无需重复提交"
+        ) from exc
 
     # ---- 事务外副作用 ----
     # 可选：触发该 media 巡检（fire-and-forget，E-1 不再同步等待；故障不影响审批结果）
