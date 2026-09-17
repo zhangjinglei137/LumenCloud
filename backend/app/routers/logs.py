@@ -19,6 +19,37 @@ from app.routers.deps import get_current_admin, get_session
 
 router = APIRouter(prefix="/logs", tags=["logs"])
 
+# Design D11（Task C10）：任务类型筛选项后端下发。
+# 来源权衡：task_run 表 DISTINCT 会漏「尚未产生记录的类型」（如从未触发的
+# capacity_alert），故采用静态常量——与 backend/app/tasks/*.py 的
+# record_task_run 写入值一一对应（scan.py: scan_media/scan_all_media；
+# transfer.py: transfer；cleanup.py: cleanup/prune_history；capacity_alert.py:
+# capacity_alert；recovery.py: recover；nastools_sync.py: sync_nastools；
+# notification_scan.py: notify）。新增任务类型须同步此处（与前端
+# TASK_TYPE_MAP 维护纪律一致）。不含 media_scan/recovery 历史别名（仅存量数据，筛选不提供）。
+_TASK_TYPES = [
+    "scan_media",
+    "scan_all_media",
+    "transfer",
+    "cleanup",
+    "prune_history",
+    "capacity_alert",
+    "recover",
+    "sync_nastools",
+    "notify",
+]
+
+
+@router.get("/task-types")
+async def list_task_types(
+    admin: User = Depends(get_current_admin),  # 仅 admin（§9.1 日志，与查询端点一致）
+) -> dict:
+    """返回任务类型枚举列表（Design D11：供前端运行日志页筛选项动态渲染）。
+
+    返回 {"types": list[str]}；与 /api/logs 的 task_type 过滤取值保持一致。
+    """
+    return {"types": list(_TASK_TYPES)}
+
 
 def _json_or_none(raw: str | None) -> dict | None:
     """task_run.phases/scan_detail TEXT 列 → dict；NULL/非法 JSON 返回 None。"""

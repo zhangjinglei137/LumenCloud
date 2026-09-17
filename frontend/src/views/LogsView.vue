@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { onMounted, reactive } from 'vue'
+import { onMounted, reactive, ref } from 'vue'
 import { useLogsStore, type LogFilter } from '../stores/logs'
 import type { LogItem } from '../types'
 import { formatTime, taskStatusLabel, taskStatusType, taskTypeLabel, taskTypeType } from '../utils/format'
+import http from '../api/http'
 
 const store = useLogsStore()
 
@@ -14,8 +15,19 @@ const filter = reactive<LogFilter>({
   title: undefined,
 })
 
-// 与后端任务类型取值对齐（backend/app/tasks/*）；不含 media_scan/recovery 历史别名
-const taskTypes = ['scan_media', 'scan_all_media', 'transfer', 'cleanup', 'prune_history', 'capacity_alert', 'recover', 'sync_nastools', 'notify']
+// Design D11：任务类型筛选项由后端 /api/logs/task-types 动态下发（不再在本视图
+// 硬编码，避免与 backend/app/tasks/*.py record_task_run 写入值手动同步）。
+// 拉取失败回退空数组：不阻断日志页主功能（筛选下拉为空，日志列表照常展示）。
+const taskTypes = ref<string[]>([])
+
+async function loadTaskTypes(): Promise<void> {
+  try {
+    const res = await http.get<{ types: string[] }>('/logs/task-types')
+    taskTypes.value = res.data.types ?? []
+  } catch {
+    taskTypes.value = []
+  }
+}
 
 // 状态筛选选项：与 task_run 实际状态值对齐（record_task_run 精确匹配，见
 // backend/app/routers/logs.py status 过滤；「失败」记录实际 status=error，非 failed）
@@ -23,6 +35,7 @@ const statusFilterOptions = ['success', 'error', 'running', 'skipped']
 
 onMounted(() => {
   store.fetchPage(filter)
+  loadTaskTypes()
 })
 
 async function search() {
