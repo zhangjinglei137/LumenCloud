@@ -59,7 +59,7 @@
 - [x] 7.2 清理任务新增 notifications 保留期清理（沿用 prune_history 模式），验证超期通知被删除、保留期内不受影响
 - [x] 7.3 PushPlus 推送失败补发站内「推送失败」告警（或记录可观察 task_run），验证失败时产生站内通知
 - [x] 7.4 通知异常文案截断与脱敏（去 URL userinfo/query token），验证通知正文不含凭据
-- [ ] 7.5 海报缓存满后淘汰最旧（LRU）再写入 + 回源响应 content-type 校验（非 `image/*` 不缓存返 502），验证新增海报缓存/类型测试
+- [x] 7.5 海报缓存满后淘汰最旧（LRU）再写入 + 回源响应 content-type 校验（非 `image/*` 不缓存返 502），验证新增海报缓存/类型测试
 - [ ] 7.6 海报缓存 per-path singleflight（可选，asyncio.Lock 按 path 节流），验证并发同键只回源一次
 - [ ] 7.7 运行日志任务类型筛选项改后端下发（新增 `/api/logs/task-types` 或随列表返回枚举），前端动态渲染，验证后端新增类型后选项自动出现
 

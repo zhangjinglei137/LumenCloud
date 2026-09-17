@@ -314,10 +314,10 @@ base-ref: 114b8081c182581a02a49435cfd4f317b58ac2f5
 - Consumes: `_POSTER_CACHE_MAX`、httpx 响应
 - Produces: 满时淘汰最旧；非 `image/*` 不缓存返 502/降级
 
-- [ ] **Step 1** 写失败测试：缓存满后新海报仍可缓存；上游返回 text/html → 不缓存且非 200 图片返回
-- [ ] **Step 2** 实现 LRU（OrderedDict）+ content-type 前缀校验
-- [ ] **Step 3** 运行测试通过 + test_poster 无回归
-- [ ] **Step 4** Commit：`fix: 海报缓存满淘汰与响应类型校验`
+- [x] **Step 1** 写失败测试：缓存满后新海报仍可缓存；上游返回 text/html → 不缓存且非 200 图片返回
+- [x] **Step 2** 实现 LRU（OrderedDict）+ content-type 前缀校验
+- [x] **Step 3** 运行测试通过 + test_poster 无回归
+- [x] **Step 4** Commit：`fix: 海报缓存满淘汰与响应类型校验`
 
 ### Task C10: 运行日志任务类型后端下发 + 前端常量同步
 
