@@ -1,6 +1,7 @@
 """海报代理端点单测（路由函数直调，user 传 fake；鉴权在 test_poster_auth.py）。"""
 import asyncio
 import time
+from collections import OrderedDict
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -171,7 +172,7 @@ def _fetch_calls_with_factory(monkeypatch, resp, calls):
 def test_cache_hit_skips_upstream(monkeypatch):
     monkeypatch.setattr(
         poster_mod, "_POSTER_CACHE",
-        {"/t/p/w500/x.jpg": (time.monotonic() + 100, "image/jpeg", b"cached")},
+        OrderedDict({"/t/p/w500/x.jpg": (time.monotonic() + 100, "image/jpeg", b"cached")}),
     )
     calls: list[str] = []
     resp = SimpleNamespace(status_code=200, content=b"fresh", headers={"content-type": "image/jpeg"})
@@ -194,16 +195,20 @@ def test_cache_expired_refetches(monkeypatch):
     assert calls == ["https://image.tmdb.org/t/p/w500/x.jpg"]
 
 
-def test_cache_cap_drops_writes(monkeypatch):
-    monkeypatch.setattr(
-        poster_mod, "_POSTER_CACHE",
-        {f"/t/p/w{k}.jpg": (time.monotonic() + 100, "image/jpeg", b"x") for k in range(poster_mod._POSTER_CACHE_MAX)},
+def test_cache_cap_evicts_oldest_and_writes_new(monkeypatch):
+    """缓存满上限后新条目淘汰最旧并写入（LRU），不再「满 100 实质失效」。"""
+    cache = OrderedDict(
+        (f"/t/p/w{k}.jpg", (time.monotonic() + 100, "image/jpeg", b"x"))
+        for k in range(poster_mod._POSTER_CACHE_MAX)
     )
+    monkeypatch.setattr(poster_mod, "_POSTER_CACHE", cache)
     calls: list[str] = []
     resp = SimpleNamespace(status_code=200, content=b"fresh", headers={"content-type": "image/jpeg"})
     monkeypatch.setattr(poster_mod, "_client_factory", _make_client_factory(resp, calls))
     asyncio.run(poster_mod.fetch_poster("/t/p/w500/overflow.jpg"))
-    assert poster_mod._POSTER_CACHE.get("/t/p/w500/overflow.jpg") is None  # 未写入
+    assert len(cache) == poster_mod._POSTER_CACHE_MAX
+    assert cache.get("/t/p/w500/overflow.jpg") is not None  # 新条目已写入
+    assert "/t/p/w0.jpg" not in cache                       # 最旧条目被淘汰
 
 
 # ---- Task 4：Emby 封面代理（/emby/<itemId>/Primary 前缀）----
@@ -263,7 +268,7 @@ def test_fetch_poster_emby_cache_isolated_from_tmdb(monkeypatch):
     """/emby/ 与 /t/p/ 缓存 key 天然隔离：emby 命中不回源、tmdb 不误伤。"""
     monkeypatch.setattr(
         poster_mod, "_POSTER_CACHE",
-        {"/emby/abc-123/Primary": (time.monotonic() + 100, "image/jpeg", b"emby-cached")},
+        OrderedDict({"/emby/abc-123/Primary": (time.monotonic() + 100, "image/jpeg", b"emby-cached")}),
     )
     calls: list[str] = []
     resp = SimpleNamespace(status_code=200, content=b"tmdb-fresh", headers={"content-type": "image/jpeg"})

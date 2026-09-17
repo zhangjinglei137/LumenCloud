@@ -2,13 +2,14 @@
 
 - 校验：_validate_poster_path 放行 /t/p/... 与 /emby/<itemId>/Primary（防 SSRF/路径穿越）
 - 回源：httpx 拉取镜像/官方图床，返回 bytes + content_type
-- 缓存：进程内 TTL dict（上限 + 过期），纯优化，任何异常降级直出
+- 缓存：进程内 TTL OrderedDict（上限 + 过期 + 满时 LRU 淘汰最旧），纯优化，任何异常降级直出
 - 节流：模块级 {key: ts}，60s 内同键只告警一次
 """
 import logging
 import posixpath
 import re
 import time
+from collections import OrderedDict
 from datetime import datetime, timezone
 
 import httpx
@@ -21,10 +22,10 @@ logger = logging.getLogger(__name__)
 POSTER_DEFAULT_BASE = "https://image.tmdb.org"
 REQUEST_TIMEOUT = httpx.Timeout(10.0)
 
-# 缓存：path → (expire_ts, content_type, bytes)
+# 缓存：path → (expire_ts, content_type, bytes)；满上限时淘汰最旧条目（LRU）
 _POSTER_CACHE_TTL = 600
 _POSTER_CACHE_MAX = 100
-_POSTER_CACHE: dict[str, tuple[float, str, bytes]] = {}
+_POSTER_CACHE: OrderedDict[str, tuple[float, str, bytes]] = OrderedDict()
 
 # 告警节流：path → 上次告警时间戳
 _POSTER_ALERT_TTL = 60
@@ -130,6 +131,7 @@ async def fetch_poster(p: str) -> tuple[bytes, str]:
     now = time.monotonic()
     hit = _POSTER_CACHE.get(p)
     if hit is not None and now < hit[0]:
+        _POSTER_CACHE.move_to_end(p)  # 命中 → 移到最近端（LRU 语义）
         return hit[2], hit[1]
 
     if p.startswith("/emby/"):
@@ -145,8 +147,13 @@ async def fetch_poster(p: str) -> tuple[bytes, str]:
     if resp.status_code != 200:
         _alert(p)
         raise Exception(f"上游返回 HTTP {resp.status_code}")
-    ctype = resp.headers.get("content-type", "image/jpeg")
-    # 上限未满才写入；失败路径不写缓存（避免临时故障期缓存错误状态）
-    if len(_POSTER_CACHE) < _POSTER_CACHE_MAX:
-        _POSTER_CACHE[p] = (now + _POSTER_CACHE_TTL, ctype, resp.content)
+    ctype = resp.headers.get("content-type", "")
+    # 回源成功但响应非图片（如劫持/误配返回的 HTML 错误页）：不写缓存、按失败语义返回（路由映射 502）
+    if not ctype.strip().lower().startswith("image/"):
+        _alert(p)
+        raise Exception(f"上游返回非图片内容 content-type={ctype or '缺失'}")
+    # 满上限时淘汰最旧条目（LRU）再写入；失败路径不写缓存（避免临时故障期缓存错误状态）
+    if len(_POSTER_CACHE) >= _POSTER_CACHE_MAX:
+        _POSTER_CACHE.popitem(last=False)
+    _POSTER_CACHE[p] = (now + _POSTER_CACHE_TTL, ctype, resp.content)
     return resp.content, ctype
