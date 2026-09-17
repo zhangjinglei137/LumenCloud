@@ -1330,6 +1330,14 @@ async def _try_admit_one(t0) -> str:
                                     select(DownloadQueue.quota_reject_count).where(DownloadQueue.id == dq_id)
                                 )
                             ) or 0
+                        else:
+                            # C4（fix-audit-issues，delta spec pipeline-admission「等待
+                            # 准入冲突处理」/ 审查 B7）：置 quota_wait 的 CAS 未命中 →
+                            # 并发方已将行推进出 pending（抢占/取消/回退等）。与抢占
+                            # 分支同款处理，标记 conflict 跳过，不得按「容量不足」
+                            # 错误语义返回 quota_wait（否则 quota_count 计数失真、
+                            # 配额告警误报）。行保持并发方推进后的状态，不重复写。
+                            conflict = True
     if conflict:
         return "conflict"
     if capacity_error is not None:
