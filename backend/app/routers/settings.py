@@ -47,6 +47,8 @@ _WHITELIST_EXACT = {
     "scan_baseline_required",
     # 阶段 4 生产化 / E：容量使用率告警阈值（交付 1，默认 0.90 在代码常量）
     "capacity_alert_threshold",
+    # D-A3：运行日志/容量快照保留天数（天）；cleanup.prune_history_job 读取，缺省 30
+    "task_run_retention_days",
     # ---- Phase 8 配置入库：服务凭据可写键 ----
     "alist_base_url", "alist_token",
     "cloudsaver_base_url", "cloudsaver_username", "cloudsaver_password",
@@ -67,7 +69,11 @@ _WHITELIST_EXACT = {
 # 键为动态不可枚举，不在此列；GET /api/settings 以 editable_keys 字段返回给前端渲染表单）。
 # Q2：emby_series_library_ids 为业务行为参数（设置页以下拉多选渲染在「业务参数」区），
 # 必须从 editable_keys 排除——若进入该清单，前端会把此键当作服务凭据字段渲染成文本框。
-_EDITABLE_KEYS = frozenset(_WHITELIST_EXACT - {"emby_series_library_ids"})
+# D-A3：task_run_retention_days 同为业务参数（设置页「业务参数」区渲染），若进入
+# editable_keys，前端 configEntries 排除分支会把它过滤掉，业务参数区不显示。
+_EDITABLE_KEYS = frozenset(
+    _WHITELIST_EXACT - {"emby_series_library_ids", "task_run_retention_days"}
+)
 
 # 已废弃设置键：system_config 存量保留，但 GET 响应不再透传（避免前端
 # fallback 展示英文键名）。PATCH 白名单（_WHITELIST_EXACT）本就不含这些键。

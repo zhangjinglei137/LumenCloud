@@ -184,6 +184,12 @@ export const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
     desc: '容量使用率达到该比例时触发告警，提醒你清理中转目录。0.9 表示 90%。',
     default: '默认 0.90（90%）',
   },
+  task_run_retention_days: {
+    label: '运行日志保留天数',
+    desc: 'task_run 运行日志与容量快照记录保留天数，超期由每日清理任务删除。缺省 30 天。',
+    placeholder: '如 30',
+    default: '30（默认）',
+  },
   max_episode_size_gb: {
     label: '剧集单集大小上限（GB）',
     desc: '新订阅剧集的默认单集大小上限，超过的文件会被拒绝下载。',

@@ -128,3 +128,33 @@ def test_scan_interval_minutes_retired_and_not_editable():
         # PATCH 该键 → 422
         patch = client.patch("/api/settings", headers=headers, json={"scan_interval_minutes": "60"})
         assert patch.status_code == 422
+
+
+def test_task_run_retention_days_patch_whitelist_and_not_editable():
+    """D-A3：task_run_retention_days 可 PATCH（白名单内），但不进 editable_keys。
+
+    - PATCH {"task_run_retention_days": "60"} → 200 + {"ok": true}；
+    - GET system_config/config 回显值（前端业务参数区渲染依据）；
+    - 若该键误入 editable_keys，前端 configEntries 排除分支
+      （editable_keys.includes(k) && !selectOptions）会把业务参数区该项过滤掉。
+    """
+    with TestClient(app) as client:
+        admin_password = client.portal.call(_recreate_admin)
+        r = client.post("/api/auth/login", json={"username": "admin", "password": admin_password})
+        assert r.status_code == 200, r.text
+        token = r.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # 白名单内 → 200 + ok（RED 期望：当前不在白名单，应 422）
+        patch = client.patch("/api/settings", headers=headers, json={"task_run_retention_days": "60"})
+        assert patch.status_code == 200, patch.text
+        assert patch.json() == {"ok": True}
+
+        # GET：值回显于 system_config 与 config（前端契约键）
+        res = client.get("/api/settings", headers=headers)
+        assert res.status_code == 200
+        body = res.json()
+        assert body["system_config"]["task_run_retention_days"] == "60"
+        assert body["config"]["task_run_retention_days"] == "60"
+        # D-A3：不进 editable_keys，避免前端误渲染为服务凭据文本框
+        assert "task_run_retention_days" not in body["editable_keys"]

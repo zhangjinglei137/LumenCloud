@@ -53,3 +53,16 @@ describe('settingsMeta 废弃项移除', () => {
     expect(SETTING_FIELD_META.quark_quota_gb?.default).toMatch(/^默认/)
   })
 })
+
+describe('settingsMeta 运行日志保留天数', () => {
+  it('task_run_retention_days 标签为「运行日志保留天数」', () => {
+    expect(getSettingMeta('task_run_retention_days').label).toBe('运行日志保留天数')
+  })
+
+  it('desc 注明影响 task_run 与容量快照，且提供 placeholder 与默认提示', () => {
+    const meta = getSettingMeta('task_run_retention_days')
+    expect(meta.desc).toContain('task_run')
+    expect(meta.placeholder).toBe('如 30')
+    expect(meta.default).toBe('30（默认）')
+  })
+})
