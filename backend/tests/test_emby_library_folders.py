@@ -230,7 +230,7 @@ def test_list_library_maps_status_to_series_status(monkeypatch, _db_maker):
     run(list_library("t1", "series", "continuing"))
 
     assert captured["params"]["ParentId"] == "t1"
-    assert captured["params"]["SeriesStatus"] == "continuing"
+    assert captured["params"]["SeriesStatus"] == "Continuing"  # 契约对齐：首字母大写
     assert "Series" in captured["params"]["IncludeItemTypes"]
 
 
@@ -373,7 +373,7 @@ def test_build_params_maps_item_type():
 def test_build_params_status_forces_series():
     params = emby_mod._build_library_params("movie", "continuing", parent_id="m1")
     assert params["IncludeItemTypes"] == "Movie,Series"  # status 非空强制含 Series
-    assert params["SeriesStatus"] == "continuing"
+    assert params["SeriesStatus"] == "Continuing"  # 契约对齐：首字母大写
     assert params["ParentId"] == "m1"
 
 

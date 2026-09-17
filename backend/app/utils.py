@@ -5,16 +5,65 @@
 - split_quark_path()   夸克完整路径 → (dir, [name])（transfer / recovery 共用）
 - fmt_episode()        规范化集 key（scan / library_check 共用）
 - parse_episode_num()  从集 key / 文件名提取集号（scan / library_check 共用）
+- BoundedLRUCache()    进程内有界 LRU 缓存（tmdb / emby 进程内缓存有界化共用）
 
 导入约定：tasks 层各模块从此处导入，不再各自重复定义；本模块只依赖标准库
 （不依赖 app.* / sqlalchemy），避免任何循环导入与测试装配成本。
 """
 import re
+from collections import OrderedDict
 from datetime import datetime, timezone
 
 # 三重匹配（SxxExx / SxxExxx / 第N集）正则——常量仍留在各调用模块，
 # 本文件仅保留函数实现所需的最小正则（_ep_num 用）
 _RE_EP_NUM_SUFFIX = re.compile(r"E(\d{2,3})$")
+
+
+class BoundedLRUCache:
+    """进程内有界 LRU 缓存（审查 A1/A7：原模块级 dict 无淘汰，长运行后无界增长）。
+
+    语义与 dict 兼容（get 未命中返回 None、支持 clear()/len()），额外提供：
+    - get/set 命中或写入时 move_to_end（LRU 访问序）；
+    - 写入后超上限（max_items）→ popitem(last=False) 淘汰最旧。
+
+    说明：本类只管理「有界 + 淘汰」，不管理过期——TTL 判断仍由调用方完成
+    （缓存值由调用方自行携带时间戳，如 tmdb/emby 的 `(timestamp, payload)`
+    元组），命中且未过期的判定在调用方，与既有缓存语义保持一致。
+    """
+
+    def __init__(self, max_items: int) -> None:
+        self._max_items = max_items
+        self._d: OrderedDict = OrderedDict()
+
+    def get(self, key):
+        """读取：命中则刷新为最新访问（move_to_end）；未命中返回 None（dict 兼容）。"""
+        if key in self._d:
+            self._d.move_to_end(key)
+            return self._d[key]
+        return None
+
+    def set(self, key, value) -> None:
+        """写入：已存在先刷新位置；写入后超上限淘汰最旧条目。"""
+        if key in self._d:
+            self._d.move_to_end(key)
+        self._d[key] = value
+        while len(self._d) > self._max_items:
+            self._d.popitem(last=False)
+
+    def __getitem__(self, key):
+        """dict 风格读取（委托 get）：与既有 `_CACHE.get(key)` / `_CACHE[key]` 混用兼容。"""
+        return self.get(key)
+
+    def __setitem__(self, key, value) -> None:
+        """dict 风格写入（委托 set）：既有 `_CACHE[key] = value` 调用点无需改写。"""
+        self.set(key, value)
+
+    def clear(self) -> None:
+        """清空（既有测试依赖 _SEASON_AIR_CACHE.clear() / _INGESTED_CACHE.clear() 等）。"""
+        self._d.clear()
+
+    def __len__(self) -> int:
+        return len(self._d)
 
 
 def now_utc_naive() -> datetime:

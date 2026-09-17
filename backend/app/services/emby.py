@@ -36,6 +36,7 @@ from app.database import async_session
 from app.models import Media
 from app.services import config_store
 from app.services.tmdb import TMDBUnavailable, get_by_tmdb_id
+from app.utils import BoundedLRUCache
 
 logger = logging.getLogger(__name__)
 
@@ -71,9 +72,12 @@ _LIST_PAGE_SIZE = 500
 _LIST_MAX_PAGES = 40  # 500 × 40 = 20000 条，远超影视库实际规模，仅作异常兜底
 
 # episode-status-and-detail-polish：Emby 已入库集聚合的进程内 TTL 缓存。
-# 模式对齐 tmdb.py _SEASON_AIR_CACHE（模块级 dict + timestamp + TTL）。
+# 模式对齐 tmdb.py _SEASON_AIR_CACHE（模块级缓存 + timestamp + TTL）。
+# 有界化（审查 A7）：BoundedLRUCache 淘汰最旧，上限 2000——key 为
+# f"{配置指纹}:{tmdb_id}"（配置指纹见 _config_fingerprint），2000 覆盖常规
+# 媒体库规模（2000 部影视），超过按 LRU 淘汰，避免长运行无界增长。
 _INGESTED_TTL_SECONDS = 6 * 3600  # 6h，与 TMDB season air_date 缓存一致
-_INGESTED_CACHE: dict[str, tuple[float, frozenset[str]]] = {}
+_INGESTED_CACHE = BoundedLRUCache(2000)
 
 
 class EmbyUnavailable(Exception):
@@ -144,19 +148,27 @@ async def _get(path: str, params: dict[str, Any], timeout: httpx.Timeout = REQUE
 
 # D-1（P1）：Emby serverId（/System/Info/Public 的 Id）——web 详情链接必需参数，
 # 缺失时前端打开空白页。恒定不变，模块级惰性缓存（获取一次全局复用）。
+# 审查 A5：缓存 key 附加 _config_fingerprint()——配置变更（emby_base_url / api_key
+# 修改）→ 指纹变化 → 自动重取，无需主动清理（方案：key 附加指纹，更内聚）。
 _SERVER_ID: Optional[str] = None
 _SERVER_ID_LOADED = False
+_SERVER_ID_FP: Optional[str] = None  # 当前缓存值对应的配置指纹（None=尚未按指纹加载）
 
 
 async def _get_server_id() -> Optional[str]:
-    """惰性获取 Emby serverId：成功/失败均只尝试一次并缓存结果（恒定值）。
+    """惰性获取 Emby serverId：同配置下成功/失败均只尝试一次并缓存结果（恒定值）。
+
+    配置指纹（_config_fingerprint）变化时视为未命中重新获取——设置页修改
+    emby_base_url 等配置后，旧 serverId 自然失效（web 详情路由必须指向新实例）。
 
     Public 端点（无需 api_key）；失败或响应无 Id → None（调用方降级处理）。
     """
-    global _SERVER_ID, _SERVER_ID_LOADED
-    if _SERVER_ID_LOADED:
+    global _SERVER_ID, _SERVER_ID_LOADED, _SERVER_ID_FP
+    fp = _config_fingerprint()
+    if _SERVER_ID_LOADED and _SERVER_ID_FP == fp:
         return _SERVER_ID
     _SERVER_ID_LOADED = True
+    _SERVER_ID_FP = fp
     try:
         payload = await _get("/System/Info/Public", {})
         _SERVER_ID = payload.get("Id") or None
@@ -170,23 +182,28 @@ async def _get_server_id() -> Optional[str]:
 # MediaFolders 项的 Id 不是 /Items 接受的 ParentId（ViewId）；Views 项的 Id ==
 # VirtualFolders ItemId == ViewId，才是 list_library 作为 ParentId 的合法来源。
 # UserId 恒定不变，模块级惰性缓存（获取一次全局复用，失败降级 None）。
+# 审查 A5：同 serverId，附加 _config_fingerprint()——配置变更自动重取。
 _USER_ID: Optional[str] = None
 _USER_ID_LOADED = False
+_USER_ID_FP: Optional[str] = None  # 当前缓存值对应的配置指纹
 
 
 async def _get_user_id() -> Optional[str]:
     """惰性获取 Emby UserId（/Users 首个用户的 Id）。
 
     系统 api_key 具备管理员权限，/Users 返回用户数组（或 dict 包装的 Items）；
-    取首个用户的 Id 作为 /Users/{UserId}/Views 查询目标。成功/非配置类失败均只
-    尝试一次并缓存结果（恒定值）；「未配置」错误（EMBY_BASE_URL/EMBY_API_KEY
-    缺失）原样 re-raise（保持前端「未配置空态」），并重置缓存标记允许配置修复
-    后重试；其他失败或响应无 Id → None（调用方降级为空列表）。
+    取首个用户的 Id 作为 /Users/{UserId}/Views 查询目标。同配置下成功/非配置类
+    失败均只尝试一次并缓存结果（恒定值）；配置指纹（_config_fingerprint）变化时
+    重新获取。「未配置」错误（EMBY_BASE_URL/EMBY_API_KEY 缺失）原样 re-raise
+    （保持前端「未配置空态」），并重置缓存标记允许配置修复后重试；其他失败或
+    响应无 Id → None（调用方降级为空列表）。
     """
-    global _USER_ID, _USER_ID_LOADED
-    if _USER_ID_LOADED:
+    global _USER_ID, _USER_ID_LOADED, _USER_ID_FP
+    fp = _config_fingerprint()
+    if _USER_ID_LOADED and _USER_ID_FP == fp:
         return _USER_ID
     _USER_ID_LOADED = True
+    _USER_ID_FP = fp
     try:
         payload = await _get("/Users", {})
         raw: Any = payload if isinstance(payload, list) else payload.get("Items")
@@ -636,6 +653,10 @@ def _build_library_params(
     """构造 /Items 查询参数：IncludeItemTypes 映射 + SeriesStatus + 分页 + 可选 ParentId。
 
     单库（list_library）与全部聚合（list_all_library）共用，保证口径一致。
+
+    审查 A6（Emby SeriesStatus 契约对齐）：Emby SeriesStatus 枚举值为首字母大写的
+    `Continuing` / `Ended`；内部/前端仍用小写枚举（continuing/ended）展示，仅
+    `.capitalize()` 对齐请求参数（None/空保持不携带该参数，避免无效筛选）。
     """
     include_item_types = {"movie": "Movie", "series": "Series"}.get(item_type or "", "Movie,Series")
     if status and "Series" not in include_item_types:
@@ -649,7 +670,7 @@ def _build_library_params(
     if parent_id:
         params["ParentId"] = parent_id
     if status:
-        params["SeriesStatus"] = status
+        params["SeriesStatus"] = status.capitalize()
     return params
 
 
@@ -740,22 +761,21 @@ async def list_all_library(
             errors.append(exc)
 
     base = _base_url()
+    # D-1：serverId 批量获取（惰性缓存，配置指纹失效），归一化时直接拼 emby_web_url。
+    # 精简两段式赋值（审查 A10）：原先归一化（server_id=None）后再逐条补 emby_web_url，
+    # 现改为先取 server_id、_normalize_library_item 一次生成，结果语义一致
+    # （server_id 有值 → 带 serverId 的详情链接；失败 None → 前端隐藏「在 Emby 中打开」）。
+    server_id = await _get_server_id()
     seen: dict[str, dict[str, Any]] = {}
     for chunk in results:
         if isinstance(chunk, Exception):
             continue
         for raw in chunk:
-            normalized = _normalize_library_item(raw, base, server_id=None)
+            normalized = _normalize_library_item(raw, base, server_id=server_id)
             if normalized is not None:
                 seen.setdefault(normalized["emby_id"], normalized)
 
-    # D-1：serverId 批量获取（惰性缓存），一次性为条目附加 emby_web_url
-    server_id = await _get_server_id()
     items = list(seen.values())
-    if server_id:
-        base = _base_url()
-        for item in items:
-            item["emby_web_url"] = f"{base}/web/index.html#!/item?id={item['emby_id']}&serverId={server_id}"
 
     await _attach_tmdb_series_status(items)
     await _attach_in_media_flag(items)

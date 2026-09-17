@@ -25,6 +25,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.database import async_session
 from app.services import config_store
+from app.utils import BoundedLRUCache
 
 logger = logging.getLogger(__name__)
 
@@ -412,8 +413,11 @@ async def search_multi(q: str) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 # 进程内 TTL 缓存：详情页同一剧集多集同季只回源一次；缓存层纯优化，任何
 # 读取/回源失败一律降级返回 {}（log warning），绝不把异常抛给详情接口。
+# 有界化（审查 A1）：BoundedLRUCache 淘汰最旧，上限 5000——key 为
+# f"{tmdb_id}:{season_number}"，5000 覆盖常规活跃剧集规模（5000 部 × 数季），
+# 超过则按 LRU 淘汰，避免长运行无界增长。
 _SEASON_AIR_TTL = 6 * 3600  # 6 小时
-_SEASON_AIR_CACHE: dict[str, tuple[float, dict[int, str | None]]] = {}
+_SEASON_AIR_CACHE = BoundedLRUCache(5000)
 
 
 async def _fetch_season_episodes(tmdb_id: str | int, season_number: int) -> list[dict[str, Any]] | None:
@@ -481,10 +485,12 @@ async def get_tv_season_air_dates(tmdb_id: str | int, season_number: int) -> dic
 # ---------------------------------------------------------------------------
 # TV 全部正片季的每集信息（详情页「TMDB 全集数 + 首播日期」数据源）
 # ---------------------------------------------------------------------------
-# 进程内 TTL 缓存：详情页同一剧集只回源一次；缓存层纯优化，任何回源失败一律
+# 进程内 TTL 缓存：详情页同一剧集只回源一次；任何回源失败一律
 # 降级返回 []（log warning），绝不把异常抛给详情接口。
+# 有界化（审查 A1）：上限 5000——key 为 f"{tmdb_id}:all_episodes"，与
+# _SEASON_AIR_CACHE 同规模预算（5000 部剧），超过按 LRU 淘汰最旧。
 _ALL_EPS_TTL = 6 * 3600  # 6 小时
-_ALL_EPS_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_ALL_EPS_CACHE = BoundedLRUCache(5000)
 
 
 async def get_tv_all_episodes(tmdb_id: str | int) -> list[dict[str, Any]]:
@@ -567,45 +573,77 @@ async def get_tv_all_episodes(tmdb_id: str | int) -> list[dict[str, Any]]:
 # 注：此处沿用本模块顶部 import 的 async_session 全局名（测试/替换依赖通过
 # monkeypatch tmdb_mod.async_session 生效），不另起 _async_session 别名——
 # 模块级别名在 import 时一次性绑定真实 sessionmaker，patch 无法覆盖。
-from sqlalchemy import delete as _sa_delete, select as _sa_select, update as _sa_update  # noqa: E402
+from sqlalchemy import (
+    delete as _sa_delete,
+    func as _sa_func,
+    select as _sa_select,
+    update as _sa_update,
+)  # noqa: E402
 from app.models import EpisodeInfoCache as _EpisodeInfoCache  # noqa: E402
 
 
+def _upsert_episode_info_stmt(rows: list[dict[str, Any]], bind) -> Any:
+    """按绑定方言选择 insert 实现，构造 episode_info_cache 批量 upsert 语句。
+
+    审查 A2 批量 upsert（消除逐条 SELECT + INSERT/UPDATE 的 N+1）：
+    SQLAlchemy 通用 `insert()` 无 on_conflict_do_update，须按方言取
+    `sqlalchemy.dialects.{sqlite,postgresql}.insert`（对端方言编译会静默丢失
+    ON CONFLICT 子句，故必须按 `bind.dialect.name` 精确选择）。
+    冲突目标取模型 UniqueConstraint `uq_episode_info_cache_tmdb_season_episode`
+    （SQLite 须唯一约束/唯一索引方可 ON CONFLICT，PG 须唯一约束；该模型已具备）。
+    取舍说明：备选方案 bulk_insert_mappings + 忽略冲突在「批量更新既有行」场景会
+    遗留脏数据（新值不覆盖旧值），故选择 on_conflict_do_update 而非忽略冲突。
+    """
+    from sqlalchemy.dialects import postgresql as _pg_dialect
+    from sqlalchemy.dialects import sqlite as _sqlite_dialect
+
+    # 对端方言编译会静默丢失 ON CONFLICT 子句，必须按 dialect 精确选择
+    if bind is not None and bind.dialect.name == "sqlite":
+        insert_cls = _sqlite_dialect.insert
+    else:
+        insert_cls = _pg_dialect.insert
+    stmt = insert_cls(_EpisodeInfoCache).values(rows)
+    return stmt.on_conflict_do_update(
+        index_elements=["tmdb_id", "season", "episode"],
+        set_={
+            "name": stmt.excluded.name,
+            "air_date": stmt.excluded.air_date,
+            # updated_at 显式刷新：Core 层 insert 不触发 ORM onupdate 钩子，
+            # 与逐条实现（ORM 更新 onupdate=func.current_timestamp()）语义对齐
+            "updated_at": _sa_func.current_timestamp(),
+        },
+    )
+
+
 async def refresh_episode_info(tmdb_id: int) -> int:
-    """回源 TV 全部正片季每集信息并 upsert 到 episode_info_cache；返回写入行数。
+    """回源 TV 全部正片季每集信息并批量 upsert 到 episode_info_cache；返回写入行数。
 
     复用 get_tv_all_episodes（含 zh-CN / season 过滤 / 降级语义）：回源失败或空 → 返回 0，
     保留旧缓存（upsert 不动旧行）。仅供每日刷新任务 / 详情回源兜底调用。
+
+    批量 upsert（审查 A2：原逐条 SELECT + INSERT/UPDATE 的 N+1）见
+    _upsert_episode_info_stmt（SQLite / PostgreSQL 双方言兼容，注释说明取舍）。
     """
     episodes = await get_tv_all_episodes(tmdb_id)
     if not episodes:
         return 0
-    count = 0
+    rows = [
+        {
+            "tmdb_id": tmdb_id,
+            "season": ep.get("season"),
+            "episode": ep.get("episode"),
+            "name": ep.get("name"),
+            "air_date": ep.get("air_date"),
+        }
+        for ep in episodes
+        if ep.get("season") is not None and ep.get("episode") is not None
+    ]
+    if not rows:
+        return 0
     async with async_session() as s:
         async with s.begin():
-            for ep in episodes:
-                season = ep.get("season")
-                episode = ep.get("episode")
-                if season is None or episode is None:
-                    continue
-                row = await s.execute(
-                    _sa_select(_EpisodeInfoCache).where(
-                        _EpisodeInfoCache.tmdb_id == tmdb_id,
-                        _EpisodeInfoCache.season == season,
-                        _EpisodeInfoCache.episode == episode,
-                    )
-                )
-                existing = row.scalar_one_or_none()
-                if existing is None:
-                    s.add(_EpisodeInfoCache(
-                        tmdb_id=tmdb_id, season=season, episode=episode,
-                        name=ep.get("name"), air_date=ep.get("air_date"),
-                    ))
-                else:
-                    existing.name = ep.get("name")
-                    existing.air_date = ep.get("air_date")
-                count += 1
-    return count
+            await s.execute(_upsert_episode_info_stmt(rows, s.bind))
+    return len(rows)
 
 
 async def get_episode_info(tmdb_id: int) -> list[dict]:

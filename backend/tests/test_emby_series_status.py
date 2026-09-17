@@ -116,7 +116,8 @@ def test_request_includes_series_status_field(library_get, _db_maker, monkeypatc
 
 
 def test_status_filter_passed_through(library_get, _db_maker, monkeypatch):
-    """status 筛选参数仍透传：_get 收到 SeriesStatus=continuing，且类型含 Series。"""
+    """status 筛选参数契约对齐：_get 收到 SeriesStatus=Continuing（首字母大写，
+    Emby SeriesStatus 契约值），且类型含 Series。"""
     _use_test_db(monkeypatch, _db_maker)
     library_get.return_value = {"Items": []}
 
@@ -124,7 +125,7 @@ def test_status_filter_passed_through(library_get, _db_maker, monkeypatch):
 
     path, params = library_get.await_args.args[:2]
     assert path == "/Items"
-    assert params["SeriesStatus"] == "continuing"
+    assert params["SeriesStatus"] == "Continuing"
     assert "Series" in params["IncludeItemTypes"]
 
 
