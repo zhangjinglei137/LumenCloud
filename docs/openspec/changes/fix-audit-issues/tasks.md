@@ -31,7 +31,7 @@
 
 ## 5. 队列/容量/转存（pipeline 系能力）
 
-- [ ] 5.1 `_pending_estimate_gb` 改查 DownloadQueue pending 行 SUM(file_size)，验证容量接口积压预估反映真实排队
+- [x] 5.1 `_pending_estimate_gb` 改查 DownloadQueue pending 行 SUM(file_size)，验证容量接口积压预估反映真实排队
 - [ ] 5.2 前端 `DOWNLOAD_ACTIVE_STATUSES` 补 `'pending'` 与后端 `_DQ_ACTIVE` 对齐，验证「仅看活跃」展示排队任务
 - [ ] 5.3 sort_task 上/下移加 `status='pending'` CAS 门控，rowcount==0 返回 409，验证并发推进后排序被拒
 - [ ] 5.4 add_queue_task 重置加状态门控（probing 等运行态不被重置），验证探测中任务不被重置

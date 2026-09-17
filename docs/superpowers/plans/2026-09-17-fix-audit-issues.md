@@ -192,10 +192,10 @@ base-ref: 114b8081c182581a02a49435cfd4f317b58ac2f5
 - Consumes: `DownloadQueue` 模型、`_reserved_gb` 口径
 - Produces: `pending_estimate` 基于 DownloadQueue.pending 行 SUM(file_size)
 
-- [ ] **Step 1** 写失败测试：DownloadQueue 有 pending 行时容量接口返回非空积压预估
-- [ ] **Step 2** 改 `_pending_estimate_gb` 查 `DownloadQueue`（`status=="pending"` + SUM(file_size)），注释更新
-- [ ] **Step 3** 运行测试通过 + test_capacity 无回归
-- [ ] **Step 4** Commit：`fix: 容量积压预估改查 DownloadQueue 修复失真`
+- [x] **Step 1** 写失败测试：DownloadQueue 有 pending 行时容量接口返回非空积压预估
+- [x] **Step 2** 改 `_pending_estimate_gb` 查 `DownloadQueue`（`status=="pending"` + SUM(file_size)），注释更新
+- [x] **Step 3** 运行测试通过 + test_capacity 无回归
+- [x] **Step 4** Commit：`fix: 容量积压预估改查 DownloadQueue 修复失真`
 
 ### Task C2: 前端仅看活跃补 pending
 
