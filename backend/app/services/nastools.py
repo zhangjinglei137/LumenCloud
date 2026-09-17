@@ -117,24 +117,44 @@ class NasToolsClient:
             await self.login()
 
     async def _do(self, cmd: str, extra: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-        """POST {base}/do 的公共封装（带会话 cookie，失败抛 NasToolsUnavailable）。"""
-        await self._ensure_login()
+        """POST {base}/do 的公共封装（带会话 cookie，失败抛 NasToolsUnavailable）。
+
+        会话失效处理（审查 C10）：收到 401/403（session 过期）→ 清除
+        `_session_cookie` 后自动重登一次并重试本次请求；**只重试一次**（防
+        401→重登→401 无限循环）。重登仍失败 → 按既有语义抛 NasToolsUnavailable
+        （不再持续持有失效 cookie 失败直至进程重启；重登对调用方透明）。
+        """
         form: dict[str, Any] = {"cmd": cmd}
         if extra:
             form.update(extra)
 
-        client = self._get_client()
-        try:
-            resp = await client.post(f"{self._base_url}/do", data=form)
-        except httpx.HTTPError as exc:
-            logger.warning("NasTools %s 请求失败: %s", cmd, exc)
-            raise NasToolsUnavailable(f"NasTools {cmd} 请求失败: {exc}") from exc
+        relogged = False  # 会话失效自动重登只允许一次（防循环）
+        while True:
+            await self._ensure_login()
+            client = self._get_client()
+            try:
+                resp = await client.post(f"{self._base_url}/do", data=form)
+            except httpx.HTTPError as exc:
+                logger.warning("NasTools %s 请求失败: %s", cmd, exc)
+                raise NasToolsUnavailable(f"NasTools {cmd} 请求失败: {exc}") from exc
 
-        if resp.status_code >= 400:
-            logger.warning("NasTools %s 非 2xx: %s", cmd, self._summarize(resp))
-            raise NasToolsUnavailable(
-                f"NasTools {cmd} 失败: {self._summarize(resp)}"
-            )
+            if resp.status_code in (401, 403) and not relogged:
+                # 会话失效：清除 cookie → 下一轮 _ensure_login 自动重新登录
+                relogged = True
+                self._session_cookie = None
+                client.cookies.delete("session")
+                logger.warning(
+                    "NasTools %s 返回 %s（会话失效），清除 cookie 并自动重登一次后重试",
+                    cmd, resp.status_code,
+                )
+                continue
+
+            if resp.status_code >= 400:
+                logger.warning("NasTools %s 非 2xx: %s", cmd, self._summarize(resp))
+                raise NasToolsUnavailable(
+                    f"NasTools {cmd} 失败: {self._summarize(resp)}"
+                )
+            break
 
         try:
             return resp.json()
