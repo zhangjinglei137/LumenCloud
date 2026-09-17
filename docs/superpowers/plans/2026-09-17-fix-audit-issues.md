@@ -330,10 +330,10 @@ base-ref: 114b8081c182581a02a49435cfd4f317b58ac2f5
 - Consumes: `record_task_run` 实际 task_type 集合
 - Produces: 筛选选项由后端下发
 
-- [ ] **Step 1** 写失败测试：logs 响应含当前任务类型枚举
-- [ ] **Step 2** 实现后端下发（复用 logs 页现有过滤字段）；前端动态渲染
-- [ ] **Step 3** 运行测试 + build 通过
-- [ ] **Step 4** Commit：`feat: 运行日志任务类型筛选项后端下发`
+- [x] **Step 1** 写失败测试：logs 响应含当前任务类型枚举
+- [x] **Step 2** 实现后端下发（复用 logs 页现有过滤字段）；前端动态渲染
+- [x] **Step 3** 运行测试 + build 通过
+- [x] **Step 4** Commit：`feat: 运行日志任务类型筛选项后端下发`
 
 ### Task C11: 邀请码上限与其余 small 契约
 

@@ -61,7 +61,7 @@
 - [x] 7.4 通知异常文案截断与脱敏（去 URL userinfo/query token），验证通知正文不含凭据
 - [x] 7.5 海报缓存满后淘汰最旧（LRU）再写入 + 回源响应 content-type 校验（非 `image/*` 不缓存返 502），验证新增海报缓存/类型测试
 - [ ] 7.6 海报缓存 per-path singleflight（可选，asyncio.Lock 按 path 节流），验证并发同键只回源一次
-- [ ] 7.7 运行日志任务类型筛选项改后端下发（新增 `/api/logs/task-types` 或随列表返回枚举），前端动态渲染，验证后端新增类型后选项自动出现
+- [x] 7.7 运行日志任务类型筛选项改后端下发（新增 `/api/logs/task-types` 或随列表返回枚举），前端动态渲染，验证后端新增类型后选项自动出现
 
 ## 8. 调度/扫描/杂项
 
@@ -82,7 +82,7 @@
 - [ ] 9.1 MediaDetailView 路由参数 `Number.isFinite` 守卫（非法回退列表页），验证 `/media/abc` 不发非法请求
 - [ ] 9.2 TmdbSearch `search()` 增加错误态标记（searched 错误分支），验证搜索失败有内联反馈
 - [ ] 9.3 QueueView 计时器按 activeTab watch 启停（progressTimer 切 Tab 暂停），验证切 Tab 无空转请求
-- [ ] 9.4 前端 `taskTypes` 硬编码移除（承接 7.7 后端下发），验证 LogsView 筛选项动态渲染
+- [x] 9.4 前端 `taskTypes` 硬编码移除（承接 7.7 后端下发），验证 LogsView 筛选项动态渲染
 - [ ] 9.5 admin PATCH 用户角色死接口：补前端入口或删除端点（按产品决策，文档标记），验证无漂移残留
 - [ ] 9.6 tmdb_id 为 None 时审批查重以 title 模糊兜底（或要求必填），验证无 tmdb_id 防重复提交
 - [ ] 9.7 补充 QueueView 控制面操作（cancel/prioritize/sort/retry）交互测试与路由守卫/http 401 单测，验证关键交互路径有覆盖
