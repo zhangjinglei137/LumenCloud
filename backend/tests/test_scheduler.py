@@ -65,7 +65,7 @@ def _enabled(cfg, monkeypatch, job_id=scheduler_mod.JOB_SCAN_ALL_MEDIA):
 def test_default_global_on_job_follows(monkeypatch):
     """总开关未配置（默认 true）+ job 未配置 → True（A-2 核心断言：打开总开关即默认全开）。"""
     assert _enabled({}, monkeypatch) is True
-    # 全部 7 个固定 job 未配置时均跟随总开关默认启用
+    # 全部 10 个固定 job（见 app/scheduler.py JOB_IDS/register_jobs）未配置时均跟随总开关默认启用
     for jid in scheduler_mod.JOB_IDS:
         assert _enabled({}, monkeypatch, jid) is True
 

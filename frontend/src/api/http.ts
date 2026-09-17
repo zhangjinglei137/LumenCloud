@@ -24,6 +24,9 @@ export function setToken(token: string | null): void {
 export function toLogin(): void {
   setToken(null)
   const current = window.location.pathname + window.location.search
+  // 现状取舍：整页跳转（window.location.href）全量刷新，保留 SPA 外状态迁移的简单性；
+  // 代价是会丢失当前路由/组件的内存状态。将来可改为 router.replace 保留 SPA 状态，
+  // 届时需同步处理跳转后的 redirect 透传与登录态刷新逻辑。
   if (!window.location.pathname.startsWith('/login')) {
     window.location.href = `/login?redirect=${encodeURIComponent(current)}`
   }
