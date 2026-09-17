@@ -38,7 +38,7 @@
 - [x] 5.5 cancel_task 对 downloading 行先 `tell_status` 确认非 complete 再标 failed（complete 则走完成路径），验证新增取消已完成任务测试
 - [x] 5.6 `_try_admit_one` quota_wait 分支 CAS 未命中时设 conflict（与抢占分支一致），验证并发推进后不误报 quota_wait
 - [x] 5.7 retry_task 旧三表分支检查 rowcount，==0 返回 409「状态已变化」，验证新增冲突测试
-- [ ] 5.8 下载完成回调端点补鉴权与 gid 维度校验（确认 notify.py 现状后），验证非法回调被拒测试
+- [x] 5.8 下载完成回调端点补鉴权与 gid 维度校验（确认 notify.py 现状后），验证非法回调被拒测试
 - [ ] 5.9 recovery 回退前区分「aria2 故障」与「任务无进展」（aria2 探活），验证 aria2 故障期间不触发回退循环
 - [ ] 5.10 容量告警冷却：注释+文档明示单 worker/多 worker trade-off（或 DB 落冷却），验证告警逻辑不受影响
 - [ ] 5.11 probe_media 加 per-media 频率限制或 scan 内去重，验证连续 probe 被限流

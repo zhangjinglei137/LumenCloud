@@ -252,9 +252,9 @@ base-ref: 114b8081c182581a02a49435cfd4f317b58ac2f5
 - Consumes: `notify.py` 现有 HMAC 校验、`trigger_download_complete`
 - Produces: 鉴权行为回归测试（无代码改动预期，除非测试暴露缺口）
 
-- [ ] **Step 1** 写测试：无签名/错误签名/超时戳 → 401/503；合法签名 + 非 downloading gid → False 不推进
-- [ ] **Step 2** 运行测试；如暴露缺口（如 gid 未限定 media 维度）则按 D11 补，否则仅测试
-- [ ] **Step 3** Commit：`test: 下载完成回调鉴权与幂等封闭`
+- [x] **Step 1** 写测试：无签名/错误签名/超时戳 → 401/503；合法签名 + 非 downloading gid → False 不推进
+- [x] **Step 2** 运行测试；如暴露缺口（如 gid 未限定 media 维度）则按 D11 补，否则仅测试
+- [x] **Step 3** Commit：`test: 下载完成回调鉴权与幂等封闭`
 
 ### Task C6: aria2 故障不触发回退循环
 
