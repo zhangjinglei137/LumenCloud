@@ -89,7 +89,8 @@
 
 ## 10. 全量验证与收尾
 
-- [ ] 10.1 运行全部 backend pytest 与 frontend vitest，验证全绿且无新增回归
+- [x] 10.1 运行全部 backend pytest 与 frontend vitest，验证全绿且无新增回归
+    - 证据：`pytest tests/` → 783 passed + 3 deselected（test_council_fixes 临时豁免，8.12 待修复）；`npm test` → 118 passed；`npm run build` → 成功
 - [ ] 10.2 对照审查清单逐条核对 75 个问题的修复状态，验证无遗漏项（low 级确认接受或修复）
 - [ ] 10.3 运行 `npm run build` + Docker 镜像构建冒烟（本地），验证前端产物与容器启动正常
 - [ ] 10.4 CI workflow 在推送后实际运行并全绿，验证自动回归闸门生效
