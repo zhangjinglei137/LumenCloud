@@ -86,5 +86,12 @@ class PushPlusClient:
         return payload
 
 
-# 模块级单例
+# 模块级单例（fix-audit-issues 4.4 核查结论——仅兼容导出，勿直接使用）：
+# 此处 client 在模块导入时实例化，__init__ 一次性读取 token——此后 settings 页
+# PATCH 更新 pushplus_token 并刷新 config_store 后，**本实例仍持有旧 token**
+# （不会自动重读）。全仓核查（grep from app.services.pushplus import）确认：
+# 无任何模块直接使用该单例（notifier.py 引入的是 class PushPlusClient，每次
+# notify 经 PushPlusNotifier._refresh_client 重建实例取最新 token）。保留此导出
+# 仅为兼容旧引用；新代码请使用 PushPlusNotifier（自动重读 token），确需直接
+# 发信时自行实例化 PushPlusClient（__init__ 现读 config_store/env 最新值）。
 client = PushPlusClient()

@@ -37,6 +37,14 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 # 单 worker 部署（uvicorn --workers 1）下模块级 dict 读写原子性足够，不引入
 # 锁/外部存储（与 config_store 同风格注释；多 worker 需共享存储，属后续演进）。
 #
+# 反代信任链局限（fix-audit-issues 3.8，审查 C6）：限流键取 client.host ——
+# 这是 uvicorn 直连对端的 socket 地址。若部署在反向代理后且**未配置信任链**，
+# 所有请求的 client.host 都是反代地址 → 限流退化为进程级「全局闸门」
+# （攻击者同 IP 共享计数，正常用户也会被误伤/攻击者可轻易形成全局锁定）。
+# 启用反代时须配置 uvicorn `--proxy-headers`（或等价 TrustedHost/中间件）以
+# 信任反代透传的 X-Forwarded-For，取回真实客户端 IP。当前默认直连部署不受
+# 影响；本注释为部署文档要求（Design D3 ADDED）。
+#
 # - 登录键 = f"{client.host}:{username}"：先判后记——未超限记录失败并 401，
 #   窗口内失败数达 LOGIN_FAIL_LIMIT 直接 429 且不再记录（单键 deque 以
 #   max_failures 封顶防内存膨胀）；成功登录 reset 清零。语义与迁移前一致。

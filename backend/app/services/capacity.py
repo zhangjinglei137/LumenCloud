@@ -61,6 +61,16 @@ CAPACITY_ALERT_CONSECUTIVE = 2
 # 告警冷却（秒）：30 分钟内不重复告警（模块级时间戳，思路同 transfer._alert_cooldown）
 CAPACITY_ALERT_COOLDOWN_SECONDS = 1800.0
 
+# 冷却取舍（fix-audit-issues 5.10 / Design D11 新增要求，明示存档）：
+# _last_capacity_alert_at 是**进程内内存**状态——多 worker（uvicorn --workers N /
+# 多实例）部署时各进程独立计数，冷却只约束本进程，同一告警窗口内多个 worker
+# 都可能发出通知（每小时巡检 × 30min 窗口 × N worker → 最多 N-1 条重复推送）。
+# 接受该 trade-off：当前部署为单 worker，重复量级低且属运维告警非关键路径；
+# 不引入 Redis 等分布式状态（复杂度/运维成本不值，与 config_store 同风格取舍）。
+# 升级多 worker 部署时 SHALL 重审本项（改为 DB 时间戳或共享存储）。
+# 注：去抖（连续 2 条快照超阈值）落在 quark_capacity_log，进程重启不丢；
+# 冷却时间戳为内存态，进程重启后冷却窗自动清零（可接受，告警不过度刷屏）。
+
 # 最近一次容量告警通知时间戳（monotonic；模块级共享状态，冷却用）
 # -1.0 为「从未告警」哨兵：time.monotonic() 在新启动的进程/容器上可能小于冷却窗
 # （如 CI runner / 容器刚启动几分钟），若用 0.0 会把「从未告警」误判成「刚告警过」
