@@ -383,10 +383,10 @@ base-ref: 114b8081c182581a02a49435cfd4f317b58ac2f5
 - Consumes: `bindparam`/`func.make_interval`/`literal_column`
 - Produces: PG/SQLite 双方言合法到期过滤；入队上下文统一管理
 
-- [ ] **Step 1** 写失败测试：渲染 `_due_filter` 在 PG 与 SQLite 方言下编译不抛、语义等价
-- [ ] **Step 2** 实现 PG 分支 `func.make_interval(mins=...)` 或 `literal_column("interval '1 minute'") * minutes` 稳妥写法；`_enqueue` 移除显式 commit，冲突捕获单条跳过
-- [ ] **Step 3** 运行渲染单测通过；test_scan_* 无回归
-- [ ] **Step 4** Commit：`fix: 巡检到期过滤 SQL 双方言正确性与入队提交语义`
+- [x] **Step 1** 写失败测试：渲染 `_due_filter` 在 PG 与 SQLite 方言下编译不抛、语义等价
+- [x] **Step 2** 实现 PG 分支 `func.make_interval(mins=...)` 或 `literal_column("interval '1 minute'") * minutes` 稳妥写法；`_enqueue` 移除显式 commit，冲突捕获单条跳过
+- [x] **Step 3** 运行渲染单测通过；test_scan_* 无回归
+- [x] **Step 4** Commit：`fix: 巡检到期过滤 SQL 双方言正确性与入队提交语义`
 
 ### Task D3: NasTools 会话重登 + 同步锁粒度
 
