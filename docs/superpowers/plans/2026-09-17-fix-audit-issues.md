@@ -141,10 +141,10 @@ base-ref: 114b8081c182581a02a49435cfd4f317b58ac2f5
 - Consumes: `useRoute`/`useRouter`
 - Produces: 无
 
-- [ ] **Step 1** 写失败测试：`redirect=https://evil.com` 回退 `/`；`redirect=/media/1` 保留
-- [ ] **Step 2** 实现 `safeRedirect()`：`^/` 开头且非 `//` 则用，否则 `/`
-- [ ] **Step 3** 前端测试通过 + build 通过
-- [ ] **Step 4** Commit：`fix: 登录 redirect 白名单校验防钓鱼跳转`
+- [x] **Step 1** 写失败测试：`redirect=https://evil.com` 回退 `/`；`redirect=/media/1` 保留
+- [x] **Step 2** 实现 `safeRedirect()`：`^/` 开头且非 `//` 则用，否则 `/`
+- [x] **Step 3** 前端测试通过 + build 通过
+- [x] **Step 4** Commit：`fix: 登录 redirect 白名单校验防钓鱼跳转`
 
 ### Task B6: 并发审批 IntegrityError → 409
 
