@@ -1,6 +1,6 @@
 """生产健壮性回归（三缺口修复）：
 
-1. capacity._pending_estimate_gb 无异常防护：transfer_queue 查询失败 → 此前
+1. capacity._pending_estimate_gb 无异常防护：pending 查询失败 → 此前
    /api/capacity 直接 500（前端 30s 轮询持续刷错）。现与 _reserved_gb 一致：
    失败 logger.warning + 返回 None（pending 预估为增强字段，失败不 500）。
 2. deps.get_session 无异常防护：DB 连接失败裸抛 500 → 现 503「数据库不可用」。
@@ -88,10 +88,10 @@ def test_pending_estimate_gb_internal_error_returns_none():
 def test_capacity_pending_failure_keeps_200(monkeypatch):
     """端点级：pending 查询抛错（列不匹配场景）→ /api/capacity 仍 200。
 
-    真实模拟「transfer_queue 表结构不匹配」：monkeypatch _load_transfer_queue_model
-    返回列属性访问即抛错的伪模型（getattr 发生在函数内部 try 块内），而非替换整个
-    _pending_estimate_gb（那样异常在端点层裸抛才是真 500）——验证的是产品函数自身的
-    防护已生效。正常路径（首个请求）不受影响。
+    真实模拟「表结构不匹配」：Task C1 后 pending 预估直查 DownloadQueue，monkeypatch
+    cap_mod.DownloadQueue 为列属性访问即抛错的伪模型（getattr 发生在函数内部 try
+    块内），而非替换整个 _pending_estimate_gb（那样异常在端点层裸抛才是真 500）——
+    验证的是产品函数自身的防护已生效。正常路径（首个请求）不受影响。
     """
     import app.routers.capacity as cap_mod
 
@@ -109,12 +109,12 @@ def test_capacity_pending_failure_keeps_200(monkeypatch):
         # 异常路径：内部查询抛错 → pending_estimate=None，不 500
         class _ExplodingMeta(type):
             def __getattr__(cls, name):
-                raise RuntimeError(f"transfer_queue {name} 列不匹配")
+                raise RuntimeError(f"download_queue {name} 列不匹配")
 
-        class _BrokenTransferQueue(metaclass=_ExplodingMeta):
+        class _BrokenDownloadQueue(metaclass=_ExplodingMeta):
             pass
 
-        monkeypatch.setattr(cap_mod, "_load_transfer_queue_model", lambda: _BrokenTransferQueue)
+        monkeypatch.setattr(cap_mod, "DownloadQueue", _BrokenDownloadQueue)
         r = client.get("/api/capacity", headers=headers)
         assert r.status_code == 200, r.text
         body = r.json()
