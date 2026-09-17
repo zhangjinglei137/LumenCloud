@@ -152,6 +152,12 @@ def _pg_fk_names(bind, table: str, column: str) -> list[str]:
 
     0001/0012 建表的 FK 均未命名 → PG 自动命名 {表}_{列}_fkey；downgrade 重建后
     为迁移命名名（fk_*）。动态查询兼容两者，保证 drop 总命中实际约束。
+
+    ⚠ 谓词写法说明：pg_constraint.conkey 是 int2vector（系统目录专用类型），
+    「conkey = ARRAY(...)」与 int2[] 不是规范可比运算，存在静默 0 行风险
+    （审查 R1 修复）；改用 pg_attribute.attnum = ANY(con.conkey) 标准写法。
+    不额外过滤 fk_ 前缀：downgrade→upgrade 往返时旧迁移命名约束同样需要
+    drop 后重建（create 同名约束会因重名失败），此处一并查出。
     """
     rows = bind.execute(
         sa.text(
@@ -160,13 +166,13 @@ def _pg_fk_names(bind, table: str, column: str) -> list[str]:
             FROM pg_constraint con
             JOIN pg_class cls ON cls.oid = con.conrelid
             JOIN pg_namespace ns ON ns.oid = cls.relnamespace
+            JOIN pg_attribute att
+              ON att.attrelid = con.conrelid
+             AND att.attnum = ANY(con.conkey)
             WHERE ns.nspname = 'public'
               AND cls.relname = :t
               AND con.contype = 'f'
-              AND con.conkey = ARRAY(
-                  SELECT attnum FROM pg_attribute
-                  WHERE attrelid = con.conrelid AND attname = :c
-              )
+              AND att.attname = :c
             """
         ),
         {"t": table, "c": column},
@@ -210,7 +216,7 @@ def downgrade() -> None:
     bind = op.get_bind()
     is_pg = bind.dialect.name == "postgresql"
 
-    def _fk_without_ondelel(op, table: str, fks) -> None:
+    def _fk_without_ondelete(op, table: str, fks) -> None:
         """把命名 FK 重建为无 ondelete（还原 0016 语义）。"""
         for name, ref_table, column, ondelete in fks:
             op.create_foreign_key(
@@ -222,7 +228,7 @@ def downgrade() -> None:
             for name, ref_table, column, ondelete in fks:
                 op.drop_constraint(name, table, type_="foreignkey")
         for table, fks in _FK_SPECS.items():
-            _fk_without_ondelel(op, table, fks)
+            _fk_without_ondelete(op, table, fks)
         op.drop_index("idx_eps_media", table_name="episode_state")
         op.alter_column("task_run", "media_id", type_=sa.Integer())
     else:
