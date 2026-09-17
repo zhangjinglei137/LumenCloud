@@ -283,10 +283,10 @@ base-ref: 114b8081c182581a02a49435cfd4f317b58ac2f5
 - Consumes: `Notification` 模型、`retention_days` 配置
 - Produces: `GET /api/notifications?limit=&offset=` + total；保留期外通知删除
 
-- [ ] **Step 1** 写失败测试：通知分页返回与总条数；清理任务删除超期通知
-- [ ] **Step 2** 实现通知接口分页；cleanup 补 notifications 保留期删除
-- [ ] **Step 3** 前端 store 适配分页参数；运行测试 + build
-- [ ] **Step 4** Commit：`feat: 站内通知分页与定期清理`
+- [x] **Step 1** 写失败测试：通知分页返回与总条数；清理任务删除超期通知
+- [x] **Step 2** 实现通知接口分页；cleanup 补 notifications 保留期删除
+- [x] **Step 3** 前端 store 适配分页参数；运行测试 + build
+- [x] **Step 4** Commit：`feat: 站内通知分页与定期清理`
 
 ### Task C8: PushPlus 失败降级 + 文案脱敏
 

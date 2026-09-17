@@ -55,8 +55,8 @@
 
 ## 7. 通知/日志/海报（notifications/poster-proxy/run-logs 能力）
 
-- [ ] 7.1 站内通知列表加分页（limit/offset + total），前端铃铛用首页切片，验证分页测试通过
-- [ ] 7.2 清理任务新增 notifications 保留期清理（沿用 prune_history 模式），验证超期通知被删除、保留期内不受影响
+- [x] 7.1 站内通知列表加分页（limit/offset + total），前端铃铛用首页切片，验证分页测试通过
+- [x] 7.2 清理任务新增 notifications 保留期清理（沿用 prune_history 模式），验证超期通知被删除、保留期内不受影响
 - [ ] 7.3 PushPlus 推送失败补发站内「推送失败」告警（或记录可观察 task_run），验证失败时产生站内通知
 - [ ] 7.4 通知异常文案截断与脱敏（去 URL userinfo/query token），验证通知正文不含凭据
 - [ ] 7.5 海报缓存满后淘汰最旧（LRU）再写入 + 回源响应 content-type 校验（非 `image/*` 不缓存返 502），验证新增海报缓存/类型测试
