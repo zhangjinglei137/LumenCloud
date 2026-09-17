@@ -180,7 +180,7 @@ describe('taskTypeLabel / taskTypeType（任务类型映射）', () => {
   })
 })
 
-import { notificationTypeMeta } from './format'
+import { notificationTypeMeta, DOWNLOAD_ACTIVE_STATUSES } from './format'
 
 describe('通知事件类型 → 铃铛呈现（fix-notification-templates）', () => {
   it('三种已知类型返回对应 label 与强调色', () => {
@@ -201,5 +201,21 @@ describe('通知事件类型 → 铃铛呈现（fix-notification-templates）', 
     expect(notificationTypeMeta('whatever')).toMatchObject({ label: '通知', color: '#909399' })
     expect(notificationTypeMeta(undefined)).toMatchObject({ label: '通知', color: '#909399' })
     expect(notificationTypeMeta(null)).toMatchObject({ label: '通知', color: '#909399' })
+  })
+})
+
+describe('DOWNLOAD_ACTIVE_STATUSES（仅看活跃过滤，fix-audit-issues）', () => {
+  // 与 QueueView.vue「仅看活跃」过滤一致：DOWNLOAD_ACTIVE_STATUSES.includes(d.status ?? '')
+  const filterActive = (statuses: string[]) =>
+    statuses.filter((s) => DOWNLOAD_ACTIVE_STATUSES.includes(s))
+
+  it('仅看活跃时 pending（排队中）任务被保留展示', () => {
+    expect(filterActive(['pending', 'transferring', 'downloading', 'scrape'])).toContain('pending')
+  })
+
+  it('其他活跃状态 transferring/downloading/scrape 行为不变', () => {
+    expect(DOWNLOAD_ACTIVE_STATUSES).toEqual(
+      expect.arrayContaining(['transferring', 'downloading', 'scrape']),
+    )
   })
 })

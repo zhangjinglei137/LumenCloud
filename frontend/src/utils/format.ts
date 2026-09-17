@@ -340,6 +340,7 @@ export function episodeStateTooltip(row: Record<string, unknown>): string[] {
 
 /** 下载队列「活跃」状态集合（「仅看活跃」开关过滤用） */
 export const DOWNLOAD_ACTIVE_STATUSES: readonly string[] = [
+  'pending',
   'transferring',
   'downloading',
   'scrape',
