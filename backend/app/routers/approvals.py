@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -173,6 +173,17 @@ async def approve_approval(
     # 不产生半提交，管理员可另行 reject
     if wr.tmdb_id is not None and await session.scalar(
         select(Media.id).where(Media.tmdb_id == wr.tmdb_id).limit(1)
+    ):
+        raise HTTPException(status_code=409, detail="该影视已在影视库，无需重复提交")
+
+    # C11（审查 C15）：tmdb_id 缺失（非 TMDB 条目）时以 title 大小写不敏感
+    # 精确匹配兜底查重——同名条目不重复入库。仅兜底 tmdb_id=None 路径；
+    # tmdb_id 非空路径保持上面原逻辑。用 func.lower 相等比较（SQLite/
+    # PostgreSQL 均编译为 LOWER()），避免 ilike 的 %/_ 通配符误匹配。
+    if wr.tmdb_id is None and await session.scalar(
+        select(Media.id)
+        .where(func.lower(Media.title) == wr.title.strip().lower())
+        .limit(1)
     ):
         raise HTTPException(status_code=409, detail="该影视已在影视库，无需重复提交")
 

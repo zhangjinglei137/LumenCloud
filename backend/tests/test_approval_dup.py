@@ -216,7 +216,142 @@ def test_approve_dup_tmdb_409_keeps_pending(_db_maker, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 4) approve_approval 并发竞争窗口：查重通过（返回「无重复」）后另一路已建
+# 4) approve_approval tmdb_id=None 时以 title 大小写不敏感精确查重兜底（C11/
+#    审查 C15）：非 TMDB 条目同名不再重复入库；tmdb_id 非空路径不受影响
+# ---------------------------------------------------------------------------
+
+def test_approve_dup_title_when_tmdb_none(_db_maker, monkeypatch):
+    """tmdb_id=None 的审批：Media 已存在同 title（大小写不同）→ 409 且保持 pending。
+
+    当前实现 tmdb_id is None 时跳过查重 → 放行（RED）。要求：以 title 大小写
+    不敏感兜底查重，命中 → 409，wr 保持 pending，不触发批准后巡检。
+    """
+    monkeypatch.setattr("app.routers.approvals.notifier.notify", AsyncMock())
+    trigger_calls: list[int] = []
+    monkeypatch.setattr(
+        "app.tasks.scan.trigger_scan_background",
+        lambda media_id, **kwargs: trigger_calls.append(media_id),
+    )
+
+    async def _seed_media():
+        async with _db_maker() as session:
+            # 已存在 Media(title="同名影视", tmdb_id=None)——大小写与 wr.title 不同
+            session.add(
+                Media(
+                    title="同名影视", tmdb_id=None,
+                    media_type="movie", status="tracking",
+                )
+            )
+            await session.commit()
+
+    run(_seed_media())
+
+    async def _seed_wr() -> int:
+        async with _db_maker() as session:
+            wr = WatchRequest(
+                requested_by=1, title="同名影视", tmdb_id=None,
+                media_type="movie", status="pending",
+            )
+            session.add(wr)
+            await session.commit()
+            return wr.id
+
+    wr_id = run(_seed_wr())
+
+    async def _case_dup():
+        async with _db_maker() as session:
+            with pytest.raises(HTTPException) as ei:
+                await approve_approval(wr_id, admin=AKA, session=session)
+            assert ei.value.status_code == 409
+            assert ei.value.detail == DUP_DETAIL
+        # 独立会话复查：wr 未被消费（仍 pending）
+        async with _db_maker() as session:
+            assert (await session.get(WatchRequest, wr_id)).status == "pending"
+        assert trigger_calls == []
+
+    run(_case_dup())
+
+
+def test_approve_title_dup_is_case_insensitive(_db_maker, monkeypatch):
+    """title 兜底查重大小写不敏感：Media(title="The Movie") vs wr.title="the movie" → 409。"""
+    monkeypatch.setattr("app.routers.approvals.notifier.notify", AsyncMock())
+    trigger_calls: list[int] = []
+    monkeypatch.setattr(
+        "app.tasks.scan.trigger_scan_background",
+        lambda media_id, **kwargs: trigger_calls.append(media_id),
+    )
+
+    async def _seed_media():
+        async with _db_maker() as session:
+            session.add(
+                Media(
+                    title="The Movie", tmdb_id=None,
+                    media_type="movie", status="tracking",
+                )
+            )
+            await session.commit()
+
+    run(_seed_media())
+
+    async def _seed_wr() -> int:
+        async with _db_maker() as session:
+            wr = WatchRequest(
+                requested_by=1, title="the movie", tmdb_id=None,
+                media_type="tv", status="pending",
+            )
+            session.add(wr)
+            await session.commit()
+            return wr.id
+
+    wr_id = run(_seed_wr())
+
+    async def _case():
+        async with _db_maker() as session:
+            with pytest.raises(HTTPException) as ei:
+                await approve_approval(wr_id, admin=AKA, session=session)
+            assert ei.value.status_code == 409
+            assert ei.value.detail == DUP_DETAIL
+        assert trigger_calls == []
+
+    run(_case())
+
+
+def test_approve_title_no_dup_when_tmdb_none_ok(_db_maker, monkeypatch):
+    """tmdb_id=None 且 title 不重复 → 正常批准（title 兜底不误伤新条目）。"""
+    monkeypatch.setattr("app.routers.approvals.notifier.notify", AsyncMock())
+    trigger_calls: list[int] = []
+    monkeypatch.setattr(
+        "app.tasks.scan.trigger_scan_background",
+        lambda media_id, **kwargs: trigger_calls.append(media_id),
+    )
+
+    async def _seed_wr() -> int:
+        async with _db_maker() as session:
+            wr = WatchRequest(
+                requested_by=1, title="全新影视", tmdb_id=None,
+                media_type="movie", status="pending",
+            )
+            session.add(wr)
+            await session.commit()
+            return wr.id
+
+    wr_id = run(_seed_wr())
+
+    async def _case():
+        async with _db_maker() as session:
+            res = await approve_approval(wr_id, admin=AKA, session=session)
+            assert res["ok"] is True and res["media_id"] is not None
+        async with _db_maker() as session:
+            media = await session.get(Media, res["media_id"])
+            assert media is not None and media.title == "全新影视" and media.tmdb_id is None
+            assert (await session.get(WatchRequest, wr_id)).status == "approved"
+        assert trigger_calls == [res["media_id"]]
+
+    run(_case())
+
+
+# ---------------------------------------------------------------------------
+# 5) approve_approval 并发竞争窗口：查重通过（返回「无重复」）后另一路已建
 #    Media → 插入撞 UNIQUE → 捕获 IntegrityError 返回 409（而非裸 500），
 #    且事务回滚后 wr 保持 pending（可再次尝试）
 # ---------------------------------------------------------------------------
