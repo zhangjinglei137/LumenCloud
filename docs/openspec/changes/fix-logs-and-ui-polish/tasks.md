@@ -5,7 +5,7 @@
 
 ## 2. 运行日志真实分页（specs/run-logs ③）
 
-- [ ] 2.1 后端 `backend/app/routers/logs.py` `list_logs` 复用筛选条件执行 count 统计，返回 `{"items": [...], "total": n}`；验证新增/既有后端测试（`test_fix_online.py`、`test_task_run_duration.py` 等引用 `/logs` 的用例）通过
+- [x] 2.1 后端 `backend/app/routers/logs.py` `list_logs` 复用筛选条件执行 count 统计，返回 `{"items": [...], "total": n}`；验证新增/既有后端测试（`test_fix_online.py`、`test_task_run_duration.py` 等引用 `/logs` 的用例）通过
 - [ ] 2.2 前端 `frontend/src/api/index.ts` `listLogsApi` 返回类型改为 `LogListResponse`（`types/index.ts` 增补），`stores/logs.ts` 移除「limit+1 探测」逻辑直接消费 `res.total`，保留 `items.length===0 && page>1` 回退保护；验证 `npm run build` 通过且运行日志页分页总条数与后端一致
 
 ## 3. 日志保留天数动态配置（specs/run-logs ④）

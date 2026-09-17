@@ -129,7 +129,7 @@ git commit -m "fix(logs): 对齐运行日志任务类型映射并清理无关类
 - Consumes: 现有筛选参数（task_type/status/media_id/tmdb_id/title/limit/offset）
 - Produces: `list_logs` 返回 `dict {"items": list[dict], "total": int}`
 
-- [ ] **Step 1: 修改 list_logs 返回分页对象**
+- [x] **Step 1: 修改 list_logs 返回分页对象**
 
 `backend/app/routers/logs.py` `list_logs` 返回值改为：
 
@@ -167,7 +167,7 @@ git commit -m "fix(logs): 对齐运行日志任务类型映射并清理无关类
 
 注意：`func` 已在 `from sqlalchemy import func, select` 导入。返回注解 `-> list[dict]` 改为 `-> dict`。
 
-- [ ] **Step 2: 适配既有测试**
+- [x] **Step 2: 适配既有测试**
 
 `backend/tests/test_fix_online.py` `_call_list_logs` 调用方全部改访问 `.items`：
 - `rows = await _call_list_logs(session, tmdb_id=42)` → `res = ...; rows = res["items"]`
@@ -176,20 +176,20 @@ git commit -m "fix(logs): 对齐运行日志任务类型映射并清理无关类
 
 检查 `test_task_run_duration.py`、`test_scan_run_phases.py`、`test_recovery.py` 中是否有 `await list_logs(...)` 后遍历/索引数组的断言，做同样适配。用 `grep -rn "list_logs(" backend/tests/` 找出全部调用点。
 
-- [ ] **Step 3: 新增 total 断言**
+- [x] **Step 3: 新增 total 断言**
 
 在 `test_fix_online.py` 的 `test_logs_tmdb_filter_and_title` 中补充：
 - 无过滤时 `res["total"] == 4`
 - limit 分页时 `listLogs(limit=2)` → `len(items)==2 and total==4`
 
-- [ ] **Step 4: 运行后端测试**
+- [x] **Step 4: 运行后端测试**
 
 Run（在 backend 目录，需后端 venv）: `python -m pytest tests/test_fix_online.py tests/test_task_run_duration.py tests/test_scan_run_phases.py -q`
 Expected: 全部通过
 
 若没有可用 venv，记录 `COMET_*` 构建证据时注明 Python 依赖缺失（现状 imports 无法解析），测试改在 CI/具备环境时运行，并将该限制记录在 verify 证据中。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add backend/app/routers/logs.py backend/tests/test_fix_online.py
