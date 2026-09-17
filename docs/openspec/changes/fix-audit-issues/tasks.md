@@ -74,7 +74,7 @@
 - [x] 8.7 PG 连接池显式配置（pool_size/max_overflow/pool_recycle），验证并发峰值下无连接耗尽
 - [x] 8.8 `main.py` 日志挂载改为 lifespan 内显式 handler 配置（不依赖 uvicorn 内部行为），验证启动日志行为不变
 - [x] 8.9 `serve_spa` 对 `/internal/*` 未注册路径返回 404 JSON（与 /api 一致），验证新增 404 测试
-- [ ] 8.10 `test_scheduler.py` 过时注释「7 个固定 job」改为 10，验证注释与实现一致
+- [x] 8.10 `test_scheduler.py` 过时注释「7 个固定 job」改为 10，验证注释与实现一致
 - [ ] 8.11 登录 redirect 前端跳转体验：评估 `toLogin` 统一为 router.replace（保留 SPA 状态）或记录现状，验证 401 拦截行为一致
 
 ## 9. 前端低风险防御

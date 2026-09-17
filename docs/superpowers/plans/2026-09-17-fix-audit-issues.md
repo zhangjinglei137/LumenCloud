@@ -431,9 +431,9 @@ base-ref: 114b8081c182581a02a49435cfd4f317b58ac2f5
 - Consumes: 各文件现状
 - Produces: 注释/文档一致性
 
-- [ ] **Step 1** 修正 test_scheduler 过时注释与其余文档化 low 项
-- [ ] **Step 2** 运行全量测试确认无回归
-- [ ] **Step 3** Commit：`chore: 修正过时注释与 low 级文档一致性`
+- [x] **Step 1** 修正 test_scheduler 过时注释与其余文档化 low 项
+- [x] **Step 2** 运行全量测试确认无回归
+- [x] **Step 3** Commit：`chore: 修正过时注释与 low 级文档一致性`
 
 ---
 
