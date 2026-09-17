@@ -1,7 +1,7 @@
 ## 1. 运行日志任务类型映射修正（specs/run-logs ①）
 
-- [ ] 1.1 修正 `frontend/src/utils/format.ts` `TASK_TYPE_MAP`：对齐后端实际写入值（补 `sync_nastools`、`notify`、`prune_history` 中文标签；确认移除不再产生的 `transfer_retry`/`download`；保留历史别名如 `media_scan`/`recovery` 兜底映射），并同步更新 `LogsView.vue:18` 筛选列表仅含有效类型；验证 `format.test.ts` 与 `frontend` `npm run test`（如有任务类型用例则补充断言）
-- [ ] 1.2 核对 `backend/app/tasks/*.py` 每个 `record_task_run` 写入的任务类型与 map 键一一对应（审计确认无遗漏、无引入新别名），在 map 注释标注各键来源文件；验证 grep 结果与 map 键集一致
+- [x] 1.1 修正 `frontend/src/utils/format.ts` `TASK_TYPE_MAP`：对齐后端实际写入值（补 `sync_nastools`、`notify`、`prune_history` 中文标签；确认移除不再产生的 `transfer_retry`/`download`；保留历史别名如 `media_scan`/`recovery` 兜底映射），并同步更新 `LogsView.vue:18` 筛选列表仅含有效类型；验证 `format.test.ts` 与 `frontend` `npm run test`（如有任务类型用例则补充断言）
+- [x] 1.2 核对 `backend/app/tasks/*.py` 每个 `record_task_run` 写入的任务类型与 map 键一一对应（审计确认无遗漏、无引入新别名），在 map 注释标注各键来源文件；验证 grep 结果与 map 键集一致
 
 ## 2. 运行日志真实分页（specs/run-logs ③）
 

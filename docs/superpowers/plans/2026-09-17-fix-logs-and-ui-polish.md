@@ -41,7 +41,7 @@ base-ref: 38fa9d14a22eba3fb789b31e0a6ac552a8294f24
 - Consumes: 现有 `taskTypeLabel(type)` / `taskTypeType(type)`（签名不变）
 - Produces: 更新后的 `TASK_TYPE_MAP`（9 个当前有效键 + `media_scan`/`recovery` 历史兜底键）；`LogsView.vue` 的 `taskTypes` 常量 = 当前有效键子集
 
-- [ ] **Step 1: 更新 TASK_TYPE_MAP**
+- [x] **Step 1: 更新 TASK_TYPE_MAP**
 
 将 `frontend/src/utils/format.ts` 的 `TASK_TYPE_MAP`（当前 12 键：scan_media, media_scan, scan_all_media, transfer, transfer_retry, download, nastools_sync, cleanup, notification_scan, capacity_alert, recover, recovery）改为：
 
@@ -69,7 +69,7 @@ const TASK_TYPE_MAP: Record<string, [string, string]> = {
 
 注意：移除 `transfer_retry`、`download`、`nastools_sync`、`notification_scan` 四个键（后端无任何写入点，grep 0 命中）。
 
-- [ ] **Step 2: 更新 LogsView 筛选列表**
+- [x] **Step 2: 更新 LogsView 筛选列表**
 
 将 `frontend/src/views/LogsView.vue:18`：
 
@@ -78,7 +78,7 @@ const TASK_TYPE_MAP: Record<string, [string, string]> = {
 const taskTypes = ['scan_media', 'scan_all_media', 'transfer', 'cleanup', 'prune_history', 'capacity_alert', 'recover', 'sync_nastools', 'notify']
 ```
 
-- [ ] **Step 3: 补充/运行前端测试**
+- [x] **Step 3: 补充/运行前端测试**
 
 在 `frontend/src/utils/format.test.ts` 增加：
 
@@ -105,11 +105,11 @@ describe('taskTypeLabel / taskTypeType（任务类型映射）', () => {
 运行: `cd frontend && npx vitest run src/utils/format.test.ts`
 Expected: 全部通过
 
-- [ ] **Step 4: 交叉核对后端写入点**
+- [x] **Step 4: 交叉核对后端写入点**
 
 验证：`grep -rhoP 'record_task_run\([^)]*?"[a-z_]+"' backend/app/tasks/*.py | grep -oP '"[a-z_]+"$' | sort -u` 与 map 当前有效键一致（差异仅允许 `media_scan`/`recovery` 兜底键多出）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add frontend/src/utils/format.ts frontend/src/views/LogsView.vue frontend/src/utils/format.test.ts
