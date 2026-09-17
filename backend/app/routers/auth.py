@@ -92,6 +92,15 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
+# Task B3：登录时序侧信道抹平（Design D3）——用户不存在时对固定 dummy hash
+# 执行一次等价 bcrypt 校验（结果忽略），使「用户不存在」与「密码错误」的响应
+# 时间一致，防止用户名枚举（审查 C2）。dummy hash 用与真实密码完全相同的
+# hash_password 在模块加载时生成一次：bcrypt 默认 rounds（与 hash_password 的
+# gensalt 一致），未来调整成本参数时此处自动跟随，不会产生成本漂移
+# （低成本假 hash 会让时序差异仍可测，故不硬编码字符串）。
+_DUMMY_PASSWORD_HASH = hash_password("lumencloud-timing-dummy")
+
+
 def _now() -> datetime:
     """统一时间源（naive UTC），与 models server_default 一致。"""
     return datetime.now(timezone.utc).replace(tzinfo=None)
@@ -217,7 +226,17 @@ async def login(
     key = _login_rate_key(request, username)
 
     user = await session.scalar(select(User).where(User.username == username))
-    if user is None or not verify_password(payload.password, user.password_hash):
+    if user is None:
+        # Task B3：用户不存在 → 对固定 dummy hash 执行一次等价校验（结果忽略），
+        # 抹平与「密码错误」分支的 bcrypt 校验耗时差异（防用户名枚举，审查 C2）。
+        # 仅存在于该分支，不影响成功路径性能；dummy 与真实密码同成本（见模块
+        # 常量 _DUMMY_PASSWORD_HASH 注释）。
+        verify_password(payload.password, _DUMMY_PASSWORD_HASH)
+        password_ok = False
+    else:
+        password_ok = verify_password(payload.password, user.password_hash)
+
+    if not password_ok:
         # 先判后记（Task B2 迁移通用 RateLimiter 后语义不变）：未超限才记录失败
         # 事件（单键 deque 以 max_failures 封顶，防单键窗口内无界增长）；已超限
         # 直接 429，不再记录。
