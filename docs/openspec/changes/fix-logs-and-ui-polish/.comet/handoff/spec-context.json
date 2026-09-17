@@ -1,0 +1,40 @@
+{
+  "change": "fix-logs-and-ui-polish",
+  "phase": "design",
+  "mode": "beta",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "ce0439203b5be2bb6fda62b7a341024ed670b39c68c7f85fbf4d126e49260bdb",
+  "files": [
+    {
+      "path": "docs/openspec/changes/fix-logs-and-ui-polish/proposal.md",
+      "sha256": "c1656f94c4dd44db25384d4843745c90757649c29864070ff50ccfed75f063ab",
+      "role": "supporting"
+    },
+    {
+      "path": "docs/openspec/changes/fix-logs-and-ui-polish/design.md",
+      "sha256": "8c6792bf75a078f0ba09be57f24b653b4412ebb6d8e75807f342fbf4fa48578b",
+      "role": "supporting"
+    },
+    {
+      "path": "docs/openspec/changes/fix-logs-and-ui-polish/tasks.md",
+      "sha256": "28a0bf4760766eabe2faccb480832e053e1fa14d751f58e499878d21d0b3ddac",
+      "role": "supporting"
+    },
+    {
+      "path": "docs/openspec/changes/fix-logs-and-ui-polish/specs/media-status/spec.md",
+      "sha256": "b8893eacb4a0e94ba0817f3cb7bf34bbb9fcae3300470f4ea9502ebb9efc6a30",
+      "role": "spec"
+    },
+    {
+      "path": "docs/openspec/changes/fix-logs-and-ui-polish/specs/run-logs/spec.md",
+      "sha256": "56e0225a454a34f3b60d0b770c9d002855a98b1b85dd20c76c453909cd5113ee",
+      "role": "spec"
+    },
+    {
+      "path": "docs/openspec/changes/fix-logs-and-ui-polish/specs/user-invite-management/spec.md",
+      "sha256": "dc9b2cbd49441a8940fb992f2ef77aee456b41d08d73bf8996685be2d61f6bb2",
+      "role": "spec"
+    }
+  ]
+}
