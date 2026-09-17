@@ -14,7 +14,7 @@ from typing import Optional
 
 import bcrypt
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from jose import jwt
+from jose import JWTError, jwt
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
@@ -272,6 +272,76 @@ async def login(
 async def me(user: User = Depends(get_current_user)) -> dict:
     """当前登录用户信息。"""
     return {"id": user.id, "username": user.username, "role": user.role}
+
+
+# ---------------------------------------------------------------------------
+# 登出（Task B4 / Design D4：清除 httpOnly cookie 会话 + 吊销已签发令牌）
+# ---------------------------------------------------------------------------
+
+def _optional_token_payload(request: Request) -> Optional[dict]:
+    """解析请求携带的 JWT（Authorization header 优先、httpOnly cookie 兜底）。
+
+    与 deps.get_current_user 的双通道顺序一致，但**不抛错**：无 token / 非法
+    token 一律返回 None——供登出幂等使用（未登录登出仅删 cookie，不吊销）。
+    """
+    token: Optional[str] = None
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header[7:].strip()
+    else:
+        token = request.cookies.get("access_token")
+    if not token:
+        return None
+    try:
+        return jwt.decode(token, _JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
+    except JWTError:
+        return None
+
+
+@router.post("/logout")
+async def logout(
+    request: Request,
+    response: Response,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """登出（幂等）：清除服务端 httpOnly cookie 会话 + 吊销该用户全部令牌。
+
+    - cookie：delete_cookie 与登录 set_cookie 的 key（access_token）/ path（/）/
+      httponly / samesite（lax）/ secure 完全一致——参数不一致浏览器不会删除；
+      Max-Age=0 立即使 cookie 过期（Task B4，收敛「logout 后残留 cookie 仍可
+      鉴权」缺口，审查 C5）。
+    - 令牌吊销：JWT 无状态，仅删 cookie 无法让已签发 token 失效（残留/泄露的
+      token 仍可鉴权）。复用 Task B1 的 token_version 机制：递增 users.
+      token_version → 该用户所有已签发 JWT（payload.ver 落后于新版本）在
+      get_current_user 校验时立即 401（spec「登出后令牌不再有效」场景：
+      残留 cookie 请求受保护端点返回 401）。语义等价「登出即吊销该用户全部
+      会话」，与改密吊销同构。
+    - 幂等：无 token / token 非法 / 用户不存在 → 跳过吊销，恒 200（未登录登出
+      不报错）。递增为 DB 原子自增（token_version + 1），并发登出不丢更新。
+    """
+    payload = _optional_token_payload(request)
+    user_id: Optional[int] = None
+    if payload is not None and payload.get("sub") is not None:
+        try:
+            user_id = int(payload["sub"])
+        except (TypeError, ValueError):
+            user_id = None
+    if user_id is not None:
+        await session.execute(
+            update(User)
+            .where(User.id == user_id)
+            .values(token_version=User.token_version + 1)
+        )
+        await session.commit()
+
+    response.delete_cookie(
+        key="access_token",
+        path="/",
+        httponly=True,
+        samesite="lax",
+        secure=settings.COOKIE_SECURE,
+    )
+    return {"ok": True}
 
 
 @router.post("/change-password")
