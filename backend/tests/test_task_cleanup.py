@@ -180,11 +180,12 @@ def test_logs_title_contains_matches_literal_percent(db):
     async def _query():
         async with db() as s:
             # 直接调用绕过 Depends：Query(...) 默认参数不会自动解析，须全部显式传值
-            return await list_logs(
+            res = await list_logs(
                 admin=ADMIN, session=s,
                 task_type=None, status=None, media_id=None, tmdb_id=None,
                 title="a%", limit=50, offset=0,
             )
+            return res["items"]
 
     rows = run(_query())
     titles = [r["media_title"] for r in rows]
