@@ -29,7 +29,7 @@ import logging
 from apscheduler.jobstores.memory import MemoryJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
-from sqlalchemy import text
+from sqlalchemy import select
 
 from app.database import async_session
 from app.models import SystemConfig
@@ -94,7 +94,10 @@ async def _system_config_is_empty() -> bool:
     """
     try:
         async with async_session() as session:
-            row = await session.execute(text("SELECT 1 FROM system_config LIMIT 1"))
+            # R1（审查发现 2）：改用 ORM 查询（select(SystemConfig.key)），消除
+            # 裸 SQL 对 system_config 表名的硬编码——模型 __tablename__ 变更时
+            # 自动同步，不会失联。
+            row = await session.execute(select(SystemConfig.key).limit(1))
             return row.first() is None
     except Exception as exc:  # noqa: BLE001  探测失败保守按非空，副作用留给日志
         logger.warning("[scheduler] system_config 空表探测失败，按非空处理: %s", exc)
