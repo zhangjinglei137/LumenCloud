@@ -85,10 +85,16 @@ class EpisodeState(Base):
     __tablename__ = "episode_state"
     __table_args__ = (
         UniqueConstraint("media_id", "episode", name="uq_episode_state_media_episode"),
+        # Task A1：media_id 独立索引（外键级联删除性能；迁移见 alembic/versions/0017_audit_fixes.py）
+        Index("idx_eps_media", "media_id"),
     )
 
     id = mapped_column(BIG_PK, Identity(), primary_key=True)
-    media_id = mapped_column(BigInteger, ForeignKey("media.id"), nullable=False)
+    # Task A1：media 删除 → 单集派发状态级联清理（CASCADE，外键迁移见
+    # alembic/versions/0017_audit_fixes.py）
+    media_id = mapped_column(
+        BigInteger, ForeignKey("media.id", ondelete="CASCADE"), nullable=False
+    )
     episode = mapped_column(Text, nullable=False)  # S01E01 / 全量=文件名
     state = mapped_column(  # queued/transferring/downloading/done/failed
         Text, nullable=False
@@ -129,7 +135,9 @@ class TaskQueue(Base):
     )
 
     id = mapped_column(BIG_PK, Identity(), primary_key=True)
-    media_id = mapped_column(BigInteger, ForeignKey("media.id"), nullable=False)
+    media_id = mapped_column(
+        BigInteger, ForeignKey("media.id", ondelete="CASCADE"), nullable=False
+    )
     episode = mapped_column(Text, nullable=False)          # S01E01 / 电影=movie:<title>
     # ---- 探测结果快照（ready 时填充，promote 时整体拷贝进 download_queue）----
     file_name = mapped_column(Text)                        # 夸克分享原始文件名
@@ -171,9 +179,15 @@ class DownloadQueue(Base):
     )
 
     id = mapped_column(BIG_PK, Identity(), primary_key=True)
-    media_id = mapped_column(BigInteger, ForeignKey("media.id"), nullable=False)
+    media_id = mapped_column(
+        BigInteger, ForeignKey("media.id", ondelete="CASCADE"), nullable=False
+    )
     episode = mapped_column(Text, nullable=False)          # 防重键（同 task_queue）
-    task_queue_id = mapped_column(BigInteger, ForeignKey("task_queue.id"))
+    # Task A1：media/task_queue 删除 → 下载任务级联清理（迁移见 0017_audit_fixes.py）
+    task_queue_id = mapped_column(
+        BigInteger,
+        ForeignKey("task_queue.id", ondelete="CASCADE"),
+    )
     # ---- 分享信息快照（promote 时从 task_queue 整体拷贝，转存阶段独立）----
     file_name = mapped_column(Text, nullable=False)        # 夸克原始文件名
     file_size = mapped_column(BigInteger, nullable=False)  # 字节
@@ -259,7 +273,7 @@ class DownloadTask(Base):
     __tablename__ = "download_task"
 
     id = mapped_column(BIG_PK, Identity(), primary_key=True)
-    media_id = mapped_column(BigInteger, ForeignKey("media.id"))
+    media_id = mapped_column(BigInteger, ForeignKey("media.id", ondelete="CASCADE"))
     transfer_id = mapped_column(BigInteger, ForeignKey("transfer_queue.id"))
     episode = mapped_column(Text)
     file_name = mapped_column(Text)
@@ -280,7 +294,9 @@ class TaskRun(Base):
 
     id = mapped_column(BIG_PK, Identity(), primary_key=True)
     task_type = mapped_column(Text, nullable=False)  # scan_media/transfer/...
-    media_id = mapped_column(Integer)
+    # Task A1：media_id 类型与其它表对齐 BigInteger（INTEGER 在 PG 为 4 字节，
+    # 迁移见 alembic/versions/0017_audit_fixes.py）
+    media_id = mapped_column(BigInteger)
     status = mapped_column(Text)  # success/skipped/error
     message = mapped_column(Text)
     started_at = mapped_column(DateTime)
@@ -328,7 +344,8 @@ class InviteCode(Base):
 
     code = mapped_column(Text, primary_key=True)
     created_by = mapped_column(BigInteger, ForeignKey("users.id"))
-    used_by = mapped_column(BigInteger, ForeignKey("users.id"))
+    # Task A1：用户删除 → 邀请码引用置空（SET NULL；created_by 不在级联范围，迁移见 0017_audit_fixes.py）
+    used_by = mapped_column(BigInteger, ForeignKey("users.id", ondelete="SET NULL"))
     used_at = mapped_column(DateTime)
     created_at = mapped_column(DateTime, server_default=text("CURRENT_TIMESTAMP"))
 
@@ -339,7 +356,8 @@ class WatchRequest(Base):
     __tablename__ = "watch_requests"
 
     id = mapped_column(BIG_PK, Identity(), primary_key=True)
-    requested_by = mapped_column(BigInteger, ForeignKey("users.id"))
+    # Task A1：用户删除 → 请求人/审批人引用置空（SET NULL，迁移见 0017_audit_fixes.py）
+    requested_by = mapped_column(BigInteger, ForeignKey("users.id", ondelete="SET NULL"))
     title = mapped_column(Text, nullable=False)
     tmdb_id = mapped_column(Integer)
     media_type = mapped_column(Text)  # movie / tv
@@ -347,7 +365,7 @@ class WatchRequest(Base):
     status = mapped_column(  # pending/approved/rejected
         Text, nullable=False, server_default=text("'pending'")
     )
-    reviewed_by = mapped_column(BigInteger, ForeignKey("users.id"))
+    reviewed_by = mapped_column(BigInteger, ForeignKey("users.id", ondelete="SET NULL"))
     reviewed_at = mapped_column(DateTime)
     reject_reason = mapped_column(Text)
     created_at = mapped_column(DateTime, server_default=text("CURRENT_TIMESTAMP"))
