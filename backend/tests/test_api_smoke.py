@@ -362,3 +362,45 @@ def test_full_auth_and_api_flow():
         # ---------- 邀请码删除：已用 409 / 未用 200 ----------
         assert client.delete(f"/api/admin/invites/{codes[0]}", headers=_auth(admin_tok)).status_code == 409
         assert client.delete(f"/api/admin/invites/{codes[1]}", headers=_auth(admin_tok)).status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# D4（审查 E10）：serve_spa 对 /internal/* 未注册路径返回 404 JSON
+# ---------------------------------------------------------------------------
+
+def test_internal_prefix_returns_404_json():
+    """D4/E10：/internal 与 /internal/* 的未注册 GET 路径返回 404 JSON（REST 语义），
+    不再 SPA fallback 回 200 HTML。已注册的 POST /internal/aria2/notify 等显式
+    路由不经过 serve_spa，不受影响；既有静态资源/SPA fallback 托管行为不变。"""
+    with TestClient(app) as client:
+        for path in ("/internal/unknown", "/internal/deep/leaf", "/internal/", "/internal"):
+            r = client.get(path)
+            assert r.status_code == 404, (path, r.status_code)
+            assert r.json() == {"detail": "Not Found"}
+        # 既有行为不变：未知普通路径仍 SPA fallback 到 index.html（200 HTML）
+        r = client.get("/some/spa/route")
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/html")
+
+
+# ---------------------------------------------------------------------------
+# D4（审查 E6）：日志挂载显式化（不依赖 uvicorn 内部配置行为）
+# ---------------------------------------------------------------------------
+
+def test_logging_handler_explicitly_installed_and_idempotent():
+    """D4/E6：日志挂载由显式 handler 配置接管（不再依赖 uvicorn 的 dictConfig
+    恰好不覆盖 root handler 这一内部行为）。断言 root logger 挂载了带
+    _lumencloud 标记（显式挂载凭据）、指向 stderr 的 handler，且 lifespan
+    重复执行不重复挂载（幂等）。"""
+    import logging
+    import sys
+
+    root = logging.getLogger()
+    marked = [h for h in root.handlers if getattr(h, "_lumencloud", False)]
+    assert marked, "root logger 应挂载显式配置（带 _lumencloud 标记）的 handler"
+    assert any(getattr(h, "stream", None) is sys.stderr for h in marked)
+    before = len([h for h in root.handlers if getattr(h, "_lumencloud", False)])
+    with TestClient(app):
+        pass  # lifespan 内再次执行显式日志配置（幂等验证）
+    after = len([h for h in root.handlers if getattr(h, "_lumencloud", False)])
+    assert after == before, "lifespan 重复配置不应重复挂载 handler"

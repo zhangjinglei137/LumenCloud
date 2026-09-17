@@ -42,7 +42,22 @@ def jsonable_encoder_zulu(obj, *args, **kwargs):
 
 
 def install_zulu_encoder() -> None:
-    """替换 fastapi.routing 模块的 jsonable_encoder 引用（幂等）。"""
+    """替换 fastapi.routing 模块的 jsonable_encoder 引用（幂等）。
+
+    D4（审查 E13）版本守卫：fastapi.routing.jsonable_encoder 是 fastapi 内部
+    实现细节（非公开 API），未来大版本可能变更/移除该属性。守卫在替换前校验
+    fastapi 版本族（0.x，当前 requirements 锁定 0.141.1）与属性存在性，不满足
+    直接抛错 fail-fast——避免补丁静默失效后 datetime 丢失 Z 后缀（docker
+    UTC+Z 时间序列化回归）。升级 fastapi 时须同步复查本模块兼容性并更新守卫。
+    """
+    import fastapi
     import fastapi.routing as routing
 
+    _version = getattr(fastapi, "__version__", "<unknown>")
+    if not _version.startswith("0.") or not hasattr(routing, "jsonable_encoder"):
+        raise RuntimeError(
+            "install_zulu_encoder 兼容性守卫失败：fastapi 版本 %s（预期 0.x 且 "
+            "fastapi.routing.jsonable_encoder 存在）。fastapi 结构性变更时，请先"
+            "复查 app/json.py 的 monkey-patch 兼容性再升级。" % _version
+        )
     routing.jsonable_encoder = jsonable_encoder_zulu

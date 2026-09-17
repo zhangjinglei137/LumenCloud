@@ -32,6 +32,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
+          # CI 锁定 3.12（既有验证基线）；本地开发演练使用 3.14，双版本覆盖
           python-version: "3.12"
 
       - name: 安装依赖
@@ -72,14 +73,14 @@ jobs:
         run: alembic -c alembic/alembic.ini upgrade head
 
   frontend-build:
-    name: 前端类型检查与构建
+    name: 前端单元测试与构建
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
@@ -87,12 +88,18 @@ jobs:
         working-directory: frontend
         run: npm ci
 
-      - name: 构建
+      - name: 单元测试（vitest）
+        working-directory: frontend
+        run: npm test
+
+      - name: 构建（vue-tsc 类型检查 + vite build）
         working-directory: frontend
         run: npm run build
 
   trivy-scan:
-    name: 镜像安全扫描（trivy）
+    # 该 job 同时承担 Task D4 的 docker-build 冒烟职责：docker build 真实执行
+    # （构建失败即红），trivy 扫描为可选增强（已启用，.trivyignore 沿用）。
+    name: 镜像构建冒烟与安全扫描（trivy）
     runs-on: ubuntu-latest
     permissions:
       contents: read

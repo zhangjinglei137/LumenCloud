@@ -157,3 +157,52 @@ def test_episode_info_refresh_job_runs_for_tv_media(_db_maker, monkeypatch):
     run(_seed())
     run(episode_info_refresh_job())
     assert sorted(calls) == [101, 102]  # 仅 tv 且 tmdb_id 非空
+
+
+# ---------------------------------------------------------------------------
+# D4（审查 E7）：system_config 空表（首启）→ job 默认 paused（fail-closed）
+# ---------------------------------------------------------------------------
+
+def test_empty_config_table_means_jobs_paused(monkeypatch):
+    """首启决胜：system_config 表无任何行时 get_job_enabled 一律返回 False——
+    首启未配置任何凭据时 scan/transfer 等定时全开空转刷屏（审查 E7）。管理员
+    写入任意配置（表非空）后按双层开关正常评估（由 _system_config_is_empty
+    返回 False 分支覆盖既有语义）。"""
+    async def _empty():
+        return True
+
+    monkeypatch.setattr(scheduler_mod, "_system_config_is_empty", _empty)
+    monkeypatch.setattr(scheduler_mod, "_get_config_value", _fake_get_config_value({}))
+    for jid in scheduler_mod.JOB_IDS:
+        assert run(get_job_enabled(jid)) is False
+
+
+def test_non_empty_table_keeps_existing_semantics(monkeypatch):
+    """已配置部署（表非空）：空表决胜不生效，双层开关语义不变
+    （scheduler_enabled 未配置默认开 → job 级跟随开启）。"""
+    async def _not_empty():
+        return False
+
+    monkeypatch.setattr(scheduler_mod, "_system_config_is_empty", _not_empty)
+    monkeypatch.setattr(scheduler_mod, "_get_config_value", _fake_get_config_value({}))
+    assert run(get_job_enabled(scheduler_mod.JOB_SCAN_ALL_MEDIA)) is True
+
+
+def test_system_config_is_empty_real_db(_db_maker, monkeypatch):
+    """_system_config_is_empty 真实查询：空表 → True；存在任意行 → False。
+
+    实现级验证（monkeypatch 模块内 async_session 为隔离 in-memory 库），
+    杜绝假绿：查询真实命中 system_config 表而非无表异常被吞。
+    """
+    from sqlalchemy import text as _text
+
+    monkeypatch.setattr(scheduler_mod, "async_session", _db_maker)
+    assert run(scheduler_mod._system_config_is_empty()) is True
+
+    async def _seed():
+        async with _db_maker() as s:
+            await s.execute(_text("INSERT INTO system_config (key, value) VALUES ('k', 'v')"))
+            await s.commit()
+
+    run(_seed())
+    assert run(scheduler_mod._system_config_is_empty()) is False

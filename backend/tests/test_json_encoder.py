@@ -1,6 +1,7 @@
 """docker-timezone：全局 UTC+Z 编码器单测。"""
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from fastapi.encoders import jsonable_encoder
 
 from app.json import jsonable_encoder_zulu
@@ -65,3 +66,31 @@ def test_e2e_http_response_datetime_has_z():
     assert body["local_at"] == "2026-09-09T01:15:00Z"
     assert body["local_at"].endswith("Z")
     assert body["name"] == "x"
+
+
+# ---------------------------------------------------------------------------
+# D4（审查 E13）：install_zulu_encoder 版本守卫（fail-fast，杜绝静默失效）
+# ---------------------------------------------------------------------------
+
+def test_install_guard_rejects_unverified_fastapi_version(monkeypatch):
+    """D4/E13：fastapi 版本不被守卫认可（如未知大版本 1.x）→ install 抛错
+    fail-fast，避免 monkey-patch 内部属性静默失效（datetime 丢 Z 后缀）。"""
+    import fastapi
+
+    from app.json import install_zulu_encoder
+
+    monkeypatch.setattr(fastapi, "__version__", "1.0.0")
+    with pytest.raises(RuntimeError):
+        install_zulu_encoder()
+
+
+def test_install_guard_rejects_missing_routing_attribute(monkeypatch):
+    """D4/E13：fastapi.routing 缺失 jsonable_encoder 内部属性（未来版本改结构）
+    → install 抛错，显式失败而非继续运行在已失效的补丁上。"""
+    import fastapi.routing as routing
+
+    from app.json import install_zulu_encoder
+
+    monkeypatch.delattr(routing, "jsonable_encoder")
+    with pytest.raises(RuntimeError):
+        install_zulu_encoder()

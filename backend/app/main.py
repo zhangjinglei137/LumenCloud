@@ -22,30 +22,38 @@ from app.database import async_session, engine, init_db
 from app.scheduler import scheduler
 
 # ---- 生产可观测性（docker logs 必须能见 access log + traceback）----
-# 此前 main.py 未配置 logging：docker logs 只有启动初期 uvicorn 的几行 INFO，
-# 运行中的请求日志与异常 traceback 全不可见，生产问题无法诊断。此处显式把
-# app 各 logger（propagate 到 root）与 uvicorn 日志统一接到 stderr（docker
-# 默认同时捕获 stdout+stderr，stderr 是错误信息最稳落点）。
-#
-# 为何 basicConfig 在 uvicorn CLI 下依然生效：
-# - uvicorn 启动顺序 = 先 import app.main（本文件顶层代码执行）→ 服务器启动时
-#   configure_logging() 用默认 LOGGING_CONFIG 做 dictConfig；
-# - uvicorn 0.34 默认 LOGGING_CONFIG 含 disable_existing_loggers=False 且**不含
-#   root 键**——dictConfig 不会覆盖 root logger 的 handlers 与 level，因此这里
-#   basicConfig 挂上的 stderr StreamHandler 在 uvicorn 重配日志后依旧留存；
-# - 不重复挂 handler：uvicorn.error 经父级 uvicorn 的 default handler（stderr）、
-#   uvicorn.access 经自带 access handler（stdout）各就各位；下文仅把三个
-#   uvicorn logger 的 propagate 打开作兜底——若部署以 --log-config 移除了上述
-#   handler，日志仍会上溯到 root 的 stderr handler，不丢失；dictConfig 仅覆盖
-#   显式列出的 logger，无双写（access 的 propagate 会被默认配置改回 False）。
-logging.basicConfig(
-    level=logging.INFO,
-    stream=sys.stderr,
-    format="%(asctime)s %(levelname)s %(name)s %(message)s",
-)
-for _name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
-    logging.getLogger(_name).propagate = True
+# 此前 main.py 依赖模块顶层 logging.basicConfig + uvicorn 的 dictConfig「恰好
+# 不含 root 键、不覆盖 root handlers」这一内部行为存活。D4（审查 E6）重构为
+# 显式 handler 配置 _configure_logging()：模块顶层与 lifespan 开头各调用一次，
+# 幂等——即便部署以 --log-config 移除了 root handler 或改写 uvicorn logger，
+# 启动后 root 仍有 stderr handler、uvicorn logger 的 propagate 兜底保持打开，
+# 不再依赖 uvicorn 内部配置行为；日志输出与级别与原 basicConfig 行为等价。
+_LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
 
+
+def _configure_logging() -> None:
+    """显式挂载 root logger → stderr（幂等，可重复调用）。
+
+    handler 带 _lumencloud 标记：幂等判断（有标记则不重复挂）+ 测试可断言
+    「该 handler 是 LumenCloud 显式挂载（非 uvicorn/第三方默认）」。stderr 是
+    docker 错误信息最稳落点（默认同时捕获 stdout+stderr）。
+    """
+    root = logging.getLogger()
+    if not any(getattr(h, "_lumencloud", False) for h in root.handlers):
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(logging.Formatter(_LOG_FORMAT))
+        handler._lumencloud = True  # type: ignore[attr-defined]  显式挂载标记
+        root.addHandler(handler)
+    if root.level > logging.INFO:
+        root.setLevel(logging.INFO)
+    # uvicorn logger propagate 兜底：若部署以 --log-config 移除了自带的
+    # stderr/stdout handler，日志仍会上溯到 root 的 stderr handler，不丢失
+    for _name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        logging.getLogger(_name).propagate = True
+
+
+_configure_logging()
 logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
@@ -53,6 +61,10 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # D4（审查 E6）：lifespan 内再次显式配置日志（幂等）——不依赖 uvicorn
+    # dictConfig 行为；即使 uvicorn/第三方以 --log-config 改写过 root handlers，
+    # 启动完成后 root 仍有 stderr handler / uvicorn propagate 兜底。
+    _configure_logging()
     # Phase 8：数据目录先于一切文件/JWT/DB 操作就绪。JWT 密钥在 config 模块
     # 导入时已文件化（load_or_create_jwt_secret 内部自行 mkdir，此处显式确保
     # 双保险，避免任何前置逻辑在目录缺失时操作失败）。
@@ -65,6 +77,10 @@ async def lifespan(app: FastAPI):
     _assert_secure_secrets()
 
     await init_db()
+    # D4（审查 E6）：alembic 迁移的 env.py 会 fileConfig 重置 root logger
+    # handlers（alembic.ini 未配置 root），init_db 后再次显式恢复挂载（幂等），
+    # 保证后续业务日志始终落到 stderr handler（幂等不重复挂）。
+    _configure_logging()
     # Phase 8：加载 system_config → 进程内配置缓存（services 层读取凭据的来源）。
     # 此后各 services 的 config_store.get(key, settings.X) 均读 DB 值（env 仅 fallback）；
     # settings PATCH 保存后由 settings.py 调 refresh() 增量刷新（保存即生效）。
@@ -170,6 +186,12 @@ async def serve_spa(full_path: str):
     if full_path == "api" or full_path.startswith("api/"):
         # 与 FastAPI 默认错误结构一致（{"detail": "Not Found"}），
         # 前端可直接按 REST 处理，不再收到 200 的 HTML。
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
+    if full_path == "internal" or full_path.startswith("internal/"):
+        # D4（审查 E10）：/internal 前缀为内部回调区（aria2/nastools webhook 等
+        # 显式注册的 POST 路由，经 api 聚合 router 挂载，不经过本 catch-all）。
+        # 未注册的 /internal GET 路径同样返回 404 JSON（与 /api 前缀一致），
+        # 避免被 SPA fallback 吞成 200 HTML（前端误判为页面存在）。
         return JSONResponse(status_code=404, content={"detail": "Not Found"})
     index_file = STATIC_DIR / "index.html"
     if index_file.is_file():

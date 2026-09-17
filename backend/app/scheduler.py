@@ -29,6 +29,7 @@ import logging
 from apscheduler.jobstores.memory import MemoryJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
+from sqlalchemy import text
 
 from app.database import async_session
 from app.models import SystemConfig
@@ -82,14 +83,36 @@ def _as_bool(raw) -> bool:
     return str(raw).strip().lower() in ("true", "1", "yes", "on")
 
 
+async def _system_config_is_empty() -> bool:
+    """system_config 表是否为空（无任何行）——首启决胜（D4/E7）。
+
+    - 空表 = 首启未配置：get_job_enabled 一律返回 False，全部 job 保持 paused
+      （首启无凭据时 scan/transfer 不空转刷屏），管理员经 /api/settings 写入
+      任意配置（表非空）后按双层开关正常评估；
+    - 保守语义：查询失败（连接异常等）按「非空」处理——延续既有双层开关
+      默认开语义，新决胜逻辑不应改变已配置部署/边缘场景的行为。
+    """
+    try:
+        async with async_session() as session:
+            row = await session.execute(text("SELECT 1 FROM system_config LIMIT 1"))
+            return row.first() is None
+    except Exception as exc:  # noqa: BLE001  探测失败保守按非空，副作用留给日志
+        logger.warning("[scheduler] system_config 空表探测失败，按非空处理: %s", exc)
+        return False
+
+
 async def get_job_enabled(job_id: str) -> bool:
     """双层开关（实施计划 §3.3、A-2 方案②统一）：
 
     - 全局总开关：scheduler_enabled，未配置默认开启；总开关 false 时全部 job 停用
       （job 级无法越权）；
     - job 级开关：scheduler.<job_id>，未配置默认跟随总开关（总开关开启即默认启用）；
-      显式配置 scheduler.<job_id>=true/false 可单独强制开启 / 单独关闭（覆盖跟随默认）。
+      显式配置 scheduler.<job_id>=true/false 可单独强制开启 / 单独关闭（覆盖跟随默认）；
+    - 首启决胜（D4/E7）：system_config 空表（首启未配置）→ 直接返回 False
+      （保持 paused，杜绝无凭据空转），优先级最高。
     """
+    if await _system_config_is_empty():
+        return False
     global_raw = await _get_config_value("scheduler_enabled", "true")
     # 空串/空白视为未配置 → 按默认开启（既有行可能是空值写入，不应等于显式 false
     # 导致全局调度关闭 → 轮询/recover 等全部不跑，任务卡死无人兜底）

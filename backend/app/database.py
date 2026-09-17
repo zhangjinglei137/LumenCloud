@@ -36,7 +36,21 @@ def _engine():
             connect_args={"check_same_thread": False},
             poolclass=StaticPool,
         )
-    return create_async_engine(url, pool_pre_ping=True)
+    # D4（审查 E8）：PG 流程显式连接池配置（此前仅 pool_pre_ping=True，
+    # pool_size/max_overflow 走 SQLAlchemy 默认 5/10，pool_recycle 为 0 不回收）：
+    # - pool_size=10：与调度峰值匹配——10 个 scheduler job 的并发轮询 +
+    #   平稳期的 API 请求并发，避免默认 5 连接在 job 周期叠加时排队；
+    # - max_overflow=10：应对 webhook/批量任务瞬时突发，溢出连接用完即关、
+    #   不常驻缓存（SQLAlchemy overflow 语义）；
+    # - pool_recycle=1800：30 分钟回收，规避服务端/PgBouncer idle 超时静默断连
+    #   （asyncpg 默认不回收，pool_pre_ping 只治探活、不治陈旧连接积累）。
+    return create_async_engine(
+        url,
+        pool_pre_ping=True,
+        pool_size=10,
+        max_overflow=10,
+        pool_recycle=1800,
+    )
 
 
 engine = _engine()
