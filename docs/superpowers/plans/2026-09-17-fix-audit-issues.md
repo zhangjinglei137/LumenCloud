@@ -399,10 +399,10 @@ base-ref: 114b8081c182581a02a49435cfd4f317b58ac2f5
 - Consumes: `_ensure_login`、`_session_cookie`
 - Produces: 会话失效自动重登；冷却 sleep 不持锁
 
-- [ ] **Step 1** 写失败测试：`_do` 收到 401 后自动重登成功；重登仍败上抛
-- [ ] **Step 2** 实现 `_do` 重登（限一次重试）；`_sync_lock` 只保护冷却检查+时间戳更新
-- [ ] **Step 3** 运行测试通过 + test_nastools 无回归
-- [ ] **Step 4** Commit：`fix: NasTools 会话失效自动重登与同步锁粒度`
+- [x] **Step 1** 写失败测试：`_do` 收到 401 后自动重登成功；重登仍败上抛
+- [x] **Step 2** 实现 `_do` 重登（限一次重试）；`_sync_lock` 只保护冷却检查+时间戳更新
+- [x] **Step 3** 运行测试通过 + test_nastools 无回归
+- [x] **Step 4** Commit：`fix: NasTools 会话失效自动重登与同步锁粒度`
 
 ### Task D4: CI workflow + 工程化杂项
 

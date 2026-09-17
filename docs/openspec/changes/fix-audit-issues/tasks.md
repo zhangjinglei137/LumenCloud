@@ -67,8 +67,8 @@
 
 - [x] 8.1 scan.py PG 到期过滤表达式修正（`func.make_interval`/`literal_column`），先写双方言 SQL 渲染单测，验证 PG 分支生成合法 SQL
 - [x] 8.2 `_enqueue` 移除显式 `tx.commit()`、统一由上下文管理器管理（冲突捕获降级单条跳过），验证入队冲突不中断整轮巡检
-- [ ] 8.3 NasTools `_do` 收到 401/403 清除 session cookie 并重登一次（限一次防循环），验证会话过期自动重登测试
-- [ ] 8.4 nastools_sync `_sync_lock` 缩小临界区（冷却检查+时间戳互斥，sleep 移出锁外），验证刮削触发不被兜底同步长阻塞
+- [x] 8.3 NasTools `_do` 收到 401/403 清除 session cookie 并重登一次（限一次防循环），验证会话过期自动重登测试
+- [x] 8.4 nastools_sync `_sync_lock` 缩小临界区（冷却检查+时间戳互斥，sleep 移出锁外），验证刮削触发不被兜底同步长阻塞
 - [ ] 8.5 `trigger_emby_refresh()` 移出 `if advanced:` 块（整理完成事件即触发 Refresh），验证非 advanced 场景也会触发扫描
 - [ ] 8.6 首启（system_config 空表）job 开关默认 paused，管理员配置后显式开启，验证首启不激活 scan/transfer 空转
 - [ ] 8.7 PG 连接池显式配置（pool_size/max_overflow/pool_recycle），验证并发峰值下无连接耗尽
