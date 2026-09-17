@@ -238,10 +238,10 @@ base-ref: 114b8081c182581a02a49435cfd4f317b58ac2f5
 - Consumes: `aria2.tell_status`、`_INFLIGHT_STATUSES`
 - Produces: quota_wait 分支 CAS 未命中 → conflict 跳过（不误报）；cancel 已 complete → 走完成路径
 
-- [ ] **Step 1** 写失败测试：准入并发推进后不误报 quota_wait；取消 aria2 已 complete 任务不标 failed
-- [ ] **Step 2** 实现：quota_wait 分支 rowcount==0 设 conflict；cancel 先 tell_status 判 complete 分路径
-- [ ] **Step 3** 运行测试通过 + test_transfer 全系列无回归
-- [ ] **Step 4** Commit：`fix: 准入冲突识别与取消已完成任务状态一致性`
+- [x] **Step 1** 写失败测试：准入并发推进后不误报 quota_wait；取消 aria2 已 complete 任务不标 failed
+- [x] **Step 2** 实现：quota_wait 分支 rowcount==0 设 conflict；cancel 先 tell_status 判 complete 分路径
+- [x] **Step 3** 运行测试通过 + test_transfer 全系列无回归
+- [x] **Step 4** Commit：`fix: 准入冲突识别与取消已完成任务状态一致性`
 
 ### Task C5: 回调鉴权补测试封闭（B8 现状满足）
 

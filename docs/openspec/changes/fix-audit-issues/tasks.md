@@ -35,8 +35,8 @@
 - [x] 5.2 前端 `DOWNLOAD_ACTIVE_STATUSES` 补 `'pending'` 与后端 `_DQ_ACTIVE` 对齐，验证「仅看活跃」展示排队任务
 - [x] 5.3 sort_task 上/下移加 `status='pending'` CAS 门控，rowcount==0 返回 409，验证并发推进后排序被拒
 - [x] 5.4 add_queue_task 重置加状态门控（probing 等运行态不被重置），验证探测中任务不被重置
-- [ ] 5.5 cancel_task 对 downloading 行先 `tell_status` 确认非 complete 再标 failed（complete 则走完成路径），验证新增取消已完成任务测试
-- [ ] 5.6 `_try_admit_one` quota_wait 分支 CAS 未命中时设 conflict（与抢占分支一致），验证并发推进后不误报 quota_wait
+- [x] 5.5 cancel_task 对 downloading 行先 `tell_status` 确认非 complete 再标 failed（complete 则走完成路径），验证新增取消已完成任务测试
+- [x] 5.6 `_try_admit_one` quota_wait 分支 CAS 未命中时设 conflict（与抢占分支一致），验证并发推进后不误报 quota_wait
 - [x] 5.7 retry_task 旧三表分支检查 rowcount，==0 返回 409「状态已变化」，验证新增冲突测试
 - [ ] 5.8 下载完成回调端点补鉴权与 gid 维度校验（确认 notify.py 现状后），验证非法回调被拒测试
 - [ ] 5.9 recovery 回退前区分「aria2 故障」与「任务无进展」（aria2 探活），验证 aria2 故障期间不触发回退循环
