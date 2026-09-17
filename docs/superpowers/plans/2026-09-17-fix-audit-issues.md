@@ -222,10 +222,10 @@ base-ref: 114b8081c182581a02a49435cfd4f317b58ac2f5
 - Consumes: `DownloadQueue`/`TaskQueue` 状态字段
 - Produces: 冲突时 409「状态已变化，请刷新后重试」；probing 行不被重置
 
-- [ ] **Step 1** 写失败测试三条路径：在途排序被拒、probing 重置被拒、retry 状态变化返回 409
-- [ ] **Step 2** 实现统一 CAS 门控（WHERE 状态集 + rowcount==0 → 409）
-- [ ] **Step 3** 运行测试通过 + test_transfer/test_queue 无回归
-- [ ] **Step 4** Commit：`fix: 队列控制面操作补 CAS 状态门控`
+- [x] **Step 1** 写失败测试三条路径：在途排序被拒、probing 重置被拒、retry 状态变化返回 409
+- [x] **Step 2** 实现统一 CAS 门控（WHERE 状态集 + rowcount==0 → 409）
+- [x] **Step 3** 运行测试通过 + test_transfer/test_queue 无回归
+- [x] **Step 4** Commit：`fix: 队列控制面操作补 CAS 状态门控`
 
 ### Task C4: 准入与取消状态一致性（transfer）
 
