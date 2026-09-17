@@ -266,10 +266,10 @@ base-ref: 114b8081c182581a02a49435cfd4f317b58ac2f5
 - Consumes: `aria2` client、`get_global_stat`/`tell_status`
 - Produces: aria2 故障时 downloading 任务不被回退
 
-- [ ] **Step 1** 写失败测试：aria2 抛 Aria2Unavailable 时 downloading 任务不触发回退
-- [ ] **Step 2** 实现：recovery 判定下载中任务超时前先探活 aria2（失败则跳过本轮）
-- [ ] **Step 3** 运行测试通过 + test_recovery 无回归
-- [ ] **Step 4** Commit：`fix: aria2 故障期间不触发下载任务回退循环`
+- [x] **Step 1** 写失败测试：aria2 抛 Aria2Unavailable 时 downloading 任务不触发回退
+- [x] **Step 2** 实现：recovery 判定下载中任务超时前先探活 aria2（失败则跳过本轮）
+- [x] **Step 3** 运行测试通过 + test_recovery 无回归
+- [x] **Step 4** Commit：`fix: aria2 故障期间不触发下载任务回退循环`
 
 ### Task C7: 站内通知分页与清理
 
