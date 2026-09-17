@@ -299,10 +299,10 @@ base-ref: 114b8081c182581a02a49435cfd4f317b58ac2f5
 - Consumes: `InAppNotifier`、`flow_error` 事件、`urlsplit`
 - Produces: 经配置开关控制的降级站内通知；脱敏后文案
 
-- [ ] **Step 1** 写失败测试：PushPlus.send 抛错 → 产生站内 flow_error 通知；异常消息含 URL token → 通知正文已脱敏
-- [ ] **Step 2** 实现：except 分支调 InAppNotifier 补发（防递归：降级通知本身不重推 PushPlus）；`flow_error_nastools_sync` 截断 + 剥 userinfo/query
-- [ ] **Step 3** 运行测试通过；notifier 相关无回归
-- [ ] **Step 4** Commit：`feat: PushPlus 失败降级站内告警并脱敏通知文案`
+- [x] **Step 1** 写失败测试：PushPlus.send 抛错 → 产生站内 flow_error 通知；异常消息含 URL token → 通知正文已脱敏
+- [x] **Step 2** 实现：except 分支调 InAppNotifier 补发（防递归：降级通知本身不重推 PushPlus）；`flow_error_nastools_sync` 截断 + 剥 userinfo/query
+- [x] **Step 3** 运行测试通过；notifier 相关无回归
+- [x] **Step 4** Commit：`feat: PushPlus 失败降级站内告警并脱敏通知文案`
 
 ### Task C9: 海报缓存淘汰 + content-type 校验
 
