@@ -42,7 +42,7 @@
 - [x] 5.8 下载完成回调端点补鉴权与 gid 维度校验（确认 notify.py 现状后），验证非法回调被拒测试
 - [x] 5.9 recovery 回退前区分「aria2 故障」与「任务无进展」（aria2 探活），验证 aria2 故障期间不触发回退循环
 - [x] 5.10 容量告警冷却：注释+文档明示单 worker/多 worker trade-off（或 DB 落冷却），验证告警逻辑不受影响
-- [ ] 5.11 probe_media 加 per-media 频率限制或 scan 内去重，验证连续 probe 被限流
+- [x] 5.11 probe_media 加 per-media 频率限制或 scan 内去重，验证连续 probe 被限流
 
 ## 6. Emby/TMDB 一致性与缓存（emby-library-browse 等能力）
 
@@ -61,7 +61,7 @@
 - [x] 7.3 PushPlus 推送失败补发站内「推送失败」告警（或记录可观察 task_run），验证失败时产生站内通知
 - [x] 7.4 通知异常文案截断与脱敏（去 URL userinfo/query token），验证通知正文不含凭据
 - [x] 7.5 海报缓存满后淘汰最旧（LRU）再写入 + 回源响应 content-type 校验（非 `image/*` 不缓存返 502），验证新增海报缓存/类型测试
-- [ ] 7.6 海报缓存 per-path singleflight（可选，asyncio.Lock 按 path 节流），验证并发同键只回源一次
+- [x] 7.6 海报缓存 per-path singleflight（可选，asyncio.Lock 按 path 节流），验证并发同键只回源一次
 - [x] 7.7 运行日志任务类型筛选项改后端下发（新增 `/api/logs/task-types` 或随列表返回枚举），前端动态渲染，验证后端新增类型后选项自动出现
 
 ## 8. 调度/扫描/杂项
@@ -86,7 +86,7 @@
 - [x] 9.4 前端 `taskTypes` 硬编码移除（承接 7.7 后端下发），验证 LogsView 筛选项动态渲染
 - [x] 9.5 admin PATCH 用户角色死接口：补前端入口或删除端点（按产品决策，文档标记），验证无漂移残留
 - [x] 9.6 tmdb_id 为 None 时审批查重以 title 模糊兜底（或要求必填），验证无 tmdb_id 防重复提交
-- [ ] 9.7 补充 QueueView 控制面操作（cancel/prioritize/sort/retry）交互测试与路由守卫/http 401 单测，验证关键交互路径有覆盖
+- [x] 9.7 补充 QueueView 控制面操作（cancel/prioritize/sort/retry）交互测试与路由守卫/http 401 单测，验证关键交互路径有覆盖
 
 ## 10. 全量验证与收尾
 
