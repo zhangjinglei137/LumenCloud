@@ -5,6 +5,13 @@ import { computed, inject, nextTick, provide, reactive } from 'vue'
 import QueueView from './QueueView.vue'
 import type { DownloadQueueItem, QueueTaskItem } from '../types'
 
+// 控制面操作（9.7）依赖 ElMessage/ElMessageBox（JS 服务）：mock 掉以隔离行为断言
+vi.mock('element-plus', () => ({
+  ElMessage: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() },
+  ElMessageBox: { confirm: vi.fn().mockResolvedValue('confirm') },
+}))
+import { ElMessage, ElMessageBox } from 'element-plus'
+
 // ---------- 可变 store mock（reactive：注入数据 / 切换角色后模板可响应更新） ----------
 const storeState = reactive({
   items: [] as QueueTaskItem[],
@@ -313,5 +320,116 @@ describe('QueueView 计时器按 activeTab 启停（fix-audit-issues C11 / 审�
     } finally {
       vi.restoreAllMocks()
     }
+  })
+})
+
+describe('QueueView 控制面操作（fix-audit-issues 9.7）', () => {
+  /** 按按钮文本点击（排除被 disabled 的按钮）并 flush */
+  async function clickButton(text: string) {
+    const btn = wrapper!
+      .findAll('button')
+      .filter((b) => b.text().includes(text))
+      .find((b) => !b.attributes('disabled'))
+    expect(btn, `按钮「${text}」应存在且未禁用`).toBeTruthy()
+    await btn!.trigger('click')
+    await flushPromises()
+  }
+
+  /** 切到下载 Tab（懒加载 onTabChange 会拉取一次），随后清空调用记录再操作 */
+  async function switchToDownloadTab() {
+    ;(wrapper!.vm as unknown as { activeTab: string }).activeTab = 'download'
+    await nextTick()
+    await flushPromises()
+    vi.clearAllMocks()
+  }
+
+  it('置顶：pending 行点击 → store.prioritize(id) + 刷新列表 + 成功提示', async () => {
+    storeState.items = [makeTask({ id: 7, status: 'pending' })]
+    storeState.total = 1
+    wrapper = mountView()
+    await flushPromises()
+    vi.clearAllMocks() // 清掉 onMounted 的 fetchPage 调用，精确断言按钮触发
+
+    await clickButton('置顶')
+
+    expect(storeState.prioritize).toHaveBeenCalledWith(7)
+    expect(storeState.fetchPage).toHaveBeenCalled()
+    expect(ElMessage.success).toHaveBeenCalledWith('已置顶，将优先准入')
+  })
+
+  it('取消任务：二次确认后 → store.cancel(id) + 刷新列表', async () => {
+    storeState.items = [makeTask({ id: 1, status: 'pending', title: '测试剧', episode: 'S01E01' })]
+    storeState.total = 1
+    wrapper = mountView()
+    await flushPromises()
+    vi.clearAllMocks()
+
+    await clickButton('取消')
+
+    expect(ElMessageBox.confirm).toHaveBeenCalled()
+    expect(storeState.cancel).toHaveBeenCalledWith(1)
+    expect(storeState.fetchPage).toHaveBeenCalled() // refreshCurrent → 任务 Tab fetchPage
+  })
+
+  it('取消任务：用户取消确认框 → 不调用 store.cancel', async () => {
+    vi.mocked(ElMessageBox.confirm).mockRejectedValueOnce('cancel')
+    storeState.items = [makeTask({ id: 1, status: 'pending' })]
+    storeState.total = 1
+    wrapper = mountView()
+    await flushPromises()
+    vi.clearAllMocks()
+
+    await clickButton('取消')
+
+    expect(storeState.cancel).not.toHaveBeenCalled()
+  })
+
+  it('排序：下载 Tab pending 行「上移」→ store.sort(id, up) + 刷新下载列表', async () => {
+    storeState.downloadItems = [
+      makeDownload({ id: 1, status: 'pending', episode: 'S01E01' }),
+      makeDownload({ id: 2, status: 'pending', episode: 'S01E02' }),
+    ]
+    storeState.downloadTotal = 2
+    wrapper = mountView()
+    await flushPromises()
+    await switchToDownloadTab()
+
+    // 第二行（id=2，非队首）的上移按钮可用
+    const upButtons = wrapper!.findAll('button').filter((b) => b.text() === '上移')
+    expect(upButtons).toHaveLength(2)
+    await upButtons[1].trigger('click')
+    await flushPromises()
+
+    expect(storeState.sort).toHaveBeenCalledWith(2, 'up')
+    expect(storeState.fetchDownloadPage).toHaveBeenCalled()
+  })
+
+  it('排序：队首行「上移」禁用（边界判定 isFirstPending）', async () => {
+    storeState.downloadItems = [
+      makeDownload({ id: 1, status: 'pending', episode: 'S01E01' }),
+      makeDownload({ id: 2, status: 'pending', episode: 'S01E02' }),
+    ]
+    storeState.downloadTotal = 2
+    wrapper = mountView()
+    await flushPromises()
+    await switchToDownloadTab()
+
+    const upButtons = wrapper!.findAll('button').filter((b) => b.text() === '上移')
+    expect(upButtons[0].attributes('disabled')).toBeDefined() // 队首上移禁用
+    expect(upButtons[1].attributes('disabled')).toBeUndefined()
+  })
+
+  it('重试：failed 行点击 → store.retry(id) + 刷新列表 + 成功提示', async () => {
+    storeState.items = [makeTask({ id: 5, status: 'failed' })]
+    storeState.total = 1
+    wrapper = mountView()
+    await flushPromises()
+    vi.clearAllMocks()
+
+    await clickButton('重试')
+
+    expect(storeState.retry).toHaveBeenCalledWith(5)
+    expect(storeState.fetchPage).toHaveBeenCalled() // refreshCurrent → 任务 Tab fetchPage
+    expect(ElMessage.success).toHaveBeenCalledWith('已重新加入队列')
   })
 })

@@ -21,13 +21,22 @@ export function setToken(token: string | null): void {
   }
 }
 
+/**
+ * 重定向循环防护判定：当前路径已是 /login（含带 query 的登录页）时不再跳转，
+ * 避免 401 → /login →（登录页接口又 401）→ /login 死循环。
+ * 纯函数抽取（9.7）：可单测，行为与内联判定一致。
+ */
+export function isLoginPathname(pathname: string): boolean {
+  return pathname.startsWith('/login')
+}
+
 export function toLogin(): void {
   setToken(null)
   const current = window.location.pathname + window.location.search
   // 现状取舍：整页跳转（window.location.href）全量刷新，保留 SPA 外状态迁移的简单性；
   // 代价是会丢失当前路由/组件的内存状态。将来可改为 router.replace 保留 SPA 状态，
   // 届时需同步处理跳转后的 redirect 透传与登录态刷新逻辑。
-  if (!window.location.pathname.startsWith('/login')) {
+  if (!isLoginPathname(window.location.pathname)) {
     window.location.href = `/login?redirect=${encodeURIComponent(current)}`
   }
 }
