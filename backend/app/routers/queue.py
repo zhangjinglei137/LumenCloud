@@ -32,6 +32,7 @@
 网盘凭据（stoken/fids 等）一律不返回。
 """
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Literal, Optional
 
@@ -755,6 +756,13 @@ async def promote_task(
     return {"ok": True}
 
 
+# probe 手动触发频率限制（5.11）：media_id → 上次成功触发时间戳（进程内）。
+# 该端点虽为 admin-only，限流仍生效——防管理员误触/脚本连续扫库触发批量探测。
+# 仅成功触发才记冷却；触发失败（500）不记，可立即重试。窗口过后自动放行。
+_PROBE_COOLDOWN_SECONDS = 60
+_probe_cooldowns: dict[int, float] = {}
+
+
 @router.post("/queue/probe/{media_id}")
 async def probe_media(
     media_id: int,
@@ -762,10 +770,18 @@ async def probe_media(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """手动触发单影视探测（§8.2）：scan_media 后台 fire-and-forget（该 media 的
-    task_queue 由 scan 补集入队并探测）。"""
+    task_queue 由 scan 补集入队并探测）。
+
+    频率限制（5.11）：进程内 per-media 冷却 60s，同 media 超限返回 429
+    「探测过于频繁，请稍后再试」。admin-only 操作同样受限流——防误触连续扫库。
+    """
     media = await session.get(Media, media_id)
     if media is None:
         raise HTTPException(status_code=404, detail="影视不存在")
+    now = time.monotonic()
+    last = _probe_cooldowns.get(media_id)
+    if last is not None and now - last < _PROBE_COOLDOWN_SECONDS:
+        raise HTTPException(status_code=429, detail="探测过于频繁，请稍后再试")
     try:
         from app.tasks.scan import trigger_scan_background  # noqa: PLC0415 延迟导入
 
@@ -773,6 +789,11 @@ async def probe_media(
     except Exception as exc:  # noqa: BLE001
         logger.warning("[queue] probe media=%s 触发失败: %s", media_id, exc)
         raise HTTPException(status_code=500, detail="探测触发失败，请稍后重试") from exc
+    _probe_cooldowns[media_id] = now
+    # 清理过期键，防字典无限增长（media 数量有限，兜底清理即可）
+    if len(_probe_cooldowns) > 2048:
+        for k in [k for k, ts in _probe_cooldowns.items() if now - ts >= _PROBE_COOLDOWN_SECONDS]:
+            _probe_cooldowns.pop(k, None)
     return {"ok": True}
 
 

@@ -13,6 +13,7 @@
   progress（tell_status 聚合/降级）
 """
 import asyncio
+import time
 import types
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
@@ -696,6 +697,52 @@ def test_probe_media_triggers_scan_background(db, env):
     async def _probe():
         async with db() as s:
             return await queue_mod.probe_media(media_id=mid, admin=_admin(), session=s)
+    assert run(_probe()) == {"ok": True}
+    env["scan_trigger"].assert_called_once_with(mid, manual=True)
+
+
+def test_probe_media_rate_limited_60s_per_media(db, env, monkeypatch):
+    """probe 限流（5.11）：60s 内同 media 仅一次，超限 429；不同 media 不受影响。
+    admin-only 操作仍受限流——防管理员误触连续扫库。"""
+    monkeypatch.setattr(queue_mod, "_probe_cooldowns", {}, raising=False)
+    mid = run(seed_media(db))
+    mid2 = run(seed_media(db))
+
+    async def _probe(m):
+        async with db() as s:
+            return await queue_mod.probe_media(media_id=m, admin=_admin(), session=s)
+
+    assert run(_probe(mid)) == {"ok": True}
+    env["scan_trigger"].assert_called_once_with(mid, manual=True)
+
+    # 60s 内同 media 第二次 → 429（探测过于频繁）
+    with pytest.raises(Exception) as ei:
+        run(_probe(mid))
+    assert ei.value.status_code == 429
+
+    # 不同 media 不受影响
+    env["scan_trigger"].reset_mock()
+    assert run(_probe(mid2)) == {"ok": True}
+    env["scan_trigger"].assert_called_once_with(mid2, manual=True)
+
+
+def test_probe_media_cooldown_expires_after_window(db, env, monkeypatch):
+    """冷却窗口（60s）过后同 media 可再次触发；触发失败（500）不记录冷却。"""
+    monkeypatch.setattr(queue_mod, "_probe_cooldowns", {}, raising=False)
+    monkeypatch.setattr(queue_mod, "_PROBE_COOLDOWN_SECONDS", 0.05)
+    mid = run(seed_media(db))
+
+    async def _probe():
+        async with db() as s:
+            return await queue_mod.probe_media(media_id=mid, admin=_admin(), session=s)
+
+    assert run(_probe()) == {"ok": True}
+    with pytest.raises(Exception) as ei:
+        run(_probe())
+    assert ei.value.status_code == 429
+
+    time.sleep(0.06)  # 冷却窗口过后可再次触发
+    env["scan_trigger"].reset_mock()
     assert run(_probe()) == {"ok": True}
     env["scan_trigger"].assert_called_once_with(mid, manual=True)
 
