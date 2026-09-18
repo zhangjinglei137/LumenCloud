@@ -443,11 +443,16 @@ base-ref: 114b8081c182581a02a49435cfd4f317b58ac2f5
 
 **Files:** 无新文件（验证任务）
 
-- [ ] **Step 1** 运行 `pytest backend/tests` 全绿
-- [ ] **Step 2** 运行 `cd frontend && npm test && npm run build` 全绿
-- [ ] **Step 3** 对照审查清单逐一核对 75 个问题修复状态（每批 commit 消息可追溯）
-- [ ] **Step 4** 记录构建证据：`comet state record-check fix-audit-issues build --command "<实际命令>" --exit-code 0`
-- [ ] **Step 5** Commit（如有收尾改动）：`chore: 全量检查修复收尾`
+- [x] **Step 1** 运行 `pytest backend/tests` 全绿
+    - 证据：793 passed / 0 failed（含 D9 修复 test_council_fixes 后全量）
+- [x] **Step 2** 运行 `cd frontend && npm test && npm run build` 全绿
+    - 证据：npm test 118 passed；npm run build 成功
+- [x] **Step 3** 对照审查清单逐一核对 75 个问题修复状态（每批 commit 消息可追溯）
+    - 证据：tasks.md 10.2 核对结论——75 问题全覆盖（D6 补 4.1/8.5/5.10/4.4/3.8，D7 补 7.6/5.11/9.7，D8 修正 6.5/6.6）
+- [x] **Step 4** 记录构建证据：`comet state record-check fix-audit-issues build --command "<实际命令>" --exit-code 0`
+    - 证据：已记录（pytest 783+3 deselected → 后 D9 修复全量 793；npm test 118；npm run build ok）
+- [x] **Step 5** Commit（如有收尾改动）：`chore: 全量检查修复收尾`
+    - 已通过批次提交与勾选提交完成收尾（含 10.1-10.4 验证勾选）
 
 ## Self-Review 对照
 
