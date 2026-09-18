@@ -1,0 +1,85 @@
+{
+  "change": "fix-audit-issues",
+  "phase": "design",
+  "mode": "beta",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "7e20f78a13f23989cee3a441270cdf57a743e0ff12a609ca58740713d85a5022",
+  "files": [
+    {
+      "path": "docs/openspec/changes/fix-audit-issues/proposal.md",
+      "sha256": "5bfe9d6ade5749af0ba3b788ebdd293fd12eba00de4b160763329c5ecd31c610",
+      "role": "supporting"
+    },
+    {
+      "path": "docs/openspec/changes/fix-audit-issues/design.md",
+      "sha256": "5f0e47ec80d11ad4c28478adede0e814a1c9b5f39d4ec703028e064b152c0917",
+      "role": "supporting"
+    },
+    {
+      "path": "docs/openspec/changes/fix-audit-issues/tasks.md",
+      "sha256": "d11fd8a4e406422d98e6b0fc7217c93f42af41b0ac385b8ae02e97ef318496e1",
+      "role": "supporting"
+    },
+    {
+      "path": "docs/openspec/changes/fix-audit-issues/specs/auth-session/spec.md",
+      "sha256": "6e58b259d98cf9891e5920c9145659e190a1adcf00659052585e19633255b822",
+      "role": "spec"
+    },
+    {
+      "path": "docs/openspec/changes/fix-audit-issues/specs/emby-library-browse/spec.md",
+      "sha256": "1c6f9b4ae9956163aa4355206ea358f0a87f25a7a0b6fe8091a02bdbaca2afe6",
+      "role": "spec"
+    },
+    {
+      "path": "docs/openspec/changes/fix-audit-issues/specs/media-detail-ui/spec.md",
+      "sha256": "7103f5709a3beba095dc03b2dc8004ef7a222a5eb4a54f3633b6888d3d504c0c",
+      "role": "spec"
+    },
+    {
+      "path": "docs/openspec/changes/fix-audit-issues/specs/media-pipeline/spec.md",
+      "sha256": "03c0538ee0bb8764441f8e772791fda48e05f26be87e051f1bd310f4c8d4a918",
+      "role": "spec"
+    },
+    {
+      "path": "docs/openspec/changes/fix-audit-issues/specs/notifications/spec.md",
+      "sha256": "788fe3fd369fc7edb333aad67be0a9aa15bc92d5e38507ad1e8a5e8d345fd21b",
+      "role": "spec"
+    },
+    {
+      "path": "docs/openspec/changes/fix-audit-issues/specs/pipeline-admission/spec.md",
+      "sha256": "5df63ce37eef4ac6de02b282f153605ddc3689260625300987cdf3f3fee2e2f6",
+      "role": "spec"
+    },
+    {
+      "path": "docs/openspec/changes/fix-audit-issues/specs/pipeline-transfer/spec.md",
+      "sha256": "c4710ee04140e213dcbcba5bf08f2bfd65c5b021eac852a72634edbf43df40a8",
+      "role": "spec"
+    },
+    {
+      "path": "docs/openspec/changes/fix-audit-issues/specs/poster-proxy/spec.md",
+      "sha256": "5d224b2bf165a96ba2629d8cedc05044a47217d53e66752079d0f9bfa76a1815",
+      "role": "spec"
+    },
+    {
+      "path": "docs/openspec/changes/fix-audit-issues/specs/queue-inspection-display/spec.md",
+      "sha256": "4af75304cc360e963f848947a03fb2b4c145758305e44797c8cf7c4297bfa507",
+      "role": "spec"
+    },
+    {
+      "path": "docs/openspec/changes/fix-audit-issues/specs/run-logs/spec.md",
+      "sha256": "cb3017cda843fc5665652570d9a47c3327007b6beeb3e925f1b023961eb4f9e1",
+      "role": "spec"
+    },
+    {
+      "path": "docs/openspec/changes/fix-audit-issues/specs/settings-credentials-ui/spec.md",
+      "sha256": "c038806f435ef727fe4de3cc203b61a3bb37408afb7a7c1376f7648a085009e5",
+      "role": "spec"
+    },
+    {
+      "path": "docs/openspec/changes/fix-audit-issues/specs/user-invite-management/spec.md",
+      "sha256": "45399aefd8456edab09c98ee9c44a2139e0b0f27609a6e0df6676fe716488056",
+      "role": "spec"
+    }
+  ]
+}
