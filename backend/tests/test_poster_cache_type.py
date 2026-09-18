@@ -139,3 +139,78 @@ def test_image_content_type_with_params_ok(monkeypatch):
     content, ctype = asyncio.run(poster_mod.fetch_poster("/t/p/w500/param.jpg"))
     assert content == b"\xff\xd8"
     assert cache.get("/t/p/w500/param.jpg") is not None  # 视为图片写入缓存
+
+
+# ---- singleflight（7.6：per-path 并发同键只回源一次）----
+
+
+def _make_slow_client_factory(resp, calls, delay=0.05):
+    """构造带延迟的 FakeClient 工厂：拉长回源窗口，让并发真正交错等待锁。"""
+    class SlowClient:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return None
+        async def get(self, url):
+            calls.append(url)
+            await asyncio.sleep(delay)
+            return resp
+    return lambda *a, **kw: SlowClient()
+
+
+def test_singleflight_concurrent_same_path_fetches_once(monkeypatch):
+    """并发同 path 只回源一次：3 个并发请求共享一次回源；锁映射用后即清（防泄漏）。"""
+    cache = OrderedDict()
+    monkeypatch.setattr(poster_mod, "_POSTER_CACHE", cache)
+    monkeypatch.setattr(poster_mod, "_ALERT_COOLDOWN", {})
+    monkeypatch.setattr(poster_mod, "_FETCH_LOCKS", {}, raising=False)
+    calls: list[str] = []
+    resp = SimpleNamespace(status_code=200, content=b"img", headers={"content-type": "image/jpeg"})
+    monkeypatch.setattr(poster_mod, "_client_factory", _make_slow_client_factory(resp, calls))
+
+    path = "/t/p/w500/sf.jpg"
+
+    async def _concurrent():
+        # gather 需在事件循环内调用（3.14：循环外求值会报无当前 loop）
+        return await asyncio.gather(
+            poster_mod.fetch_poster(path),
+            poster_mod.fetch_poster(path),
+            poster_mod.fetch_poster(path),
+        )
+
+    results = asyncio.run(_concurrent())
+    assert [r[0] for r in results] == [b"img"] * 3  # 三个请求都拿到结果
+    assert calls == [f"https://image.tmdb.org{path}"]  # 只回源一次（默认官方图床 base）
+    assert poster_mod._FETCH_LOCKS == {}               # 锁映射回源结束即清理
+
+
+def test_singleflight_failure_cleans_lock_and_recovers(monkeypatch):
+    """回源失败：异常正常抛出、锁映射用后清理（失败/成功都释放）；随后可再次回源成功。"""
+    cache = OrderedDict()
+    monkeypatch.setattr(poster_mod, "_POSTER_CACHE", cache)
+    monkeypatch.setattr(poster_mod, "_ALERT_COOLDOWN", {})
+    monkeypatch.setattr(poster_mod, "_FETCH_LOCKS", {}, raising=False)
+    calls: list[str] = []
+    state = {"fail": True}
+
+    class FlakyClient:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return None
+        async def get(self, url):
+            calls.append(url)
+            if state["fail"]:
+                state["fail"] = False
+                return SimpleNamespace(status_code=500, content=b"err", headers={"content-type": "text/plain"})
+            return SimpleNamespace(status_code=200, content=b"img", headers={"content-type": "image/jpeg"})
+
+    monkeypatch.setattr(poster_mod, "_client_factory", lambda *a, **kw: FlakyClient())
+
+    path = "/t/p/w500/fail.jpg"
+    with pytest.raises(Exception):
+        asyncio.run(poster_mod.fetch_poster(path))
+    assert poster_mod._FETCH_LOCKS == {}  # 失败路径锁映射也清理（防泄漏）
+    # 再次请求可正常回源成功（锁不残留、不卡死后续请求）
+    content, _ = asyncio.run(poster_mod.fetch_poster(path))
+    assert content == b"img"

@@ -4,7 +4,10 @@
 - 回源：httpx 拉取镜像/官方图床，返回 bytes + content_type
 - 缓存：进程内 TTL OrderedDict（上限 + 过期 + 满时 LRU 淘汰最旧），纯优化，任何异常降级直出
 - 节流：模块级 {key: ts}，60s 内同键只告警一次
+- singleflight（7.6）：按 path 以 asyncio.Lock 节流，并发同键只回源一次；锁映射
+  与回源生命周期绑定（回源结束即删除）→ 天然防泄漏，无需 TTL 清理
 """
+import asyncio
 import logging
 import posixpath
 import re
@@ -26,6 +29,10 @@ REQUEST_TIMEOUT = httpx.Timeout(10.0)
 _POSTER_CACHE_TTL = 600
 _POSTER_CACHE_MAX = 100
 _POSTER_CACHE: OrderedDict[str, tuple[float, str, bytes]] = OrderedDict()
+
+# singleflight 锁映射：path → asyncio.Lock。仅在回源期间存在：回源结束（成功/失败）
+# 即删除，与回源生命周期绑定 → 天然防泄漏（无需与缓存淘汰联动或 TTL 清理）
+_FETCH_LOCKS: dict[str, asyncio.Lock] = {}
 
 # 告警节流：path → 上次告警时间戳
 _POSTER_ALERT_TTL = 60
@@ -127,6 +134,9 @@ async def fetch_poster(p: str) -> tuple[bytes, str]:
 
     返回 (bytes, content_type)。失败：PosterUnavailable（配置误填/缺失）或
     Exception（网络/非 2xx，路由映射 502）。
+
+    singleflight（7.6）：按 path 节流——并发同键只回源一次（首个请求回源，
+    其余等待锁后在缓存中命中复用）；回源结束（成功/失败）锁即释放。
     """
     now = time.monotonic()
     hit = _POSTER_CACHE.get(p)
@@ -134,26 +144,44 @@ async def fetch_poster(p: str) -> tuple[bytes, str]:
         _POSTER_CACHE.move_to_end(p)  # 命中 → 移到最近端（LRU 语义）
         return hit[2], hit[1]
 
-    if p.startswith("/emby/"):
-        url = _emby_image_url(p.split("/")[2])
-    else:
-        url = f"{_base_url()}{p}"
-    try:
-        async with _client_factory() as client:
-            resp = await client.get(url)
-    except httpx.HTTPError as exc:
-        _alert(p)
-        raise Exception(f"网络请求失败: {exc}") from exc
-    if resp.status_code != 200:
-        _alert(p)
-        raise Exception(f"上游返回 HTTP {resp.status_code}")
-    ctype = resp.headers.get("content-type", "")
-    # 回源成功但响应非图片（如劫持/误配返回的 HTML 错误页）：不写缓存、按失败语义返回（路由映射 502）
-    if not ctype.strip().lower().startswith("image/"):
-        _alert(p)
-        raise Exception(f"上游返回非图片内容 content-type={ctype or '缺失'}")
-    # 满上限时淘汰最旧条目（LRU）再写入；失败路径不写缓存（避免临时故障期缓存错误状态）
-    if len(_POSTER_CACHE) >= _POSTER_CACHE_MAX:
-        _POSTER_CACHE.popitem(last=False)
-    _POSTER_CACHE[p] = (now + _POSTER_CACHE_TTL, ctype, resp.content)
-    return resp.content, ctype
+    lock = _FETCH_LOCKS.get(p)
+    if lock is None:
+        lock = asyncio.Lock()
+        _FETCH_LOCKS[p] = lock
+    async with lock:
+        try:
+            # 等待期间他人可能已回源写缓存 → 双检，命中直接复用（并发同键只回源一次）
+            now = time.monotonic()
+            hit = _POSTER_CACHE.get(p)
+            if hit is not None and now < hit[0]:
+                _POSTER_CACHE.move_to_end(p)
+                return hit[2], hit[1]
+
+            if p.startswith("/emby/"):
+                url = _emby_image_url(p.split("/")[2])
+            else:
+                url = f"{_base_url()}{p}"
+            try:
+                async with _client_factory() as client:
+                    resp = await client.get(url)
+            except httpx.HTTPError as exc:
+                _alert(p)
+                raise Exception(f"网络请求失败: {exc}") from exc
+            if resp.status_code != 200:
+                _alert(p)
+                raise Exception(f"上游返回 HTTP {resp.status_code}")
+            ctype = resp.headers.get("content-type", "")
+            # 回源成功但响应非图片（如劫持/误配返回的 HTML 错误页）：不写缓存、按失败语义返回（路由映射 502）
+            if not ctype.strip().lower().startswith("image/"):
+                _alert(p)
+                raise Exception(f"上游返回非图片内容 content-type={ctype or '缺失'}")
+            # 满上限时淘汰最旧条目（LRU）再写入；失败路径不写缓存（避免临时故障期缓存错误状态）
+            if len(_POSTER_CACHE) >= _POSTER_CACHE_MAX:
+                _POSTER_CACHE.popitem(last=False)
+            _POSTER_CACHE[p] = (now + _POSTER_CACHE_TTL, ctype, resp.content)
+            return resp.content, ctype
+        finally:
+            # 防泄漏：回源结束（成功/失败）即删除锁映射；仅当映射仍指向本锁才删，
+            # 避免误删本锁删除后、他人新建的同 path 锁
+            if _FETCH_LOCKS.get(p) is lock:
+                _FETCH_LOCKS.pop(p, None)
