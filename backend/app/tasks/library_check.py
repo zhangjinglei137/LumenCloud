@@ -65,7 +65,12 @@ from app.services.notifier import (
 from app.services.notify_templates import download_complete
 from app.tasks import get_config_value, nastools_sync
 # tasks 层公共纯函数（app.utils，仅标准库）：统一时间源与集级匹配函数
-from app.utils import fmt_episode, now_utc_naive as _now, parse_episode_num
+from app.utils import (
+    BoundedLRUCache,
+    fmt_episode,
+    now_utc_naive as _now,
+    parse_episode_num,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -92,9 +97,16 @@ _scrape_backoff: dict[int, float] = {}
 # （等待下一轮复核）。与 _scrape_backoff 同模式：进程内共享 dict + monotonic
 # 时间戳；单 worker 部署可靠（重启即失，影响有限：至多多等一轮复核）。
 _RECENT_EMPTY_RECHECK_SECONDS = 60.0
+# 6.5：延迟复核表有界化（审查 6.5：原模块级 dict 无淘汰，长运行后无界增长）——
+# 复用 app.utils.BoundedLRUCache（tmdb/emby 进程内缓存同款），写入超上限淘汰
+# 最旧条目（LRU 语义）。本类只管理「有界+淘汰」，不管理过期——TTL 判定仍由
+# 调用方（_episode_in_missing 内 _RECENT_EMPTY_RECHECK_SECONDS 时间戳比较）完成，
+# get 未命中返回 None → 首次放行重置、窗口内返回 True 等待复核的语义与 dict 版
+# 完全一致（只改存储结构，不改键格式与放行语义）。
+_RECENT_EMPTY_CACHE_MAX_ITEMS = 2000
 # key = f"{media_id}:{episode}"（media_id 为 None 时退化为 episode）→ 最近一次
 # 放行的 monotonic 时间戳（seconds）；仅本次进程有效
-_recent_empty_check: dict[str, float] = {}
+_recent_empty_check: BoundedLRUCache = BoundedLRUCache(_RECENT_EMPTY_CACHE_MAX_ITEMS)
 
 
 def _media_in_scrape_backoff(media_id: int) -> bool:
@@ -442,10 +454,23 @@ async def library_check() -> None:
 
     timeout_seconds = await _read_timeout_seconds()
     now = _now()
+    # 6.6（审查 A8 N+1 session）：media 校验批量预取——单次 select(Media).where(
+    # id.in_(...)) 取回全部行引用的 media，dict 映射循环内复用，不再每条一个新
+    # session 查 media。结果与逐条等价：未在预取结果中的 media_id（不存在/已
+    # 删除/media_id 为 None）→ media 为 None → 走既有孤儿清理路径。
+    media_map: dict[int, Media] = {}
+    media_ids = {media_id for _, media_id, *_ in rows if media_id is not None}
+    if media_ids:
+        async with async_session() as s:
+            media_map = {
+                m.id: m
+                for m in (
+                    await s.execute(select(Media).where(Media.id.in_(media_ids)))
+                ).scalars()
+            }
     for dq_id, media_id, episode, file_name, file_size, quark_path, started_at in rows:
         # 1) media 校验：不存在/已删除 → 直接清理解除（孤儿 download_queue）
-        async with async_session() as s:
-            media = await s.get(Media, media_id)
+        media = media_map.get(media_id)
         if media is None:
             await _cleanup_orphan(dq_id, quark_path)
             continue

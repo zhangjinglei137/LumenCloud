@@ -855,3 +855,116 @@ def test_scrape_backoff_expired_resumes_round(db, env, monkeypatch):
     run(library_check_mod.scrape_runner())
     assert run(get_dq(db, dq_id)).node_attempt == 1
     assert library_check_mod._scrape_backoff.get(mid, 0.0) > 0.0
+
+
+# ---------------------------------------------------------------------------
+# Task D8（审查 6.5/6.6）：_recent_empty_check 有界化 + media 批量预取
+# ---------------------------------------------------------------------------
+
+class _SpySessionMaker:
+    """包装 sessionmaker：统计 Media 实体查询方式（逐条 get vs 批量 in_ 预取）。
+
+    - media_gets：session.get(Media, ...) 调用次数（批量预取前 = 行数）
+    - media_selects：对 Media 实体的 SELECT 执行次数（批量预取后 = 1 次 in_ 查询）
+    """
+
+    def __init__(self, maker):
+        self._maker = maker
+        self.media_gets = 0
+        self.media_selects = 0
+
+    def __call__(self):
+        return _SpySession(self._maker(), self)
+
+
+class _SpySession:
+    """包装 AsyncSession：转发全部属性，仅拦截 get/execute 统计 Media 查询。"""
+
+    def __init__(self, real, spy):
+        self._real = real
+        self._spy = spy
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    async def get(self, entity, ident, *args, **kwargs):
+        if getattr(entity, "__name__", None) == "Media":
+            self._spy.media_gets += 1
+        return await self._real.get(entity, ident, *args, **kwargs)
+
+    async def execute(self, statement, *args, **kwargs):
+        for cd in getattr(statement, "column_descriptions", None) or []:
+            if getattr(cd.get("entity"), "__name__", None) == "Media":
+                self._spy.media_selects += 1
+                break
+        return await self._real.execute(statement, *args, **kwargs)
+
+    async def __aenter__(self):
+        await self._real.__aenter__()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return await self._real.__aexit__(exc_type, exc, tb)
+
+
+def test_recent_empty_check_bounded_evicts_oldest():
+    """6.5：_recent_empty_check 有界化——容量封顶 + 超限淘汰最旧条目。
+
+    改造前为无界 dict：写入超过上限后长度不封顶、最旧条目不被淘汰 → 本测试
+    在改造前失败（RED）；改造为 BoundedLRUCache 后：len 封顶、最旧被淘汰。
+    """
+    table = library_check_mod._recent_empty_check
+    # 容量上限以模块常量为准（RED 阶段尚未引入常量时回退默认 2000）
+    cap = getattr(library_check_mod, "_RECENT_EMPTY_CACHE_MAX_ITEMS", 2000)
+    table.clear()
+    try:
+        # 写满 cap 个不同 key（key 形态保持 f"{media_id}:{episode}" 兼容）
+        for i in range(cap):
+            table[f"d8-bounded-{i}:S01E01"] = float(i)
+        # 再写 1 个 → 超限：最旧条目 "d8-bounded-0:S01E01" 应被淘汰
+        table["d8-bounded-last:S01E01"] = float(cap)
+        size = len(table)
+        evicted = table.get("d8-bounded-0:S01E01")
+        kept = table.get("d8-bounded-last:S01E01")
+    finally:
+        table.clear()  # 防御：不影响其他用例（与 autouse fixture 一致）
+    assert size == cap, f"写入 {cap}+1 个 key 后长度应封顶在 {cap}，实际 {size}"
+    assert evicted is None, "超限后最旧条目应被淘汰（当前无界 dict 未淘汰 → RED）"
+    assert kept is not None, "最新条目应保留"
+
+
+def test_library_check_batch_prefetch_single_query(db, env, monkeypatch):
+    """6.6：批量预取——多条 status='library' 行只做 1 次 Media 查询（消除逐条
+    session.get 的 N+1），且结果与逐条等价：命中行正常 finalize（done）、
+    media 不存在的行保持孤儿清理行为（download_queue 删除 + 夸克文件清理）。"""
+    spy = _SpySessionMaker(db)
+    monkeypatch.setattr(library_check_mod, "async_session", spy)
+    monkeypatch.setattr(transfer_mod, "async_session", spy)
+    env["emby"].find_emby_id = AsyncMock(return_value="emby-1")
+
+    # 3 行 status='library'（movie 命中即 finalize，不查遗漏集；tmdb_id 各异防唯一约束冲突）
+    _, dq1 = run(seed_library(db, episode="m1.mkv", media_type="movie",
+                              tmdb_id=42, quark_path="/quark/m1.mkv"))
+    _, dq2 = run(seed_library(db, episode="m2.mkv", media_type="movie",
+                              tmdb_id=43, quark_path="/quark/m2.mkv"))
+    mid3, dq3 = run(seed_library(db, episode="m3.mkv", media_type="movie",
+                                 tmdb_id=44, quark_path="/quark/m3.mkv"))
+
+    # 模拟 media 已删除（孤儿 download_queue）
+    async def del_media():
+        async with db() as s:
+            await s.execute(delete(Media).where(Media.id == mid3))
+            await s.commit()
+    run(del_media())
+
+    run(library_check_mod.library_check())
+
+    # 批量预取：仅 1 次 Media SELECT、0 次逐条 session.get
+    # （改造前逐条实现：media_gets == 3、media_selects == 0 → 本断言失败 = RED）
+    assert spy.media_selects == 1, f"Media 查询应只有 1 次批量 in_ 查询，实际 {spy.media_selects}"
+    assert spy.media_gets == 0, f"不应再逐条 session.get(Media)，实际 {spy.media_gets} 次"
+    # 行为与逐条等价：命中行 finalize done、无 media 行清理解除
+    assert run(get_dq(db, dq1)).status == "done"
+    assert run(get_dq(db, dq2)).status == "done"
+    assert run(get_dq(db, dq3)) is None
+    assert len(env["alist"].remove_calls) == 3  # 2 行 done 删夸克 + 1 行孤儿清理
