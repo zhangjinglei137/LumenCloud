@@ -7,6 +7,7 @@ TestClient 上下文自动触发。
 """
 import os
 import tempfile
+from pathlib import Path
 
 _TMP_DATA = tempfile.mkdtemp(prefix="lumencloud_smoke_")
 os.environ["LUMENCLOUD_DATA_DIR"] = _TMP_DATA
@@ -368,16 +369,31 @@ def test_full_auth_and_api_flow():
 # D4（审查 E10）：serve_spa 对 /internal/* 未注册路径返回 404 JSON
 # ---------------------------------------------------------------------------
 
-def test_internal_prefix_returns_404_json():
+def test_internal_prefix_returns_404_json(monkeypatch, tmp_path):
     """D4/E10：/internal 与 /internal/* 的未注册 GET 路径返回 404 JSON（REST 语义），
     不再 SPA fallback 回 200 HTML。已注册的 POST /internal/aria2/notify 等显式
-    路由不经过 serve_spa，不受影响；既有静态资源/SPA fallback 托管行为不变。"""
+    路由不经过 serve_spa，不受影响；既有静态资源/SPA fallback 托管行为不变。
+
+    D10（CI 门禁修复）：/some/spa/route 的 SPA fallback 断言原依赖真实构建产物
+    backend/static/index.html——该目录 gitignore 不入库（.gitignore:49），CI
+    干净 checkout 下缺失，serve_spa 按设计回退 404 JSON，导致本地（build 过）
+    与 CI 行为不一致。测试改为自包含：用 tmp_path 建临时 static 目录 + index.html
+    占位，monkeypatch STATIC_DIR 指向它（与 test_static_path_traversal.py 同款
+    做法），无/有本地产物两种环境下行为一致，不触碰真实 static 目录。
+    """
+    static_dir = Path(tmp_path) / "static"
+    static_dir.mkdir(parents=True)
+    (static_dir / "index.html").write_text(
+        "<!DOCTYPE html><html><body>SPA</body></html>", encoding="utf-8"
+    )
+    monkeypatch.setattr("app.main.STATIC_DIR", static_dir)
     with TestClient(app) as client:
         for path in ("/internal/unknown", "/internal/deep/leaf", "/internal/", "/internal"):
             r = client.get(path)
             assert r.status_code == 404, (path, r.status_code)
             assert r.json() == {"detail": "Not Found"}
-        # 既有行为不变：未知普通路径仍 SPA fallback 到 index.html（200 HTML）
+        # 既有行为不变：未知普通路径仍 SPA fallback 到 index.html（200 HTML，
+        # 由本测试自建的临时产物提供，不依赖本地真实构建产物）
         r = client.get("/some/spa/route")
         assert r.status_code == 200
         assert r.headers["content-type"].startswith("text/html")
