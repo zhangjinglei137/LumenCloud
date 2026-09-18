@@ -274,7 +274,11 @@ def test_recover_downloading_marks_dl_failed(db, monkeypatch):
     monkeypatch.setattr(recovery_mod, "alist", fake_alist)
     remove_mock = AsyncMock(return_value=None)
     monkeypatch.setattr(recovery_mod, "aria2",
-                        types.SimpleNamespace(client=types.SimpleNamespace(remove=remove_mock)))
+                        types.SimpleNamespace(client=types.SimpleNamespace(
+                            remove=remove_mock,
+                            # D9：downloading 超时回退前探活 aria2（默认可用 → 正常回退）
+                            get_global_stat=AsyncMock(return_value={}),
+                        )))
 
     count = run(recovery_mod.recover_stale_tasks())
 
@@ -299,7 +303,11 @@ def test_recover_aria2_remove_failure_does_not_block(db, monkeypatch):
         raise RuntimeError("aria2 RPC 不可用")
 
     monkeypatch.setattr(recovery_mod, "aria2",
-                        types.SimpleNamespace(client=types.SimpleNamespace(remove=boom)))
+                        types.SimpleNamespace(client=types.SimpleNamespace(
+                            remove=boom,
+                            # D9：探活 aria2 通过（默认可用）；remove 抛异常仅 warning 不阻断回退
+                            get_global_stat=AsyncMock(return_value={}),
+                        )))
 
     count = run(recovery_mod.recover_stale_tasks())
     assert count == 1
@@ -429,7 +437,11 @@ def test_recover_cas_conflict_skips_override(db, monkeypatch):
         db, gid="gid-x", updated_at=_now() - timedelta(hours=3)))  # 超时（timeout=2h）
     remove_mock = AsyncMock(return_value=None)
     monkeypatch.setattr(recovery_mod, "aria2",
-                        types.SimpleNamespace(client=types.SimpleNamespace(remove=remove_mock)))
+                        types.SimpleNamespace(client=types.SimpleNamespace(
+                            remove=remove_mock,
+                            # D9：探活 aria2 通过（默认可用），CAS 冲突行才不 remove
+                            get_global_stat=AsyncMock(return_value={}),
+                        )))
 
     # 模拟 transfer 的 CAS 写入抢在 recovery 阶段③之前推进 retry_count（0→1）
     async def _bump():
@@ -464,7 +476,11 @@ def test_recover_partial_cas_conflict(db, monkeypatch):
         db, episode="S01E02", file_name="b.mkv", gid="g2", updated_at=ts))
     remove_mock = AsyncMock(return_value=None)
     monkeypatch.setattr(recovery_mod, "aria2",
-                        types.SimpleNamespace(client=types.SimpleNamespace(remove=remove_mock)))
+                        types.SimpleNamespace(client=types.SimpleNamespace(
+                            remove=remove_mock,
+                            # D9：探活 aria2 通过（默认可用），CAS 成功行才 remove
+                            get_global_stat=AsyncMock(return_value={}),
+                        )))
 
     # 仅对 S01E01 模拟 transfer 并发推进 retry_count
     async def _bump():

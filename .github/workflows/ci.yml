@@ -13,6 +13,11 @@ jobs:
   backend-check:
     name: Backend 导入检查
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # D9：补回 3.12/3.14 双版本（3.14 已本地全量 793 passed 验证）
+        python-version: ["3.12", "3.14"]
     services:
       postgres:
         image: postgres:16-alpine
@@ -32,8 +37,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          # CI 锁定 3.12（既有验证基线）；本地开发演练使用 3.14，双版本覆盖
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
 
       - name: 安装依赖
         working-directory: backend
@@ -53,16 +57,11 @@ jobs:
         working-directory: backend
         env:
           DATABASE_URL: ""                     # 空 = 内置 SQLite（database.py 回退）
-        # R1（审查发现 1）临时豁免：test_council_fixes.py 三个 test_recover_*
-        # 为既有失败（aria2 client mock 缺 get_global_stat，已 stash 验证与本
-        # 项目提交无关），不过豁免会让 CI 上线即红、拦截全部 PR。用 --deselect
-        # 精确到位（不用 --ignore 整文件，避免丢掉该文件其他测试）。待独立
-        # 任务修复后移除这三行。
+        # D9：test_council_fixes.py 三个 test_recover_* 的 aria2 client mock 已补
+        # get_global_stat（原 AttributeError 被按 aria2 不可用处理 → 回退被跳过），
+        # 既有失败已修复，豁免移除，恢复全量跑测。
         run: >-
           python -m pytest tests/ -q
-          --deselect tests/test_council_fixes.py::test_recover_downloading_marks_dl_failed
-          --deselect tests/test_council_fixes.py::test_recover_aria2_remove_failure_does_not_block
-          --deselect tests/test_council_fixes.py::test_recover_partial_cas_conflict
 
       - name: Alembic 迁移测试（SQLite）
         working-directory: backend
