@@ -51,7 +51,9 @@
 - [x] 6.3 tmdb.py `_SEASON_AIR_CACHE`/`_ALL_EPS_CACHE` 加容量上限+LRU 淘汰，验证长跑内存受控（单测覆盖淘汰）
 - [x] 6.4 `refresh_episode_info` 批量 upsert 消除 N+1（PG ON CONFLICT 或 bulk），验证相同数据批量/逐条结果一致且查询数下降
 - [x] 6.5 emby `_INGESTED_CACHE`/`_recent_empty_check` 有界化（与 6.3 同模式），验证淘汰行为
+    - 注：`_INGESTED_CACHE` 由 D1 实现；`_recent_empty_check` 由 D8 修正补齐（此前 D1 误勾）
 - [x] 6.6 library_check 批量预取 media 减少 N+1 session，验证行为一致
+    - 注：由 D8 真实实现（此前 D1 误勾，E1 核对发现后补齐）
 - [x] 6.7 `list_all_library` 两段式赋值冗余精简（先取 server_id 再归一化），验证 emby_web_url 结果一致
 
 ## 7. 通知/日志/海报（notifications/poster-proxy/run-logs 能力）
