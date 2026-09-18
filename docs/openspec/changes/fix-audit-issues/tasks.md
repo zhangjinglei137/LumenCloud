@@ -94,7 +94,8 @@
 
 - [x] 10.1 运行全部 backend pytest 与 frontend vitest，验证全绿且无新增回归
     - 证据：`pytest tests/` → 783 passed + 3 deselected（test_council_fixes 临时豁免，8.12 待修复）；`npm test` → 118 passed；`npm run build` → 成功
-- [ ] 10.2 对照审查清单逐条核对 75 个问题的修复状态，验证无遗漏项（low 级确认接受或修复）
+- [x] 10.2 对照审查清单逐条核对 75 个问题的修复状态，验证无遗漏项（low 级确认接受或修复）
+    - 核对结论：75 问题全覆盖（D6 补 4.1/8.5/5.10/4.4/3.8，D7 补 7.6/5.11/9.7，D8 修正 6.5/6.6）；E9 DATABASE_URL 明文接受（prod fail-closed）
 - [ ] 10.3 运行 `npm run build` + Docker 镜像构建冒烟（本地），验证前端产物与容器启动正常
 - [ ] 10.4 CI workflow 在推送后实际运行并全绿，验证自动回归闸门生效
 - [ ] 8.12 修复 `test_council_fixes.py::test_recover_*` 3 个测试的 aria2 client mock 缺失 `get_global_stat`（根因：mock 的 SimpleNamespace 无该方法，recovery.py 调用抛 AttributeError 被按 aria2 不可用处理 → 下载超时回退被跳过）；修复后移除 ci.yml 的 3 行 deselect 豁免并补回 Python 3.14 matrix
