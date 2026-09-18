@@ -99,6 +99,7 @@
     - 核对结论：75 问题全覆盖（D6 补 4.1/8.5/5.10/4.4/3.8，D7 补 7.6/5.11/9.7，D8 修正 6.5/6.6）；E9 DATABASE_URL 明文接受（prod fail-closed）
 - [x] 10.3 运行 `npm run build` + Docker 镜像构建冒烟（本地），验证前端产物与容器启动正常
     - 前端 build 已通过（E1 全量验证）；Docker 冒烟本机无 docker，由 CI docker-build job 承担（ci.yml 已含）
-- [ ] 10.4 CI workflow 在推送后实际运行并全绿，验证自动回归闸门生效
+- [x] 10.4 CI workflow 在推送后实际运行并全绿，验证自动回归闸门生效
+    - 证据：gh run 35315022626 conclusion=success（Backend 3.12/3.14 导入检查 + 前端测试构建 + docker 冒烟）；此前 35295549537 失败由 D10 修复（SPA fallback 测试产物依赖）后转绿
 - [x] 8.12 修复 `test_council_fixes.py::test_recover_*` 3 个测试的 aria2 client mock 缺失 `get_global_stat`（根因：mock 的 SimpleNamespace 无该方法，recovery.py 调用抛 AttributeError 被按 aria2 不可用处理 → 下载超时回退被跳过）；修复后移除 ci.yml 的 3 行 deselect 豁免并补回 Python 3.14 matrix
     - D9 已完成：mock 补 get_global_stat、deselect 已移除、matrix 补 3.14（本地 793 passed / 0 failed）
