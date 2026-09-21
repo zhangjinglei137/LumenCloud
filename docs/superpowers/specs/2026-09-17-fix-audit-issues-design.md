@@ -2,6 +2,8 @@
 comet_change: fix-audit-issues
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-09-21-fix-audit-issues
+status: final
 ---
 
 # fix-audit-issues 深度技术设计

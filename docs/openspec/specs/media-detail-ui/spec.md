@@ -88,3 +88,15 @@
 #### Scenario: 状态字段仅两值
 - **WHEN** 影视详情接口返回 media.status
 - **THEN** status 值仅可能为 tracking 或 paused；若历史数据存在其他值（如 download/downloading），系统以中文展示兜底（不原样透传英文），且状态仍按两值语义处理
+
+### Requirement: 非法媒体标识防御
+
+影视详情页 SHALL 在路由参数不是合法媒体 id（非数字或 NaN）时不发起后端详情请求，并回退到影视列表页或展示可操作的空态，不得向 `GET /api/media/<非法值>` 发起请求。
+
+#### Scenario: 非法路由参数回退列表
+- **WHEN** 用户访问 `/media/abc` 等非数字媒体 id 路由
+- **THEN** 页面不发起非法详情请求，并跳转到影视列表页或展示可操作空态
+
+#### Scenario: 合法媒体 id 正常加载
+- **WHEN** 路由参数为合法数字媒体 id
+- **THEN** 详情页正常加载该影视数据

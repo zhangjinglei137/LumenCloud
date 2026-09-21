@@ -2,6 +2,7 @@
 change: fix-audit-issues
 design-doc: docs/superpowers/specs/2026-09-17-fix-audit-issues-design.md
 base-ref: 114b8081c182581a02a49435cfd4f317b58ac2f5
+archived-with: 2026-09-21-fix-audit-issues
 ---
 
 # fix-audit-issues 实施计划
