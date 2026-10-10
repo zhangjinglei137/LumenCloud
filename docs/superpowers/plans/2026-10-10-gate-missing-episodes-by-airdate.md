@@ -554,21 +554,21 @@ git commit -m "feat(scan): 全量兜底路径按 TMDB 播出日期门控"
 
 ### Task 7: 回归与集成验证
 
-- [ ] Task 7: 回归与集成验证
+- [x] Task 7: 回归与集成验证
 
 **Files:**
 - Test: 复用/新增
 
-- [ ] **Step 1: 全量后端相关测试**
+- [x] **Step 1: 全量后端相关测试**
 
 Run: `cd backend && python -m pytest tests/ -q`
 Expected: 全绿（含 `test_library_check*.py`、`test_emby_aired.py`、`test_scan_*.py`）。
 
-- [ ] **Step 2: 集成验证场景**
+- [x] **Step 2: 集成验证场景**
 
 构造同剧三组集（已过日期 / 未来日期 / 无日期），执行一次 `_scan_one`，断言仅「已过日期且媒体库不存在」的集进入 `task_queue`；记录实际输出（`task_run.message` 与 `task_queue` 行）作为 verify 证据。
 
-- [ ] **Step 3: 提交（如有测试补充）**
+- [x] **Step 3: 提交（如有测试补充）**
 
 ```bash
 git add backend/tests/

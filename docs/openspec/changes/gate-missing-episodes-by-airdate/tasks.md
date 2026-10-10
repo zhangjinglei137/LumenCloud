@@ -17,5 +17,5 @@
 
 ## 4. 回归与集成验证
 
-- [ ] 4.1 运行后端相关测试并全绿：`pytest backend/tests/test_library_check.py`、scan 相关测试及本次新增测试（确认 `get_missing_episodes` / `_episode_in_missing` 既有契约无回归）。
-- [ ] 4.2 集成验证：构造同一剧三组集（已过日期、未来日期、无日期），执行一次巡检，确认仅「已过日期且媒体库中不存在」的集进入搜索下载入队，其余两类不产生任务；记录实际输出作为证据。
+- [x] 4.1 运行后端相关测试并全绿：`pytest backend/tests/test_library_check.py`、scan 相关测试及本次新增测试（确认 `get_missing_episodes` / `_episode_in_missing` 既有契约无回归）。
+- [x] 4.2 集成验证：构造同一剧三组集（已过日期、未来日期、无日期），执行一次巡检，确认仅「已过日期且媒体库中不存在」的集进入搜索下载入队，其余两类不产生任务；记录实际输出作为证据。
