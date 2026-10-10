@@ -87,6 +87,9 @@ def _patch_tv_full_mode_env(monkeypatch, db, *, files, total_episodes: int | Non
     from app.tasks import scan as scan_mod
 
     scan_mod = _patch_scan_base(monkeypatch, db, missing_codes=[None])
+    # Task 6 全量播出日期门控：本用例聚焦文件级校验（_full_mode_accept），
+    # mock TMDB 全集为空（aired_by_key={} → 播出日期门控无操作），保持原断言语义。
+    monkeypatch.setattr(scan_mod.tmdb, "get_tv_all_episodes", AsyncMock(return_value=[]))
     monkeypatch.setattr(scan_mod, "_search_and_rank", AsyncMock(return_value=[
         {"title": f"{title} 全量", "share_code": "2c16748e7818"},
     ]))

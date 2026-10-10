@@ -12,6 +12,7 @@ None 哨兵语义保持不变：movie 已库 `[]` / 整部缺失 `[None]`；tv �
 `[None]`（软处理）；强防重 `None`。
 """
 import asyncio
+import json
 import types
 from unittest.mock import AsyncMock
 
@@ -207,9 +208,9 @@ def db():
     run(engine.dispose())
 
 
-async def _seed_media(db):
+async def _seed_media(db, *, tmdb_id=42):
     async with db() as s:
-        media = Media(title="剑来", media_type="tv", tmdb_id=42, status="tracking")
+        media = Media(title="剑来", media_type="tv", tmdb_id=tmdb_id, status="tracking")
         s.add(media)
         await s.commit()
         return media.id
@@ -319,3 +320,110 @@ def test_scan_one_enqueues_aired(db, monkeypatch):
     assert tr.id == rid and tr.status == "success"
     assert [t.episode for t in tq] == ["S01E01"]
     assert tq[0].status == "ready"
+
+
+# ---------------------------------------------------------------------------
+# _scan_one 全量兜底路径门控（Task 6）：按 TMDB 全集播出日期门控
+# ---------------------------------------------------------------------------
+
+def _patch_full_mode_env(monkeypatch, db, *, all_eps, files=None, total_episodes=2):
+    """tv 未收录全量（movie_missing）端到端 mock。
+
+    复用 _patch_scan_env（missing=[None] 全量哨兵、Emby/TMDB 季/size/transfer），
+    另 mock TMDB 全集播出日期（get_tv_all_episodes）、总集数（_media_total_episodes）、
+    单候选搜索与文件列表。返回 scan_mod（其 _search_and_rank 为可断言的 AsyncMock）。
+    """
+    scan_mod = _patch_scan_env(
+        monkeypatch, db,
+        missing=[None],
+        air_dates={},  # None 哨兵由 _filter_aired 原样保留，不触 TMDB 回源
+    )
+    monkeypatch.setattr(scan_mod.tmdb, "get_tv_all_episodes",
+                        AsyncMock(return_value=all_eps))
+    monkeypatch.setattr(scan_mod, "_search_and_rank", AsyncMock(return_value=[
+        {"title": "剑来 全量", "share_code": "2c16748e7818"},
+    ]))
+    monkeypatch.setattr(
+        scan_mod, "_cloudsaver_share_info",
+        AsyncMock(return_value={"pwd_id": "pd", "stoken": "st", "receive_code": "",
+                                "fileSize": 9999}),
+    )
+    monkeypatch.setattr(
+        scan_mod.cloudsaver, "share_list",
+        AsyncMock(return_value={"list": [
+            {"fileName": n, "fileId": f"f_{n}", "fileIdToken": f"ft_{n}",
+             "isFolder": False, "size": 1024 * 1024 * 1024}
+            for n in (files or [])
+        ]}),
+    )
+    monkeypatch.setattr(scan_mod, "_media_total_episodes",
+                        AsyncMock(return_value=total_episodes))
+    return scan_mod
+
+
+def test_scan_one_tv_full_mode_skips_all_unaired(db, monkeypatch):
+    """tv 全量兜底：TMDB 全集全未播出（未开播）→ 搜索前短路，不搜索、不入队。"""
+    scan_mod = _patch_full_mode_env(
+        monkeypatch, db,
+        all_eps=[
+            {"season": 1, "episode": 1, "air_date": "2999-01-01", "name": None},
+            {"season": 1, "episode": 2, "air_date": "2999-01-02", "name": None},
+        ],
+    )
+    mid = run(_seed_media(db))
+    rid = run(scan_mod._scan_one(mid))
+    tr, tq = run(_read_scan_state(db, mid))
+
+    assert tr.id == rid and tr.status == "skipped"
+    assert "TMDB 无已播出集（未开播），本轮跳过" in tr.message
+    scan_mod._search_and_rank.assert_not_awaited()  # 门控短路：不搜索
+    assert tq == []                                  # 不入队
+
+
+def test_scan_one_tv_full_mode_skips_tmdb_all_eps_failure(db, monkeypatch):
+    """tv 全量兜底：TMDB 全集取数失败（None）→ 搜索前短路，不搜索、不入队。"""
+    scan_mod = _patch_full_mode_env(monkeypatch, db, all_eps=None)
+    mid = run(_seed_media(db))
+    rid = run(scan_mod._scan_one(mid))
+    tr, tq = run(_read_scan_state(db, mid))
+
+    assert tr.id == rid and tr.status == "skipped"
+    assert "TMDB 播出日期取数失败" in tr.message
+    scan_mod._search_and_rank.assert_not_awaited()
+    assert tq == []
+
+
+def test_scan_one_tv_full_mode_skips_missing_tmdb_id(db, monkeypatch):
+    """tv 全量兜底：缺 tmdb_id，无法判定播出日期 → 搜索前短路，不触 TMDB 全集。"""
+    scan_mod = _patch_full_mode_env(monkeypatch, db, all_eps=[])
+    mid = run(_seed_media(db, tmdb_id=None))
+    rid = run(scan_mod._scan_one(mid))
+    tr, tq = run(_read_scan_state(db, mid))
+
+    assert tr.id == rid and tr.status == "skipped"
+    assert "缺 tmdb_id" in tr.message
+    scan_mod.tmdb.get_tv_all_episodes.assert_not_awaited()
+    scan_mod._search_and_rank.assert_not_awaited()
+    assert tq == []
+
+
+def test_scan_one_tv_full_mode_gates_unaired_files(db, monkeypatch):
+    """tv 全量兜底：TMDB 含已播出集 → 已播出文件入队；未播出集文件被拒。"""
+    scan_mod = _patch_full_mode_env(
+        monkeypatch, db,
+        all_eps=[
+            {"season": 1, "episode": 1, "air_date": "2020-01-01", "name": None},  # 已播
+            {"season": 1, "episode": 2, "air_date": "2999-01-01", "name": None},  # 未播
+        ],
+        files=["剑来.S01E01.mkv", "剑来.S01E02.mkv"],
+        total_episodes=2,
+    )
+    mid = run(_seed_media(db))
+    rid = run(scan_mod._scan_one(mid))
+    tr, tq = run(_read_scan_state(db, mid))
+
+    assert tr.id == rid and tr.status == "success"
+    assert [t.episode for t in tq] == ["S01E01"]      # 仅已播出集入队
+    assert tq[0].file_name == "剑来.S01E01.mkv"
+    detail = json.loads(tr.scan_detail)
+    assert detail["unrelated_filtered"] == 1          # 未播出集文件被拒并计数

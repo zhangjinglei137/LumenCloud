@@ -22,7 +22,7 @@ import json
 import logging
 import re
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
@@ -1853,6 +1853,39 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
             touch_last_scan_at=True,
         )
 
+    # 2c. 全量兜底路径门控（Task 6）：tv 未收录全量（movie_missing 且 media_type!="movie"）
+    #     的缺失集实体不预知（[None] 哨兵），无法像常规路径（_filter_aired）那样按集过滤
+    #     未来播出；改为整剧维度预判——先取 TMDB 全集播出日期，若缺 tmdb_id / 取数失败 /
+    #     全未播出则本轮直接跳过（搜索前短路，不搜索、不入队），避免为未开播剧浪费搜索与
+    #     中转空间。真电影全量（media_type=="movie"）语义不同，不套用本门控。
+    #     已播出剧不短路：文件循环内再按 SxxExx 逐文件拒绝未播出集（aired_by_key）。
+    aired_by_key: dict[tuple[int, int], bool] = {}
+    if movie_missing and (media.media_type or "").strip().lower() != "movie":
+        if media.tmdb_id is None:
+            _phase_skip_remaining(phases, "search")  # search/match/enqueue/finish 未执行 → skipped
+            return await _finish(
+                "skipped", "全量兜底：缺 tmdb_id，无法判定播出日期，本轮跳过",
+                touch_last_scan_at=False,
+            )
+        all_eps = await tmdb.get_tv_all_episodes(media.tmdb_id)
+        if all_eps is None:
+            _phase_skip_remaining(phases, "search")
+            return await _finish(
+                "skipped", "全量兜底：TMDB 播出日期取数失败，本轮跳过",
+                touch_last_scan_at=False,
+            )
+        today = date.today()
+        aired_by_key = {
+            (e["season"], e["episode"]): episode_aired(e.get("air_date"), today)
+            for e in all_eps
+        }
+        if aired_by_key and not any(aired_by_key.values()):
+            _phase_skip_remaining(phases, "search")
+            return await _finish(
+                "skipped", "全量兜底：TMDB 无已播出集（未开播），本轮跳过",
+                touch_last_scan_at=False,
+            )
+
     # 3. cloudSaver 搜索 → 展开分享码 → 加分匹配 → 限数 20（网络 IO，无 DB session）
     #                                                        —— phase: search
     _phase_start(phases, "search")
@@ -1969,6 +2002,15 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
                             media_id, shown,
                         )
                         continue
+                    # Task 6 全量兜底播出日期门控：SxxExx 可解析且命中 TMDB 全集
+                    # 未播出集 → 拒绝（未开播资源不搜索/不入队）；解析不到 (s,e)
+                    # 时按既有策略放行，不误杀。
+                    m_sxx = _RE_SXXEXX.search(file_name)
+                    if m_sxx:
+                        key = (int(m_sxx.group(1)), int(m_sxx.group(2)))
+                        if key in aired_by_key and not aired_by_key[key]:
+                            unrelated_filtered += 1
+                            continue  # 未播出集文件，拒绝
                     # A4 全量限批：单轮入队达上限即停止遍历（防一次入队爆炸）
                     if enqueued >= _FULL_MODE_ENQUEUE_LIMIT:
                         enqueue_limited = True

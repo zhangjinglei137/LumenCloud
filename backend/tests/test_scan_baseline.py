@@ -148,6 +148,9 @@ def _patch_scan_env(monkeypatch, db, *, find_emby_id=None, search=None, share_li
     from app.tasks import scan as scan_mod
 
     monkeypatch.setattr(scan_mod, "async_session", db)
+    # Task 6 全量播出日期门控：本用例聚焦基线软处理与入队语义，mock TMDB 全集为空
+    # （aired_by_key={} → 播出日期门控无操作），保持原断言语义。
+    monkeypatch.setattr(scan_mod.tmdb, "get_tv_all_episodes", AsyncMock(return_value=[]))
     monkeypatch.setattr(scan_mod.emby, "find_emby_id", AsyncMock(return_value=find_emby_id))
     monkeypatch.setattr(
         scan_mod.cloudsaver, "search",
