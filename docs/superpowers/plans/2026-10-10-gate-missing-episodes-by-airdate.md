@@ -262,7 +262,7 @@ git commit -m "feat(tmdb): get_tv_all_episodes 失败返回 None 哨兵"
 
 ### Task 4: `_emby_missing_codes` 契约扩展 + 常规门控 `_filter_aired`
 
-- [ ] Task 4: `_emby_missing_codes` 契约扩展 + 常规门控 `_filter_aired`
+- [x] Task 4: `_emby_missing_codes` 契约扩展 + 常规门控 `_filter_aired`
 
 **Files:**
 - Modify: `backend/app/tasks/scan.py:377-419`（`_emby_missing_codes`）
@@ -275,7 +275,7 @@ git commit -m "feat(tmdb): get_tv_all_episodes 失败返回 None 哨兵"
   - `_emby_missing_codes(media) -> list[dict | None] | None`，dict = `{"code": str, "premiere_date": str | None}`。
   - `_filter_aired(media, missing: list[dict | None]) -> list[dict]`，并记录本季失败（下条 Task 处理 fail-safe 短路）。
 
-- [ ] **Step 1: 写失败测试（契约）**
+- [x] **Step 1: 写失败测试（契约）**
 
 ```python
 # backend/tests/test_scan_airdate_gate.py
@@ -298,12 +298,12 @@ def test_emby_missing_codes_returns_dicts(monkeypatch):
     assert out == [{"code": "S03E01", "premiere_date": None}]
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `cd backend && python -m pytest tests/test_scan_airdate_gate.py::test_emby_missing_codes_returns_dicts -q`
 Expected: FAIL（当前返回 `["S03E01"]`）
 
-- [ ] **Step 3: 实现契约扩展**
+- [x] **Step 3: 实现契约扩展**
 
 `_emby_missing_codes` 末段改为：
 
@@ -317,7 +317,7 @@ Expected: FAIL（当前返回 `["S03E01"]`）
 
 movie 与未收录分支保持不变（`[]` / `[None]` / `None`）。
 
-- [ ] **Step 4: 写门控失败测试**
+- [x] **Step 4: 写门控失败测试**
 
 ```python
 def test_filter_aired_drops_no_airdate(monkeypatch):
@@ -344,7 +344,7 @@ def test_filter_aired_embys_fallback(monkeypatch):
     assert kept and kept[0]["code"] == "S01E01"
 ```
 
-- [ ] **Step 5: 实现 `_filter_aired`**
+- [x] **Step 5: 实现 `_filter_aired`**
 
 ```python
 async def _filter_aired(media, missing):
@@ -393,12 +393,12 @@ async def _filter_aired(media, missing):
 
 注：`_season_of_key` 已存在（`scan.py:720`）；季号解析用既有 `_parse_episode_number`/`_ep_num`（实现时统一用一个）。`episode_aired` 从 `app.utils` import。
 
-- [ ] **Step 6: 运行门控测试**
+- [x] **Step 6: 运行门控测试**
 
 Run: `cd backend && python -m pytest tests/test_scan_airdate_gate.py -q`
 Expected: PASS
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```bash
 git add backend/app/tasks/scan.py backend/tests/test_scan_airdate_gate.py
