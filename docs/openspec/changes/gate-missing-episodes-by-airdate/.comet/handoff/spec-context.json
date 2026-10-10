@@ -1,0 +1,30 @@
+{
+  "change": "gate-missing-episodes-by-airdate",
+  "phase": "design",
+  "mode": "beta",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "8414fbd790aae66fcde1a6d540cceefb96eb8794587dec1b6f0c2d55d78b8f2d",
+  "files": [
+    {
+      "path": "docs/openspec/changes/gate-missing-episodes-by-airdate/proposal.md",
+      "sha256": "53ee07a46d1b8583d3935ed07fbb1bedc4c12546a92ea0b6b32e823474381544",
+      "role": "supporting"
+    },
+    {
+      "path": "docs/openspec/changes/gate-missing-episodes-by-airdate/design.md",
+      "sha256": "cc6313e7e5233d0669ca6d8b8fea5aa75b1c932db0cde0c90ef86bc47b4ce90e",
+      "role": "supporting"
+    },
+    {
+      "path": "docs/openspec/changes/gate-missing-episodes-by-airdate/tasks.md",
+      "sha256": "10f3c8ecafc458d721c22efee57a2e473fe9bdc8d6f4ba8ffeaefc56aec511cd",
+      "role": "supporting"
+    },
+    {
+      "path": "docs/openspec/changes/gate-missing-episodes-by-airdate/specs/media-pipeline/spec.md",
+      "sha256": "a65e0b1cef41294e8ab9518dca7327a556402950d5ce223a923ca6a04c0aa5f3",
+      "role": "spec"
+    }
+  ]
+}
