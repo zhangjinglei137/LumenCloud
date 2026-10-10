@@ -9,6 +9,10 @@ python-jose[cryptography]==3.5.0  # pyasn1 约束放宽为 >=0.5.0（3.4.0 的 <
 pyasn1==0.6.4  # CVE-2026-30922/59884/59885/59886 修复版（0.6.4；0.4.x/0.5.x 全部受影响）
 bcrypt==5.0.0  # 密码哈希（auth.py 直接用 bcrypt；passlib 1.7.4 与 bcrypt≥4.1 不兼容，已弃用）
 httpx==0.28.1
+# urllib3：经 fastapi[standard]→fastapi-cli→fastapi-cloud-cli→sentry-sdk 间接引入。
+# CVE-2026-97689 / CVE-2026-97687（HIGH，2.7.0 受影响）修复版为 2.8.0；
+# 显式钉下限以满足 trivy CI 门禁（severity HIGH,CRITICAL + exit-code 1）。
+urllib3>=2.8.0
 apscheduler==3.10.4
 python-multipart==0.0.32
 alembic==1.14.0
