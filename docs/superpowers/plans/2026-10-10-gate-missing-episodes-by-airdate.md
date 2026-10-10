@@ -2,6 +2,7 @@
 change: gate-missing-episodes-by-airdate
 design-doc: docs/superpowers/specs/2026-10-10-gate-missing-episodes-by-airdate-design.md
 base-ref: 03bd8580699e71bfb4929d2a6bb4133d61269729
+archived-with: 2026-10-10-gate-missing-episodes-by-airdate
 ---
 
 # 缺集巡检「已播出」门控 实施计划

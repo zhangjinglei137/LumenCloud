@@ -2,6 +2,8 @@
 comet_change: gate-missing-episodes-by-airdate
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-10-10-gate-missing-episodes-by-airdate
+status: final
 ---
 
 # 缺集巡检「已播出」门控 — 技术设计
