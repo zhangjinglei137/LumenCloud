@@ -133,9 +133,14 @@ jobs:
           severity: HIGH,CRITICAL
           exit-code: "1"
           ignore-unfixed: true
-          # .trivyignore 豁免 3 个误报（基础镜像 SBOM 陈旧元数据：setuptools
-          # 70.3.0 / msgpack 1.1.2，文件系统实测已升级到 84.0.0 / 1.2.2，
-          # dpkg/pip/dist-info 三证无旧版；见 .trivyignore 注释）
+          # 跳过 pip 26.2 自带的 CycloneDX SBOM（误报根因）：trivy 的 sbom analyzer
+          # 会解析镜像内任意 *.cdx.json 并把其中记录的 pip 构建期/内嵌依赖
+          # （urllib3 2.7.0、setuptools 70.3.0 等）当作「已安装」上报，且无文件路径
+          # （AnalyzedBy=sbom）。实际 site-packages 已是修复版（urllib3 2.8.0、
+          # setuptools 84.0.0、msgpack 1.2.2），构建日志可证。精确定位到该文件跳过，
+          # 不动真实 dist-info 扫描面（比全局 trivyignore CVE 更精准、且防复发）。
+          skip-files: "**/pip/_vendor/bom.cdx.json"
+          # .trivyignore 保留既有豁免（同上误报类，防御性）。
           trivyignores: .trivyignore
 
       - name: 上传 SARIF 到 GitHub
