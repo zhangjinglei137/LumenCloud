@@ -368,7 +368,7 @@ def test_season_air_dates_fetch(monkeypatch):
 
 
 def test_season_air_dates_non_200_degrades(monkeypatch):
-    """非 200 响应 → 降级返回 {}（不抛异常到调用方）。"""
+    """非 200 响应 → 降级返回 None 失败哨兵（不抛异常到调用方）。"""
     from app.config import settings
     from app.services import config_store
 
@@ -378,7 +378,7 @@ def test_season_air_dates_non_200_degrades(monkeypatch):
     monkeypatch.setattr("app.services.tmdb.httpx.AsyncClient", factory)
 
     result = __import__("asyncio").run(tmdb_mod.get_tv_season_air_dates(456, 1))
-    assert result == {}
+    assert result is None
 
 
 def test_season_air_dates_cache_hit(monkeypatch):
