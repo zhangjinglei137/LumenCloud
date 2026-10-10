@@ -1792,7 +1792,21 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
             touch_last_scan_at=False,
         )
 
-    missing_keys = {m for m in missing if m is not None}
+    # 2a. 已播出门控（Task 5）：按 TMDB air_date（缺失回退 Emby premiere_date）剔除
+    #     「未来才播」的集，避免为未播出资源搜索/入队占中转空间。None 哨兵项
+    #     （全量/电影）由 _filter_aired 原样保留、不套用门控。
+    missing, aired_failed = await _filter_aired(media, missing)
+    if aired_failed and not missing:
+        # fail-safe（Ruling 2 简化）：TMDB 某季取数失败且门控后无可保留项 → 本轮不
+        # 搜索（否则会把「取数失败」误当「无遗漏」而错失补齐机会），message 标明季号。
+        _phase_skip_remaining(phases, "search")
+        return await _finish(
+            "skipped",
+            f"TMDB 播出日期取数失败（季 {sorted(aired_failed)}），本轮跳过",
+            touch_last_scan_at=False,
+        )
+
+    missing_keys = {m["code"] for m in missing if m and m.get("code")}
     # movie_missing 真 = 全量模式（Emby 基线缺失 soft 全量）：
     #   - 真电影（media_type=="movie"）整部缺失 → [None]；
     #   - tv 未收录（Emby 未收录 + scan_baseline_required=False 软处理）→ [None]，
@@ -1824,9 +1838,9 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
         for m in scan_missing:
             if m is None:
                 continue
-            item = {"episode": m, "result": "not_found"}
+            item = {"episode": m["code"], "result": "not_found"}
             missing_items.append(item)
-            missing_items_by_key[m] = item
+            missing_items_by_key[m["code"]] = item
     scan_detail = _result_detail_skeleton()
     scan_detail["missing_total"] = missing_total
     scan_detail["missing_items"] = missing_items

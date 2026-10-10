@@ -62,6 +62,19 @@ def _patch_scan_base(monkeypatch, db, *, missing_codes):
     monkeypatch.setattr(scan_mod, "async_session", db)
     emby_mock = AsyncMock(return_value=missing_codes)
     monkeypatch.setattr(scan_mod, "_emby_missing_codes", emby_mock)
+    # 已播出门控（Task 5）：mock TMDB 让缺失集按「已播出」保留，维持各用例原有语义。
+    async def _fake_air_dates(tmdb_id, season_number):
+        out = {}
+        for c in (missing_codes or []):
+            code = c if isinstance(c, str) else (c or {}).get("code")
+            if not code:
+                continue
+            if scan_mod._season_of_key(code) == season_number:
+                ep = scan_mod._parse_episode_number(code)
+                if ep is not None:
+                    out[ep] = "2020-01-01"
+        return out
+    monkeypatch.setattr(scan_mod.tmdb, "get_tv_season_air_dates", _fake_air_dates)
     monkeypatch.setattr(scan_mod, "_read_size_limits", AsyncMock(return_value=(100.0, 100.0)))
     monkeypatch.setattr(scan_mod, "_trigger_transfer", AsyncMock(return_value=None))
     return scan_mod
@@ -161,7 +174,7 @@ def test_scan_one_share_info_all_failed_reports_invalid_candidates(db, monkeypat
     from app.tasks import scan as scan_mod
 
     mid = run(_seed_media(db))
-    scan_mod = _patch_scan_base(monkeypatch, db, missing_codes=["S01E190"])
+    scan_mod = _patch_scan_base(monkeypatch, db, missing_codes=[{"code": "S01E190", "premiere_date": None}])
     candidates = [{"title": "凡人修仙传 (2020)", "share_code": c} for c in
                   ("83025fed147e", "9b9b55d858bc")]
     monkeypatch.setattr(scan_mod, "_search_and_rank", AsyncMock(return_value=candidates))
@@ -186,7 +199,7 @@ def test_scan_one_share_info_partial_success_falls_back_to_missing(db, monkeypat
     from app.tasks import scan as scan_mod
 
     mid = run(_seed_media(db))
-    scan_mod = _patch_scan_base(monkeypatch, db, missing_codes=["S01E190"])
+    scan_mod = _patch_scan_base(monkeypatch, db, missing_codes=[{"code": "S01E190", "premiere_date": None}])
     candidates = [{"title": "凡人修仙传 (2020)", "share_code": f"code{n:012x}"}
                   for n in range(20)]
     monkeypatch.setattr(scan_mod, "_search_and_rank", AsyncMock(return_value=candidates))
@@ -219,7 +232,7 @@ def test_scan_one_share_info_all_failed_with_numeric_share_ok(db, monkeypatch):
     from app.tasks import scan as scan_mod
 
     mid = run(_seed_media(db))
-    scan_mod = _patch_scan_base(monkeypatch, db, missing_codes=["S01E190"])
+    scan_mod = _patch_scan_base(monkeypatch, db, missing_codes=[{"code": "S01E190", "premiere_date": None}])
     monkeypatch.setattr(scan_mod, "_search_and_rank", AsyncMock(return_value=[
         {"title": "凡人修仙传 (2020)", "share_code": "2c16748e7818"}]))
     monkeypatch.setattr(
@@ -255,7 +268,7 @@ def test_scan_one_skips_dead_candidates_reaches_valid_share(db, monkeypatch):
     from app.tasks import scan as scan_mod
 
     mid = run(_seed_media(db))
-    scan_mod = _patch_scan_base(monkeypatch, db, missing_codes=["S01E190"])
+    scan_mod = _patch_scan_base(monkeypatch, db, missing_codes=[{"code": "S01E190", "premiere_date": None}])
     # 25 个候选：前 20 个失效分享码（share-info 抛错）+ 第 21 个起有效
     dead = [{"title": "失效分享", "share_code": f"dead{i:012x}"} for i in range(20)]
     valid = [{"title": "凡人修仙传 (2020)", "share_code": f"ok{i:012x}"} for i in range(5)]
@@ -307,7 +320,7 @@ def test_scan_one_share_try_limit_stops_when_all_dead(db, monkeypatch):
     from app.tasks import scan as scan_mod
 
     mid = run(_seed_media(db))
-    scan_mod = _patch_scan_base(monkeypatch, db, missing_codes=["S01E190"])
+    scan_mod = _patch_scan_base(monkeypatch, db, missing_codes=[{"code": "S01E190", "premiere_date": None}])
     limit = scan_mod._MAX_SHARE_TRY
     candidates = [{"title": "失效分享", "share_code": f"dead{i:012x}"}
                   for i in range(limit + 15)]  # 超过上限
@@ -370,7 +383,7 @@ def test_scan_one_std_naming_preferred_over_numeric(db, monkeypatch):
     用纯数字兜底该集（190.mkv 不重复入队）；task_queue 仅 1 条且 file_name
     为规范命名。
     """
-    rid, mid = _seed_and_run_scan(monkeypatch, db, missing_codes=["S01E190"], files=[
+    rid, mid = _seed_and_run_scan(monkeypatch, db, missing_codes=[{"code": "S01E190", "premiere_date": None}], files=[
         {"fileName": "S01E190.mkv", "fileId": "f1", "fileIdToken": "ft",
          "isFolder": False, "size": 1024 * 1024 * 1024},
         {"fileName": "190.mkv", "fileId": "f2", "fileIdToken": "ft2",
@@ -391,7 +404,7 @@ def test_scan_one_numeric_fallback_only_for_unmatched_key(db, monkeypatch):
     走规范命名。两条 task_queue 各自 file_name 正确。
     """
     rid, mid = _seed_and_run_scan(monkeypatch, db,
-                                  missing_codes=["S01E100", "S01E190"], files=[
+                                  missing_codes=[{"code": "S01E100", "premiere_date": None}, {"code": "S01E190", "premiere_date": None}], files=[
         {"fileName": "S01E100.mkv", "fileId": "f1", "fileIdToken": "ft",
          "isFolder": False, "size": 1024 * 1024 * 1024},
         {"fileName": "190.mkv", "fileId": "f2", "fileIdToken": "ft2",

@@ -111,6 +111,19 @@ def _patch_scan_env(monkeypatch, db, *, missing_codes=None, search=None, share_l
     if missing_codes is not None:
         emby_mock.return_value = missing_codes
     monkeypatch.setattr(scan_mod, "_emby_missing_codes", emby_mock)
+    # 已播出门控（Task 5）：mock TMDB 让缺失集按「已播出」保留，维持各用例原有语义。
+    async def _fake_air_dates(tmdb_id, season_number):
+        out = {}
+        for c in (missing_codes or []):
+            code = c if isinstance(c, str) else (c or {}).get("code")
+            if not code:
+                continue
+            if scan_mod._season_of_key(code) == season_number:
+                ep = scan_mod._parse_episode_number(code)
+                if ep is not None:
+                    out[ep] = "2020-01-01"
+        return out
+    monkeypatch.setattr(scan_mod.tmdb, "get_tv_season_air_dates", _fake_air_dates)
     monkeypatch.setattr(
         scan_mod.cloudsaver, "search",
         AsyncMock(return_value=search if search is not None else []),
@@ -165,7 +178,7 @@ def test_scan_one_searches_despite_silenced_rows(db, monkeypatch, manual):
     mid = run(_seed_media(db))
     run(_seed_silenced_tq(db, mid, ["S01E01", "S01E02"], _now() + timedelta(days=2)))
 
-    scan_mod = _patch_scan_env(monkeypatch, db, missing_codes=["S01E01", "S01E02"])
+    scan_mod = _patch_scan_env(monkeypatch, db, missing_codes=[{"code": "S01E01", "premiere_date": None}, {"code": "S01E02", "premiere_date": None}])
     search_mock = AsyncMock(return_value=[])
     monkeypatch.setattr(scan_mod, "_search_and_rank", search_mock)
 
@@ -205,7 +218,7 @@ def test_scan_one_searches_when_no_tq_rows(db, monkeypatch):
 
     mid = run(_seed_media(db))
 
-    scan_mod = _patch_scan_env(monkeypatch, db, missing_codes=["S01E01"])
+    scan_mod = _patch_scan_env(monkeypatch, db, missing_codes=[{"code": "S01E01", "premiere_date": None}])
     search_mock = AsyncMock(return_value=[])
     monkeypatch.setattr(scan_mod, "_search_and_rank", search_mock)
 
@@ -234,7 +247,7 @@ def test_scan_one_search_failure_writes_no_unmatched(db, monkeypatch):
 
     scan_mod = _patch_scan_env(
         monkeypatch, db,
-        missing_codes=["S01E01"],
+        missing_codes=[{"code": "S01E01", "premiere_date": None}],
         search=_cs_search_item(),   # 1 个可验证候选，但 share_list 无匹配文件
     )
 
@@ -266,7 +279,7 @@ def test_scan_one_missing_retried_next_round(db, monkeypatch):
     # 第一轮：无资源（候选验证成功但分享内没有匹配文件）
     scan_mod = _patch_scan_env(
         monkeypatch, db,
-        missing_codes=["S01E01"],
+        missing_codes=[{"code": "S01E01", "premiere_date": None}],
         search=_cs_search_item(),
         share_list={"list": []},
     )
@@ -276,7 +289,7 @@ def test_scan_one_missing_retried_next_round(db, monkeypatch):
     # 第二轮：资源出现 → 照常入队（无静默期拦截）
     scan_mod = _patch_scan_env(
         monkeypatch, db,
-        missing_codes=["S01E01"],
+        missing_codes=[{"code": "S01E01", "premiere_date": None}],
         search=_cs_search_item(),
         share_list={"list": [_file("S01E01.mkv")]},
     )

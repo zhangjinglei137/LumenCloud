@@ -82,6 +82,20 @@ def _patch_scan_env(monkeypatch, db, *, missing_codes=None, search=None, share_l
     if missing_codes is not None:
         emby_mock.return_value = missing_codes
     monkeypatch.setattr(scan_mod, "_emby_missing_codes", emby_mock)
+    # 已播出门控（Task 5）：mock TMDB 让缺失集按「已播出」保留，维持各用例原有
+    # 「照常搜索/入队」语义（否则真实 TMDB 取数失败会触发 fail-safe 短路）。
+    async def _fake_air_dates(tmdb_id, season_number):
+        out = {}
+        for c in (missing_codes or []):
+            code = c if isinstance(c, str) else (c or {}).get("code")
+            if not code:
+                continue
+            if scan_mod._season_of_key(code) == season_number:
+                ep = scan_mod._parse_episode_number(code)
+                if ep is not None:
+                    out[ep] = "2020-01-01"
+        return out
+    monkeypatch.setattr(scan_mod.tmdb, "get_tv_season_air_dates", _fake_air_dates)
     if candidates is None:
         monkeypatch.setattr(
             scan_mod.cloudsaver, "search",
@@ -142,10 +156,13 @@ def test_scan_one_starts_running_and_finishes_same_row(db, monkeypatch):
     async def fake_missing(media):
         entered.set()
         await release.wait()
-        return ["S01E01"]
+        return [{"code": "S01E01", "premiere_date": None}]
 
     monkeypatch.setattr(scan_mod, "async_session", db)
     monkeypatch.setattr(scan_mod, "_emby_missing_codes", fake_missing)
+    # 已播出门控（Task 5）：mock TMDB 视为已播出，保持本用例「正常入队 success」语义
+    monkeypatch.setattr(scan_mod.tmdb, "get_tv_season_air_dates",
+                        AsyncMock(return_value={1: "2020-01-01"}))
     monkeypatch.setattr(scan_mod.cloudsaver, "search",
                         AsyncMock(return_value=[_cs_item()]))
     monkeypatch.setattr(scan_mod.cloudsaver, "share_info",
@@ -212,7 +229,7 @@ def test_scan_one_success_phases_all_done_and_scan_detail(db, monkeypatch):
     share_list = {"list": [
         _file("S01E01.mkv"), _file("S01E02.mkv"), _file("S03E99.mkv"),
     ]}
-    scan_mod = _patch_scan_env(monkeypatch, db, missing_codes=["S01E01", "S01E02"],
+    scan_mod = _patch_scan_env(monkeypatch, db, missing_codes=[{"code": "S01E01", "premiere_date": None}, {"code": "S01E02", "premiere_date": None}],
                                candidates=[{"title": "测试剧 S01", "share_code": "abc123"}],
                                share_list=share_list)
 
@@ -287,7 +304,7 @@ def test_scan_one_search_exception_failed_phase_search(db, monkeypatch):
     from app.tasks import scan as scan_mod
 
     mid = run(_seed_media(db))
-    _patch_scan_env(monkeypatch, db, missing_codes=["S01E01"])
+    _patch_scan_env(monkeypatch, db, missing_codes=[{"code": "S01E01", "premiere_date": None}])
     # check done 后，搜索阶段整体异常（_search_and_rank 被替换为抛错）
     monkeypatch.setattr(scan_mod, "_search_and_rank",
                         AsyncMock(side_effect=RuntimeError("search boom")))
@@ -315,7 +332,7 @@ def test_scan_one_all_keywords_failed_search_error(db, monkeypatch):
     from app.tasks import scan as scan_mod
 
     mid = run(_seed_media(db))
-    _patch_scan_env(monkeypatch, db, missing_codes=["S01E01"])
+    _patch_scan_env(monkeypatch, db, missing_codes=[{"code": "S01E01", "premiere_date": None}])
     # 走真实 _search_and_rank：所有关键词（「测试剧 S01」+「测试剧」≥1 个）均失败
     monkeypatch.setattr(
         scan_mod.cloudsaver, "search",
@@ -344,7 +361,7 @@ def test_scan_one_single_keyword_failure_still_succeeds(db, monkeypatch):
     from app.tasks import scan as scan_mod
 
     mid = run(_seed_media(db))
-    _patch_scan_env(monkeypatch, db, missing_codes=["S01E01"])
+    _patch_scan_env(monkeypatch, db, missing_codes=[{"code": "S01E01", "premiere_date": None}])
 
     async def fake_search(kw: str):
         if "S01" in kw:
@@ -399,7 +416,7 @@ def test_scan_one_human_message_unmatched_zero_enqueued(db, monkeypatch):
     share_list = {"list": [
         _file("凡人修仙传 第500集.mkv"),   # 集号与缺失集 S01E01 不匹配 → unmatched
     ]}
-    scan_mod = _patch_scan_env(monkeypatch, db, missing_codes=["S01E01"],
+    scan_mod = _patch_scan_env(monkeypatch, db, missing_codes=[{"code": "S01E01", "premiere_date": None}],
                                candidates=[{"title": "凡人修仙传 (2020)", "share_code": "abc123"}],
                                share_list=share_list)
 
@@ -420,7 +437,7 @@ def test_scan_one_human_message_enqueued_with_filters(db, monkeypatch):
         _file("S01E02.mkv", 1024 * 1024 * 1024 * 500),  # 超大小上限(100G) → size_filtered
         _file("Cover.jpg", 2048),       # 非视频
     ]}
-    scan_mod = _patch_scan_env(monkeypatch, db, missing_codes=["S01E01", "S01E02"],
+    scan_mod = _patch_scan_env(monkeypatch, db, missing_codes=[{"code": "S01E01", "premiere_date": None}, {"code": "S01E02", "premiere_date": None}],
                                candidates=[{"title": "测试剧 S01", "share_code": "abc123"}],
                                share_list=share_list)
 
@@ -446,7 +463,7 @@ def test_scan_one_human_message_no_candidates_with_missing(db, monkeypatch):
     from app.tasks import scan as scan_mod
 
     mid = run(_seed_media(db))
-    scan_mod = _patch_scan_env(monkeypatch, db, missing_codes=["S01E01"])
+    scan_mod = _patch_scan_env(monkeypatch, db, missing_codes=[{"code": "S01E01", "premiere_date": None}])
     # 搜索成功（≥1 关键词 ok）但云分享无候选 → _search_and_rank 返回 []（不抛）
     monkeypatch.setattr(scan_mod, "_search_and_rank", AsyncMock(return_value=[]))
 
