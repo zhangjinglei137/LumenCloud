@@ -112,7 +112,7 @@ git commit -m "feat(scan): 新增 episode_aired 已播出判定纯函数"
 
 ### Task 2: `tmdb.get_tv_season_air_dates` 引入失败哨兵
 
-- [ ] Task 2: `tmdb.get_tv_season_air_dates` 引入失败哨兵
+- [x] Task 2: `tmdb.get_tv_season_air_dates` 引入失败哨兵
 
 **Files:**
 - Modify: `backend/app/services/tmdb.py:455-482`
@@ -122,7 +122,7 @@ git commit -m "feat(scan): 新增 episode_aired 已播出判定纯函数"
 **Interfaces:**
 - Produces: `get_tv_season_air_dates(tmdb_id, season) -> dict[int, str | None] | None` —— 失败返回 `None`；成功返回 dict（可空）。供 Task 4 使用。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```python
 # backend/tests/test_tmdb_air_sentinel.py
@@ -152,12 +152,12 @@ def test_season_air_dates_returns_map_on_success(monkeypatch):
     assert asyncio.run(tmdb.get_tv_season_air_dates(3, 1)) == {1: "2026-01-01"}
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `cd backend && python -m pytest tests/test_tmdb_air_sentinel.py -q`
 Expected: FAIL（首条断言失败：目前失败返回 `{}` 而非 `None`）
 
-- [ ] **Step 3: 最小实现**
+- [x] **Step 3: 最小实现**
 
 在 `get_tv_season_air_dates` 中把失败分支从 `return {}` 改为 `return None`（缓存命中与成功写入逻辑不变）；更新 docstring 说明返回类型。示例：
 
@@ -167,7 +167,7 @@ Expected: FAIL（首条断言失败：目前失败返回 `{}` 而非 `None`）
         return None  # 回源失败 → 失败哨兵（调用方据此 fail-safe）
 ```
 
-- [ ] **Step 4: 适配 `routers/media.py` 调用点**
+- [x] **Step 4: 适配 `routers/media.py` 调用点**
 
 详情页对 `None` 视为「无数据」（等价旧空结果），例如：
 
@@ -182,12 +182,12 @@ Expected: FAIL（首条断言失败：目前失败返回 `{}` 而非 `None`）
 
 确认详情页既有分支在 `dates` 为 `None` 时不会抛 `TypeError`（不要对 `None` 调 `.items()`/`.get()`）。若有其它调用点，一并检查（`grep -rn "get_tv_season_air_dates" backend/app`）。
 
-- [ ] **Step 5: 运行确认通过**
+- [x] **Step 5: 运行确认通过**
 
 Run: `cd backend && python -m pytest tests/test_tmdb_air_sentinel.py -q && python -m pytest tests/test_tmdb_cache.py -q`
 Expected: PASS
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add backend/app/services/tmdb.py backend/app/routers/media.py backend/tests/test_tmdb_air_sentinel.py

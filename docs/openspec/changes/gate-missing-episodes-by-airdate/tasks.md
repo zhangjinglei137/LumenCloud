@@ -1,6 +1,6 @@
 ## 1. TMDB 取数加固（区分「失败」与「无日期」）
 
-- [ ] 1.1 为 `tmdb.get_tv_season_air_dates` 引入失败哨兵：回源失败返回 `None`，成功但该季无集返回 `{}`；返回类型改为 `dict | None`。适配调用点 `routers/media.py` 详情页（None 按「无数据」降级，不报错）。验证：新增/更新 `backend/tests` 单测覆盖「失败→None」「成功空季→{}」「成功有集→dict」三分支，全绿。
+- [x] 1.1 为 `tmdb.get_tv_season_air_dates` 引入失败哨兵：回源失败返回 `None`，成功但该季无集返回 `{}`；返回类型改为 `dict | None`。适配调用点 `routers/media.py` 详情页（None 按「无数据」降级，不报错）。验证：新增/更新 `backend/tests` 单测覆盖「失败→None」「成功空季→{}」「成功有集→dict」三分支，全绿。
 - [ ] 1.2 为 `tmdb.get_tv_all_episodes` 引入失败哨兵：失败返回 `None`，成功返回 `list`（含被跳过的失败季需可区分或整体失败上抛，与 1.1 语义一致）；适配既有调用点。验证：单测覆盖「失败→None」「成功→非空/空 list」。
 - [x] 1.3 新增「已播出」日期判定纯函数 `episode_aired(air_date, today) -> bool`（如 `app.utils`）：无日期/非法/未来→False（未播出，核心行为变更），已过→True；Emby `premiere_date` 兜底由 scan `_filter_aired` 处理。验证：单测覆盖全部分支。
 
