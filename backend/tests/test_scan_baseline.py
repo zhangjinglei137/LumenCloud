@@ -101,7 +101,7 @@ def test_emby_missing_codes_tv_missing_required_returns_none(monkeypatch):
 
 
 def test_emby_missing_codes_tv_present_returns_missing(monkeypatch):
-    """tv 已收录 → 缺失集 code 列表（None code 过滤，行为不变）。"""
+    """tv 已收录 → 缺失集 dict 列表（code + premiere_date，None code 过滤，行为不变）。"""
     from app.tasks import scan as scan_mod
 
     monkeypatch.setattr(scan_mod.emby, "find_emby_id", AsyncMock(return_value="emby_1"))
@@ -112,7 +112,11 @@ def test_emby_missing_codes_tv_present_returns_missing(monkeypatch):
 
     missing = run(scan_mod._emby_missing_codes(_tv_media("emby_1")))
 
-    assert missing == ["S01E01", "S01E02"]
+    # 契约扩展（Task 4）：dict 携带 premiere_date（缺省 None）供已播出门控兜底
+    assert missing == [
+        {"code": "S01E01", "premiere_date": None},
+        {"code": "S01E02", "premiere_date": None},
+    ]
 
 
 def test_emby_missing_codes_movie_behavior_unchanged(monkeypatch):

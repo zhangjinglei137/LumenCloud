@@ -36,7 +36,12 @@ from app.models import DownloadQueue, Media, TaskQueue, TaskRun
 from app.services import cloudsaver, config_store, emby, tmdb
 from app.tasks import as_bool, get_config_value, record_task_run
 # tasks 层公共纯函数（app.utils，仅标准库）：统一时间源与集级匹配函数
-from app.utils import fmt_episode, now_utc_naive as _now, parse_episode_num
+from app.utils import (
+    episode_aired,
+    fmt_episode,
+    now_utc_naive as _now,
+    parse_episode_num,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -374,11 +379,13 @@ def match_missing(text: str, missing_keys: set[str]) -> str | None:
 # Emby 防重基线（§4.3 步骤2 / P11）
 # ---------------------------------------------------------------------------
 
-async def _emby_missing_codes(media) -> list[str | None] | None:
+async def _emby_missing_codes(media) -> list[dict | None] | None:
     """Emby 防重基线。
 
     返回缺失集列表；**None 表示基线不可用**（Emby 未收录该剧，无法探明遗漏）。
-    - tv    → 缺失集 code 列表（如 ["S01E01"]）
+    - tv    → 缺失集 dict 列表，形如
+      ``{"code": "S01E01", "premiere_date": "2020-01-01T00:00:00Z" | None}``
+      （code 为空/N提交被过滤；premiere_date 供 _filter_aired 已播出门控兜底）
     - movie → 已在库 []（无遗漏）；整部缺失 [None]（全量模式，episode=文件名）
     - tv 未收录 → 由配置项 scan_baseline_required 分流：
         True（强防重，旧行为）→ None（主流程本轮跳过，防盲入占中转空间）；
@@ -416,7 +423,62 @@ async def _emby_missing_codes(media) -> list[str | None] | None:
         )
         return [None]
     missing = await emby.get_missing_episodes(emby_id)
-    return [ep.get("code") for ep in missing if ep.get("code")]
+    # 契约扩展（Task 4）：返回 dict 携带 premiere_date，供 _filter_aired 已播出门控
+    # 以 Emby 首播日期作为 TMDB 之外的第二数据源兜底（TMDB 该集无数据时回退）。
+    return [
+        {"code": ep.get("code"), "premiere_date": ep.get("premiere_date")}
+        for ep in missing if ep.get("code")
+    ]
+
+
+async def _filter_aired(media, missing) -> tuple[list[dict | None], set[int]]:
+    """已播出门控：返回 (kept 缺失项, 本季取数失败的季集合)。
+
+    - None 哨兵项原样保留（全量/电影）；
+    - movie 不套用门控；
+    - tv：按季取 TMDB air_date，逐集 episode_aired；TMDB 无该集时回退 Emby
+      premiere_date；两源皆无 → 未播出剔除；
+    - 某季 TMDB 取数失败 → 记入 failed（该季集不保留），由调用方决定 fail-safe；
+    - media.tmdb_id 缺失 → 仅用 Emby premiere_date 单源判定（降级）。
+    """
+    from datetime import date as _date
+
+    kept = []
+    failed = set()
+    seasons = {}
+    for m in missing:
+        if m is None or not m.get("code"):
+            kept.append(m)  # None 哨兵原样保留（全量/电影）
+            continue
+        if (media.media_type or "").lower() == "movie":
+            kept.append(m)
+            continue
+        s = _season_of_key(m["code"])
+        seasons.setdefault(s, []).append(m)
+    if (media.media_type or "").lower() == "movie":
+        return kept, failed
+    today = _date.today()
+    for s, items in seasons.items():
+        air_map = None
+        if media.tmdb_id is not None:
+            air_map = await tmdb.get_tv_season_air_dates(media.tmdb_id, s)
+        if media.tmdb_id is not None and air_map is None:
+            # 该季 TMDB 取数失败 → 记 failed（该季集不保留），由调用方 fail-safe
+            failed.add(s)
+            logger.warning(
+                "[scan] media=%s 季 %s TMDB air_date 取数失败，本轮跳过该季", media.id, s,
+            )
+            continue
+        for m in items:
+            ep = _parse_episode_number(m["code"])
+            air = (air_map or {}).get(ep) if (air_map is not None and ep is not None) else None
+            if air is not None:
+                if episode_aired(air, today):
+                    kept.append(m)
+            elif episode_aired(m.get("premiere_date"), today):
+                kept.append(m)  # TMDB 无该集 → Emby 兜底
+            # 否则剔除（未播出）
+    return kept, failed
 
 
 async def _resolve_done_states(media, missing_keys: set[str], movie_missing: bool) -> None:
