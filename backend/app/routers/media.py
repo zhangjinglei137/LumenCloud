@@ -654,6 +654,8 @@ async def get_media(
         }
         for season in seasons:
             try:
+                # get_tv_season_air_dates 回源失败返回 None 哨兵；`(dates or {})`
+                # 将 None/{} 统一按「无数据」降级（等价旧空结果），air_date 保持 None。
                 dates = await tmdb.get_tv_season_air_dates(media.tmdb_id, season)
                 for ep_num, air in (dates or {}).items():
                     air_map[(season, ep_num)] = air

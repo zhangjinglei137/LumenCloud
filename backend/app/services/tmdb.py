@@ -452,16 +452,23 @@ async def _fetch_season_episodes(tmdb_id: str | int, season_number: int) -> list
     return list(payload.get("episodes") or [])
 
 
-async def get_tv_season_air_dates(tmdb_id: str | int, season_number: int) -> dict[int, str | None]:
+async def get_tv_season_air_dates(
+    tmdb_id: str | int, season_number: int
+) -> dict[int, str | None] | None:
     """获取 TV 指定季每集的 TMDB 首播日期（详情页集数 tag 的 air_date 数据源）。
 
     返回 `{episode_number(int): air_date}`，air_date 为 "YYYY-MM-DD" 字符串或 None
     （TMDB 该集未提供首播日期）。回源复用 _fetch_season_episodes 辅助
     （`GET /3/tv/{tmdb_id}/season/{season_number}`，language=zh-CN）。
 
+    回源失败（_fetch_season_episodes 返回 None：api_key 缺失 / 网络 / 非 200 /
+    JSON 异常）→ 返回 None（失败哨兵，调用方据此 fail-safe「无数据」）；
+    成功（含空季）→ 返回 dict（空季为 {}）——None 与 {} 语义区分：
+    None=未取到数据，{}=取到且该季确实无集。任何失败都不抛异常拖垮详情接口。
+
     进程内 TTL 缓存（_SEASON_AIR_TTL=6h，key=f"{tmdb_id}:{season_number}"）：
-    命中且未过期直接返回；回源失败/非 200/JSON 异常仅 log warning 并返回 {}
-    ——这是详情页增强字段，任何失败都不能抛异常拖垮详情接口。
+    命中且未过期直接返回；仅成功回源（含空季）才写缓存，失败不缓存
+    （避免临时故障期间长时间拿不到数据）。
     """
     key = f"{tmdb_id}:{season_number}"
     hit = _SEASON_AIR_CACHE.get(key)
@@ -470,7 +477,7 @@ async def get_tv_season_air_dates(tmdb_id: str | int, season_number: int) -> dic
 
     episodes = await _fetch_season_episodes(tmdb_id, season_number)
     if episodes is None:
-        return {}
+        return None  # 回源失败 → 失败哨兵（调用方据此 fail-safe）
 
     out: dict[int, str | None] = {}
     for ep in episodes:
