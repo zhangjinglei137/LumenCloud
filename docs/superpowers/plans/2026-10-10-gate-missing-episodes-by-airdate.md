@@ -409,7 +409,7 @@ git commit -m "feat(scan): _emby_missing_codes 携带 premiere_date 并新增 _f
 
 ### Task 5: `_scan_one` 接入常规门控 + TMDB 失败 fail-safe
 
-- [ ] Task 5: `_scan_one` 接入常规门控 + TMDB 失败 fail-safe
+- [x] Task 5: `_scan_one` 接入常规门控 + TMDB 失败 fail-safe
 
 **Files:**
 - Modify: `backend/app/tasks/scan.py:1704-1778`（`_scan_one` 主流程）
@@ -419,7 +419,7 @@ git commit -m "feat(scan): _emby_missing_codes 携带 premiere_date 并新增 _f
 - Consumes: `_filter_aired`（Task 4）。
 - 行为：门控后 `missing_keys` 由 `m["code"]` 派生；`failed` 季非空且门控后无保留且非全量 → 本轮 `skipped` 且 message 标明 TMDB 取数失败。
 
-- [ ] **Step 1: 写端到端失败测试**
+- [x] **Step 1: 写端到端失败测试**
 
 复用 `test_scan_baseline.py` 的 `_patch_scan_env` 风格（新建最小 helper），断言：
 - 无日期集（`premiere_date=None` + TMDB 空）→ `_scan_one` 不触发 cloudSaver 搜索、不入队（`task_queue` 空），task_run `skipped`。
@@ -434,12 +434,12 @@ def test_scan_one_skips_unaired_no_date(db, monkeypatch):
 
 （test 需 monkeypatch：`scan_mod.async_session=db`、`scan_mod._emby_missing_codes`（或 emby.find_emby_id/get_missing_episodes）、`scan_mod.tmdb.get_tv_season_air_dates`、`cloudsaver.search` 记录调用。）
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `cd backend && python -m pytest tests/test_scan_airdate_gate.py -q`
 Expected: FAIL（当前会继续搜索）
 
-- [ ] **Step 3: 接入 `_scan_one`**
+- [x] **Step 3: 接入 `_scan_one`**
 
 在 `_emby_missing_codes` 调用与 `_phase_done(phases,"check")` 之后：
 
@@ -459,17 +459,17 @@ Expected: FAIL（当前会继续搜索）
 `movie_missing = any(m is None for m in missing)` 不变；
 `scan_missing = list(missing)` 等处凡按元素取值处，按 `m["code"]`/`m is None` 适配（见 `scan.py:1757-1767`）。
 
-- [ ] **Step 4: 运行确认通过**
+- [x] **Step 4: 运行确认通过**
 
 Run: `cd backend && python -m pytest tests/test_scan_airdate_gate.py -q`
 Expected: PASS
 
-- [ ] **Step 5: 回归基线测试（契约变更需同步）**
+- [x] **Step 5: 回归基线测试（契约变更需同步）**
 
 Run: `cd backend && python -m pytest tests/test_scan_baseline.py tests/test_scan_run_phases.py tests/test_scan_silent_filter.py tests/test_scan_numeric_match.py -q`
 Expected: 既有断言中把 `["S01E01"]` 等改判为 dict；逐条更新后 PASS。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add backend/app/tasks/scan.py backend/tests/
