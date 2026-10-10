@@ -12,7 +12,7 @@
 """
 import re
 from collections import OrderedDict
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 # 三重匹配（SxxExx / SxxExxx / 第N集）正则——常量仍留在各调用模块，
 # 本文件仅保留函数实现所需的最小正则（_ep_num 用）
@@ -108,3 +108,17 @@ def parse_episode_num(filename_or_ep: str) -> int | None:
     """
     m = _RE_EP_NUM_SUFFIX.search(filename_or_ep or "")
     return int(m.group(1)) if m else None
+
+
+def episode_aired(air_date: str | None, today: date) -> bool:
+    """该集是否已播出：播出日期可解析且不晚于 today。
+
+    air_date 支持 "YYYY-MM-DD"（TMDB air_date）与 ISO 8601 日期时间串
+    （Emby PremiereDate）；None/空/非法 → False（按未播出处理）。
+    """
+    if not air_date:
+        return False
+    try:
+        return date.fromisoformat(str(air_date)[:10]) <= today
+    except (ValueError, TypeError):
+        return False
