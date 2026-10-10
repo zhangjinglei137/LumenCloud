@@ -198,7 +198,7 @@ git commit -m "feat(tmdb): get_tv_season_air_dates 失败返回 None 哨兵"
 
 ### Task 3: `tmdb.get_tv_all_episodes` 引入失败哨兵
 
-- [ ] Task 3: `tmdb.get_tv_all_episodes` 引入失败哨兵
+- [x] Task 3: `tmdb.get_tv_all_episodes` 引入失败哨兵
 
 **Files:**
 - Modify: `backend/app/services/tmdb.py:496-567`
@@ -208,7 +208,7 @@ git commit -m "feat(tmdb): get_tv_season_air_dates 失败返回 None 哨兵"
 **Interfaces:**
 - Produces: `get_tv_all_episodes(tmdb_id) -> list[dict] | None` —— 整体失败（api_key 缺失 / tv 详情回源失败 / 任一正片季回源失败）→ `None`；成功 → list。供 Task 6 使用。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```python
 def test_all_episodes_returns_none_on_tv_detail_failure(monkeypatch):
@@ -229,12 +229,12 @@ def test_all_episodes_returns_none_on_tv_detail_failure(monkeypatch):
 
 （若 mock 风格过重，可改为 monkeypatch `_fetch_season_episodes` 返回 `None` 并 monkeypatch tv 详情响应；以实际可运行为准。）
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `cd backend && python -m pytest tests/test_tmdb_air_sentinel.py::test_all_episodes_returns_none_on_tv_detail_failure -q`
 Expected: FAIL（目前返回 `[]`）
 
-- [ ] **Step 3: 最小实现**
+- [x] **Step 3: 最小实现**
 
 - api_key 缺失 → `return None`；
 - tv 详情非 200 / 异常 → `return None`；
@@ -242,16 +242,16 @@ Expected: FAIL（目前返回 `[]`）
 - 聚合末尾：`if season_failed: return None`（不写缓存）；否则 `return out`（写缓存策略不变）。
 - 更新 docstring 返回类型。
 
-- [ ] **Step 4: 适配调用点**
+- [x] **Step 4: 适配调用点**
 
 `grep -rn "get_tv_all_episodes" backend/app`，详情页对 `None` 按空列表降级（`or []`）。
 
-- [ ] **Step 5: 运行确认通过**
+- [x] **Step 5: 运行确认通过**
 
 Run: `cd backend && python -m pytest tests/test_tmdb_air_sentinel.py -q`
 Expected: PASS
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add backend/app/services/tmdb.py backend/app/routers/media.py backend/tests/test_tmdb_air_sentinel.py
