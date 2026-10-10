@@ -322,6 +322,61 @@ def test_scan_one_enqueues_aired(db, monkeypatch):
     assert tq[0].status == "ready"
 
 
+def test_scan_one_same_show_three_groups_only_aired_enqueued(db, monkeypatch):
+    """同剧同轮三组集组合集成：仅「已播出且媒体库缺失」的集入队，未来/无日期集不产出任务。
+
+    场景：同一部剧 S01E01（TMDB 已过日期）/ S02E01（TMDB 未来日期）/ S03E01（TMDB
+    成功但无该集且 Emby 无日期）三集皆不在 Emby 媒体库（基线 missing），且搜索候选
+    同时提供三集文件（资源均存在）。执行一次 `_scan_one` 后断言：仅 S01E01 进入
+    `task_queue`（status=ready），S02E01 / S03E01 因门控剔除而 matched_key 不命中 →
+    不产生任何任务。若门控失效（未来/无日期集被保留），三集文件均会命中并各入队一次
+    → 本用例失败，故可判别回归。
+    """
+    scan_mod = _patch_scan_env(
+        monkeypatch, db,
+        missing=[
+            {"code": "S01E01", "premiere_date": None},  # 已过（TMDB S1）
+            {"code": "S02E01", "premiere_date": None},  # 未来（TMDB S2）
+            {"code": "S03E01", "premiere_date": None},  # 无日期（TMDB S3 成功但空）
+        ],
+        air_dates={},  # 占位；下面按季覆写为真实取值
+    )
+
+    async def air_dates_by_season(tmdb_id, season_number):
+        return {
+            1: {1: "2020-01-01"},  # 已过 → 保留
+            2: {1: "2999-01-01"},  # 未来 → 剔除
+            3: {},                 # 成功但该季无集 → 无日期 → 剔除
+        }[season_number]
+
+    monkeypatch.setattr(scan_mod.tmdb, "get_tv_season_air_dates",
+                        AsyncMock(side_effect=air_dates_by_season))
+    monkeypatch.setattr(scan_mod, "_search_and_rank",
+                        AsyncMock(return_value=[{"title": "剑来", "share_code": "abc123"}]))
+    monkeypatch.setattr(
+        scan_mod.cloudsaver, "share_list",
+        AsyncMock(return_value={"list": [
+            {"fileName": "剑来.S01E01.mkv", "fileId": "f1", "fileIdToken": "ft1",
+             "isFolder": False, "size": 1024},
+            {"fileName": "剑来.S02E01.mkv", "fileId": "f2", "fileIdToken": "ft2",
+             "isFolder": False, "size": 1024},
+            {"fileName": "剑来.S03E01.mkv", "fileId": "f3", "fileIdToken": "ft3",
+             "isFolder": False, "size": 1024},
+        ]}),
+    )
+
+    mid = run(_seed_media(db))
+    rid = run(scan_mod._scan_one(mid))
+    tr, tq = run(_read_scan_state(db, mid))
+
+    assert tr.id == rid and tr.status == "success"
+    # 仅已播出且库中缺失的集入队；未来/无日期集不产生任何任务
+    assert [t.episode for t in tq] == ["S01E01"]
+    assert tq[0].status == "ready"
+    assert tq[0].file_name == "剑来.S01E01.mkv"
+    assert len(tq) == 1  # S02E01 / S03E01 未入队
+
+
 # ---------------------------------------------------------------------------
 # _scan_one 全量兜底路径门控（Task 6）：按 TMDB 全集播出日期门控
 # ---------------------------------------------------------------------------
