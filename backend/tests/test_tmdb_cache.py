@@ -455,8 +455,8 @@ def test_get_tv_all_episodes_cache_hit_skips_refetch(monkeypatch):
     assert len(calls) == 2  # 缓存命中，无新增请求
 
 
-def test_get_tv_all_episodes_no_api_key_returns_empty(monkeypatch):
-    """TMDB_API_KEY 缺失 → log warning 并返回 []，绝不抛异常。"""
+def test_get_tv_all_episodes_no_api_key_returns_none(monkeypatch):
+    """TMDB_API_KEY 缺失 → log warning 并返回 None 失败哨兵，绝不抛异常。"""
     monkeypatch.setattr(settings, "TMDB_API_KEY", "")
     monkeypatch.setattr(config_store, "_cache", {})
 
@@ -464,11 +464,11 @@ def test_get_tv_all_episodes_no_api_key_returns_empty(monkeypatch):
         raise AssertionError("api_key 缺失时不应发起任何请求")
 
     monkeypatch.setattr("app.services.tmdb.httpx.AsyncClient", _explode)
-    assert run(tmdb_mod.get_tv_all_episodes(431)) == []
+    assert run(tmdb_mod.get_tv_all_episodes(431)) is None
 
 
-def test_get_tv_all_episodes_non_200_returns_empty(monkeypatch):
-    """tv 详情非 200 → log warning 并返回 []。"""
+def test_get_tv_all_episodes_non_200_returns_none(monkeypatch):
+    """tv 详情非 200 → log warning 并返回 None 失败哨兵。"""
     monkeypatch.setattr(settings, "TMDB_API_KEY", "test-key")
     monkeypatch.setattr(config_store, "_cache", {})
 
@@ -491,11 +491,11 @@ def test_get_tv_all_episodes_non_200_returns_empty(monkeypatch):
     monkeypatch.setattr(
         "app.services.tmdb.httpx.AsyncClient", lambda **kw: _ErrClient()
     )
-    assert run(tmdb_mod.get_tv_all_episodes(432)) == []
+    assert run(tmdb_mod.get_tv_all_episodes(432)) is None
 
 
-def test_get_tv_all_episodes_network_error_returns_empty(monkeypatch):
-    """回源网络异常 → log warning 并返回 []（单季失败仅跳过该季）。"""
+def test_get_tv_all_episodes_network_error_returns_none(monkeypatch):
+    """回源网络异常 → log warning 并返回 None 失败哨兵（任一季失败即整体失败）。"""
     monkeypatch.setattr(settings, "TMDB_API_KEY", "test-key")
     monkeypatch.setattr(config_store, "_cache", {})
 
@@ -512,7 +512,7 @@ def test_get_tv_all_episodes_network_error_returns_empty(monkeypatch):
     monkeypatch.setattr(
         "app.services.tmdb.httpx.AsyncClient", lambda **kw: _BoomClient()
     )
-    assert run(tmdb_mod.get_tv_all_episodes(433)) == []
+    assert run(tmdb_mod.get_tv_all_episodes(433)) is None
 
 
 # ---------------------------------------------------------------------------

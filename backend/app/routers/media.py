@@ -666,12 +666,14 @@ async def get_media(
                 )
         # TMDB 全集数 + 每集首播日期（详情页「TMDB 全集」数据源）：不依赖
         # episode_state 已有行 / Emby 是否收录，tv 详情全季回源聚合。函数内部
-        # 已降级返回 []，此处再包 try 双保险，绝不拖垮详情接口。
+        # 已降级返回 None 失败哨兵（`if tmdb_eps:` 按假值处理），此处再包 try
+        # 双保险，绝不拖垮详情接口。
         # 每集附加 in_emby（Emby 已收录判定）：按 (season, episode) 生成 "SxxExx"
         # code 命中 in_emby_codes 集合（上方 Emby 查询失败时为 set() → 全 False，正确降级）。
         try:
             # episode-status-cache：全集轴数据源优先 episode_info_cache（免实时
-            # TMDB 查询），缓存未命中再回源 get_tv_all_episodes（内部已降级 []）。
+            # TMDB 查询），缓存未命中再回源 get_tv_all_episodes（内部失败返回
+            # None 哨兵，`or` + `if tmdb_eps:` 天然按空处理）。
             tmdb_eps = (
                 await tmdb.get_episode_info(media.tmdb_id)
                 or await tmdb.get_tv_all_episodes(media.tmdb_id)

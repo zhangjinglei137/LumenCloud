@@ -493,20 +493,20 @@ async def get_tv_season_air_dates(
 # TV 全部正片季的每集信息（详情页「TMDB 全集数 + 首播日期」数据源）
 # ---------------------------------------------------------------------------
 # 进程内 TTL 缓存：详情页同一剧集只回源一次；任何回源失败一律
-# 降级返回 []（log warning），绝不把异常抛给详情接口。
+# 返回 None 失败哨兵（log warning），绝不把异常抛给详情接口。
 # 有界化（审查 A1）：上限 5000——key 为 f"{tmdb_id}:all_episodes"，与
 # _SEASON_AIR_CACHE 同规模预算（5000 部剧），超过按 LRU 淘汰最旧。
 _ALL_EPS_TTL = 6 * 3600  # 6 小时
 _ALL_EPS_CACHE = BoundedLRUCache(5000)
 
 
-async def get_tv_all_episodes(tmdb_id: str | int) -> list[dict[str, Any]]:
+async def get_tv_all_episodes(tmdb_id: str | int) -> list[dict[str, Any]] | None:
     """获取 TV 全部正片季的每集信息（详情页「TMDB 全集数 + 首播日期」数据源）。
 
-    返回 list[dict]，每项:
+    成功返回 list[dict]，每项:
         {"season": int, "episode": int, "air_date": str|None, "name": str|None}
     按 season 升序、episode 升序排列；air_date / name 可能为 None（TMDB 该集
-    未提供首播日期 / 集名）。
+    未提供首播日期 / 集名）。成功但无正片季时为 []（区分「成功空」与「失败」）。
 
     实现路径:
     1. `GET /3/tv/{tmdb_id}?language=zh-CN` 取 seasons 数组，过滤
@@ -514,10 +514,14 @@ async def get_tv_all_episodes(tmdb_id: str | int) -> list[dict[str, Any]]:
     2. 对每个正片季调用 _fetch_season_episodes（与 get_tv_season_air_dates
        共用回源辅助）聚合 episode_number / air_date / name。
 
+    整体失败（api_key 缺失 / tv 详情回源失败 / 任一被纳入的正片季回源失败）
+    → 返回 None（失败哨兵，调用方据此 fail-safe）。任一季失败即整体失败：
+    不聚合部分结果、不写缓存（避免把失败季误当「无该集」而漏判缺集）。
+
     进程内 TTL 缓存（key=f"{tmdb_id}:all_episodes"，TTL 6h）：仅成功聚合出
-    非空结果才写缓存。降级语义与 get_tv_season_air_dates 一致：api_key 缺失 /
-    网络失败 / 非 200 / JSON 异常一律 log warning 并返回 []（单季失败仅跳过
-    该季）——绝不抛出；movie / 无 tmdb_id 场景由调用方控制，不调用本函数。
+    非空结果才写缓存，失败不缓存。降级语义与 get_tv_season_air_dates 一致：
+    api_key 缺失 / 网络失败 / 非 200 / JSON 异常一律 log warning 并返回 None
+    ——绝不抛出；movie / 无 tmdb_id 场景由调用方控制，不调用本函数。
     """
     cache_key = f"{tmdb_id}:all_episodes"
     hit = _ALL_EPS_CACHE.get(cache_key)
@@ -526,8 +530,8 @@ async def get_tv_all_episodes(tmdb_id: str | int) -> list[dict[str, Any]]:
 
     api_key = config_store.get("tmdb_api_key", settings.TMDB_API_KEY)
     if not api_key:
-        logger.warning("TMDB_API_KEY 未配置，全部季集数降级 []（tmdb_id=%s）", tmdb_id)
-        return []
+        logger.warning("TMDB_API_KEY 未配置，全部季集数返回 None 哨兵（tmdb_id=%s）", tmdb_id)
+        return None
 
     url = f"{_base_url()}/3/tv/{tmdb_id}"
     params = {"api_key": api_key, "language": "zh-CN"}
@@ -536,11 +540,11 @@ async def get_tv_all_episodes(tmdb_id: str | int) -> list[dict[str, Any]]:
             resp = await client.get(url, params=params)
         if resp.status_code != 200:
             logger.warning("TMDB tv 详情（全集数）非 200 响应: %s", resp.status_code)
-            return []
+            return None
         payload = resp.json()
-    except Exception as exc:  # noqa: BLE001  详情页增强字段：任何失败降级 []，不阻断
-        logger.warning("TMDB tv 详情（全集数）回源失败（降级 []）: %s", exc)
-        return []
+    except Exception as exc:  # noqa: BLE001  详情页增强字段：失败返回 None 哨兵，不阻断
+        logger.warning("TMDB tv 详情（全集数）回源失败（返回 None 哨兵）: %s", exc)
+        return None
 
     seasons: list[int] = []
     for s in payload.get("seasons") or []:
@@ -551,10 +555,13 @@ async def get_tv_all_episodes(tmdb_id: str | int) -> list[dict[str, Any]]:
             seasons.append(sn)  # season_number==0（特辑/预告）不算正片，直接过滤
     seasons = sorted(set(seasons))
     out: list[dict[str, Any]] = []
+    season_failed = False
     for season in seasons:
         eps = await _fetch_season_episodes(tmdb_id, season)
         if eps is None:
-            continue  # 单季失败仅跳过，不影响其余季
+            # 任一被纳入的正片季回源失败 → 整体失败，不聚合部分结果
+            season_failed = True
+            break
         for ep in eps:
             ep_num = ep.get("episode_number")
             if not isinstance(ep_num, int):
@@ -567,6 +574,9 @@ async def get_tv_all_episodes(tmdb_id: str | int) -> list[dict[str, Any]]:
                     "name": ep.get("name"),
                 }
             )
+
+    if season_failed:
+        return None  # 不写缓存：避免把失败季误当「无该集」而漏判缺集
 
     out.sort(key=lambda e: (e["season"], e["episode"]))
     if out:
@@ -625,8 +635,8 @@ def _upsert_episode_info_stmt(rows: list[dict[str, Any]], bind) -> Any:
 async def refresh_episode_info(tmdb_id: int) -> int:
     """回源 TV 全部正片季每集信息并批量 upsert 到 episode_info_cache；返回写入行数。
 
-    复用 get_tv_all_episodes（含 zh-CN / season 过滤 / 降级语义）：回源失败或空 → 返回 0，
-    保留旧缓存（upsert 不动旧行）。仅供每日刷新任务 / 详情回源兜底调用。
+    复用 get_tv_all_episodes（含 zh-CN / season 过滤 / 降级语义）：回源整体失败
+    （None 哨兵）或成功空 → 返回 0，保留旧缓存（upsert 不动旧行）。仅供每日刷新任务 / 详情回源兜底调用。
 
     批量 upsert（审查 A2：原逐条 SELECT + INSERT/UPDATE 的 N+1）见
     _upsert_episode_info_stmt（SQLite / PostgreSQL 双方言兼容，注释说明取舍）。
