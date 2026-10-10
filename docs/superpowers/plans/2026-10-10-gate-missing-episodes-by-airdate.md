@@ -480,7 +480,7 @@ git commit -m "feat(scan): _scan_one 接入已播出门控与 TMDB 失败 fail-s
 
 ### Task 6: 全量兜底路径门控
 
-- [ ] Task 6: 全量兜底路径门控
+- [x] Task 6: 全量兜底路径门控
 
 **Files:**
 - Modify: `backend/app/tasks/scan.py`（`_scan_one` 全量分支 + 文件循环 `tv_full_mode` 段，约 1734/1884）
@@ -489,18 +489,18 @@ git commit -m "feat(scan): _scan_one 接入已播出门控与 TMDB 失败 fail-s
 **Interfaces:**
 - Consumes: `tmdb.get_tv_all_episodes`（Task 3）、`episode_aired`（Task 1）。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 - `tv_full_mode` 且 `get_tv_all_episodes` 返回全未播出 → `_scan_one` 不入队（短路）。
 - 返回含已播出集 → 对应文件入队，known_unaired 文件被拒。
 - 返回 `None` → 本轮跳过、不搜索。
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `cd backend && python -m pytest tests/test_scan_airdate_gate.py -q`
 Expected: FAIL
 
-- [ ] **Step 3: 实现全量门控**
+- [x] **Step 3: 实现全量门控**
 
 在 `_scan_one` 计算 `movie_missing`/`tv_full_mode` 之后、搜索前：
 
@@ -538,12 +538,12 @@ Expected: FAIL
 
 （`date` 已在 scan.py import；确认。）
 
-- [ ] **Step 4: 运行确认通过**
+- [x] **Step 4: 运行确认通过**
 
 Run: `cd backend && python -m pytest tests/test_scan_airdate_gate.py tests/test_scan_full_mode_filter.py -q`
 Expected: PASS
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add backend/app/tasks/scan.py backend/tests/test_scan_airdate_gate.py

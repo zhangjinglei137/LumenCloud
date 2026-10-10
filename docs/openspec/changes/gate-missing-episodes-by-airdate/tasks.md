@@ -12,8 +12,8 @@
 
 ## 3. 全量兜底路径门控（Emby 未收录该剧）
 
-- [ ] 3.1 在 `movie_missing` 且 `media_type != "movie"` 分支用 `get_tv_all_episodes(tmdb_id)` 构建「已播出集集合」；在 `_full_mode_accept` 的每文件校验中追加「该集已播出」门控（无集号/无法匹配仍按既有策略）。验证：单测——未开播剧（无日期/未来日期）在全量路径不产生入队任务；已开播缺失集仍可入队。
-- [ ] 3.2 全量路径 TMDB 失败按 2.2 同一 fail-safe 处理（返回 `None` → 本轮跳过并记录，不整部误搜）。验证：单测 mock `get_tv_all_episodes` 失败 → 全量路径本轮无新增入队且记录降级。
+- [x] 3.1 在 `movie_missing` 且 `media_type != "movie"` 分支用 `get_tv_all_episodes(tmdb_id)` 构建「已播出集集合」；在 `_full_mode_accept` 的每文件校验中追加「该集已播出」门控（无集号/无法匹配仍按既有策略）。验证：单测——未开播剧（无日期/未来日期）在全量路径不产生入队任务；已开播缺失集仍可入队。
+- [x] 3.2 全量路径 TMDB 失败按 2.2 同一 fail-safe 处理（返回 `None` → 本轮跳过并记录，不整部误搜）。验证：单测 mock `get_tv_all_episodes` 失败 → 全量路径本轮无新增入队且记录降级。
 
 ## 4. 回归与集成验证
 
