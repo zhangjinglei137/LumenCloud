@@ -35,6 +35,8 @@ _WHITELIST_EXACT = {
     "quark_quota_gb",
     "max_episode_size_gb",
     "max_movie_size_gb",
+    "min_episode_size_gb",
+    "min_movie_size_gb",
     "nastools_sync_cooldown_minutes",
     "episode_state_timeout_hours",
     # 影视下载两队列重设计 §4.2：scrape/library 节点独立超时回退阈值（小时）

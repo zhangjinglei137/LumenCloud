@@ -75,7 +75,7 @@ def _patch_scan_base(monkeypatch, db, *, missing_codes):
                     out[ep] = "2020-01-01"
         return out
     monkeypatch.setattr(scan_mod.tmdb, "get_tv_season_air_dates", _fake_air_dates)
-    monkeypatch.setattr(scan_mod, "_read_size_limits", AsyncMock(return_value=(100.0, 100.0)))
+    monkeypatch.setattr(scan_mod, "_read_size_limits", AsyncMock(return_value=(0.0, 100.0, 0.0, 100.0)))
     monkeypatch.setattr(scan_mod, "_trigger_transfer", AsyncMock(return_value=None))
     return scan_mod
 

@@ -69,6 +69,9 @@ class Media(Base):
     scan_interval_minutes = mapped_column(Integer, server_default=text("60"))
     max_episode_size_gb = mapped_column(Float)
     max_movie_size_gb = mapped_column(Float)
+    # 最小大小（GB）：NULL/0 = 不限制；低于该值的文件跳过
+    min_episode_size_gb = mapped_column(Float)
+    min_movie_size_gb = mapped_column(Float)
     in_emby = mapped_column(Boolean, server_default=false())
     last_scan_at = mapped_column(DateTime)
     created_at = mapped_column(DateTime, server_default=text("CURRENT_TIMESTAMP"))
@@ -216,6 +219,8 @@ class DownloadQueue(Base):
     node_finished_at = mapped_column(DateTime)
     node_error = mapped_column(Text)
     retry_count = mapped_column(Integer, server_default=text("0"))
+    # Emby 侧删除后自动重下次数（人工 retry 清零；上限见 scan._AUTO_REDOWNLOAD_LIMIT）
+    auto_redownload_count = mapped_column(Integer, nullable=False, server_default=text("0"))
     quota_reject_count = mapped_column(Integer, server_default=text("0"))
     # quota_wait 进入时间（议会验证 P1：容量不足置 quota_wait + wait_since，
     # 容量释放回 pending；>1 天时间维度告警依据）

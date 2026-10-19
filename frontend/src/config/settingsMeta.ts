@@ -215,6 +215,16 @@ export const SETTING_FIELD_META: Record<string, SettingFieldMeta> = {
     desc: '新订阅电影的默认大小上限，超过的文件会被拒绝下载。',
     default: '默认 5.0 GB',
   },
+  min_episode_size_gb: {
+    label: '剧集单集大小下限（GB）',
+    desc: '新订阅剧集的默认单集大小下限，小于该大小的文件会被拒绝下载；留空或 0 表示不限制。',
+    default: '默认 0.1 GB',
+  },
+  min_movie_size_gb: {
+    label: '电影大小下限（GB）',
+    desc: '新订阅电影的默认大小下限，小于该大小的文件会被拒绝下载；留空或 0 表示不限制。',
+    default: '默认 0.5 GB',
+  },
   nastools_sync_cooldown_minutes: {
     label: 'NasTools 同步冷却（分钟）',
     desc: '两次触发 NasTools 同步入库之间的最小间隔，避免频繁调用。',

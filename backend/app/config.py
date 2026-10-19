@@ -103,6 +103,9 @@ class Settings(BaseSettings):
     QUARK_DEFAULT_FOLDER: str = ""
     DEFAULT_MAX_EPISODE_SIZE_GB: float = 1.5
     DEFAULT_MAX_MOVIE_SIZE_GB: float = 5.0
+    # 最小大小（GB）：低于该值的文件跳过；0 或留空 = 不限制（与 max 同构）
+    DEFAULT_MIN_EPISODE_SIZE_GB: float = 0.1
+    DEFAULT_MIN_MOVIE_SIZE_GB: float = 0.5
     SCAN_INTERVAL_MINUTES: int = 60
     NASTOOLS_SYNC_COOLDOWN_MINUTES: int = 30
     EPISODE_STATE_TIMEOUT_HOURS: float = 2.0

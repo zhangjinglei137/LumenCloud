@@ -112,7 +112,7 @@ def _patch_scan_env(monkeypatch, db, *, missing_codes=None, search=None, share_l
         scan_mod.cloudsaver, "share_list",
         AsyncMock(return_value=share_list if share_list is not None else {"list": []}),
     )
-    monkeypatch.setattr(scan_mod, "_read_size_limits", AsyncMock(return_value=(100.0, 100.0)))
+    monkeypatch.setattr(scan_mod, "_read_size_limits", AsyncMock(return_value=(0.0, 100.0, 0.0, 100.0)))
     monkeypatch.setattr(scan_mod, "_trigger_transfer", AsyncMock(return_value=None))
     return scan_mod
 
@@ -170,7 +170,7 @@ def test_scan_one_starts_running_and_finishes_same_row(db, monkeypatch):
                                                "receive_code": "", "fileSize": 9999}))
     monkeypatch.setattr(scan_mod.cloudsaver, "share_list",
                         AsyncMock(return_value={"list": [_file("S01E01.mkv")]}))
-    monkeypatch.setattr(scan_mod, "_read_size_limits", AsyncMock(return_value=(100.0, 100.0)))
+    monkeypatch.setattr(scan_mod, "_read_size_limits", AsyncMock(return_value=(0.0, 100.0, 0.0, 100.0)))
     monkeypatch.setattr(scan_mod, "_trigger_transfer", AsyncMock(return_value=None))
 
     async def _case():
@@ -445,7 +445,7 @@ def test_scan_one_human_message_enqueued_with_filters(db, monkeypatch):
     tr = run(_read_runs(db, mid))[0]
     assert tr.id == rid and tr.status == "success"
     assert "已入队 1 个资源" in tr.message
-    assert "1 个超大小限制跳过" in tr.message
+    assert "1 个大小不符跳过" in tr.message
     assert "1 个非视频" in tr.message
 
     import json

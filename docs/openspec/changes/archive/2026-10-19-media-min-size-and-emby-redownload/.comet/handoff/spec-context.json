@@ -1,0 +1,46 @@
+{
+  "change": "media-min-size-and-emby-redownload",
+  "phase": "design",
+  "mode": "beta",
+  "task_hash_policy": "task-content-v1",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "f2652c417335c00b846bf9591ba15351ed57bf25049f938dbcdd822ccc020755",
+  "files": [
+    {
+      "path": "docs/openspec/changes/media-min-size-and-emby-redownload/proposal.md",
+      "sha256": "c903cb2193ac53cfbc901c2dbdf8cdc03d898b8bde1f1ca05a7677ffffa29433",
+      "role": "supporting"
+    },
+    {
+      "path": "docs/openspec/changes/media-min-size-and-emby-redownload/design.md",
+      "sha256": "490b55b74be27763d6f300113c9b4e4b3aa72d45e43d0b398b9c08f56497f2ed",
+      "role": "supporting"
+    },
+    {
+      "path": "docs/openspec/changes/media-min-size-and-emby-redownload/tasks.md",
+      "sha256": "9b5577f1f462e6a86731258965153723a4ee2d9210fd9ae42ae35c75dfee893d",
+      "role": "supporting"
+    },
+    {
+      "path": "docs/openspec/changes/media-min-size-and-emby-redownload/.openspec.yaml",
+      "sha256": "b552ab6519df8f66b705724100f565c5cd842bc9389aeaa177da9cec3d02a685",
+      "role": "supporting"
+    },
+    {
+      "path": "docs/openspec/changes/media-min-size-and-emby-redownload/specs/media-detail-ui/spec.md",
+      "sha256": "4f8ae240b56d062ad45e4f2bdbce78f6b399aff08dcd275e4232aa95950973d7",
+      "role": "spec"
+    },
+    {
+      "path": "docs/openspec/changes/media-min-size-and-emby-redownload/specs/media-pipeline/spec.md",
+      "sha256": "718da3600d744a3ca8782c67973a6e38112f1bc05db538afcb2a0509a522cfd5",
+      "role": "spec"
+    },
+    {
+      "path": "docs/openspec/changes/media-min-size-and-emby-redownload/specs/media-size-filter/spec.md",
+      "sha256": "d31f9e867795315ba1b11eeef274f9349d35c3cc259c5495f5de2aef7de2bfbf",
+      "role": "spec"
+    }
+  ]
+}

@@ -32,6 +32,8 @@ const detail = reactive<{
   episode_state: TestEpisodeState[]
   tmdb_episodes: Array<{ season: number; episode: number; name?: string }>
   active_tasks: ActiveTask[]
+  min_episode_size_gb?: number | null
+  min_movie_size_gb?: number | null
 }>({
   id: 1,
   title: '测试剧',
@@ -49,13 +51,14 @@ const detail = reactive<{
 })
 
 const fetchDetailMock = vi.fn().mockResolvedValue(undefined)
+const patchMock = vi.fn().mockResolvedValue(undefined)
 
 vi.mock('../stores/media', () => ({
   useMediaStore: () => ({
     detail,
     loading: false,
     fetchDetail: fetchDetailMock,
-    patch: vi.fn().mockResolvedValue(undefined),
+    patch: patchMock,
     scan: vi.fn().mockResolvedValue(null),
     remove: vi.fn().mockResolvedValue(undefined),
   }),
@@ -289,5 +292,60 @@ describe('状态下拉宽度（episode-status-and-detail-polish）', () => {
     const select = wrapper.findComponent({ name: 'ElSelect' })
     expect(select.exists()).toBe(true)
     expect(select.attributes('style') ?? '').toContain('min-width')
+  })
+})
+
+describe('MediaDetailView 大小下限设置（media-min-size-and-emby-redownload）', () => {
+  type FormVm = {
+    form: { min_episode_size_gb: number | null; min_movie_size_gb: number | null }
+    saveSettings: () => Promise<void>
+  }
+
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    patchMock.mockClear()
+    detail.min_episode_size_gb = null
+    detail.min_movie_size_gb = null
+  })
+
+  it('详情已有下限时回填到表单', async () => {
+    detail.min_episode_size_gb = 0.2
+    detail.min_movie_size_gb = 0.8
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as unknown as FormVm
+    expect(vm.form.min_episode_size_gb).toBe(0.2)
+    expect(vm.form.min_movie_size_gb).toBe(0.8)
+    wrapper.unmount()
+  })
+
+  it('填写最小值后保存提交正确 payload', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as unknown as FormVm
+    expect('min_episode_size_gb' in vm.form).toBe(true)
+    expect('min_movie_size_gb' in vm.form).toBe(true)
+    vm.form.min_episode_size_gb = 0.3
+    vm.form.min_movie_size_gb = 1.2
+    await vm.saveSettings()
+    expect(patchMock).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({ min_episode_size_gb: 0.3, min_movie_size_gb: 1.2 }),
+    )
+    wrapper.unmount()
+  })
+
+  it('留空时回填与提交均为 null（不限制）', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const vm = wrapper.vm as unknown as FormVm
+    expect(vm.form.min_episode_size_gb).toBeNull()
+    expect(vm.form.min_movie_size_gb).toBeNull()
+    await vm.saveSettings()
+    expect(patchMock).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({ min_episode_size_gb: null, min_movie_size_gb: null }),
+    )
+    wrapper.unmount()
   })
 })

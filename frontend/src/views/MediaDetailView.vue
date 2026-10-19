@@ -48,6 +48,8 @@ const posterBroken = ref(false)
 const form = ref({
   max_episode_size_gb: null as number | null,
   max_movie_size_gb: null as number | null,
+  min_episode_size_gb: null as number | null,
+  min_movie_size_gb: null as number | null,
   scan_interval_minutes: null as number | null,
   status: 'tracking',
 })
@@ -60,6 +62,8 @@ onMounted(async () => {
     form.value = {
       max_episode_size_gb: d.max_episode_size_gb,
       max_movie_size_gb: d.max_movie_size_gb,
+      min_episode_size_gb: d.min_episode_size_gb ?? null,
+      min_movie_size_gb: d.min_movie_size_gb ?? null,
       scan_interval_minutes: d.scan_interval_minutes ?? null,
       status: d.status,
     }
@@ -260,9 +264,17 @@ async function onDelete() {
             <label class="hs-label">单集大小上限 (GB)</label>
             <el-input-number v-model="form.max_episode_size_gb" :min="0" :precision="1" :step="0.5" size="small" />
           </div>
+          <div class="hs-item" v-if="detail.media_type !== 'movie'">
+            <label class="hs-label">单集大小下限 (GB)</label>
+            <el-input-number v-model="form.min_episode_size_gb" :min="0" :precision="1" :step="0.1" size="small" />
+          </div>
           <div class="hs-item" v-if="detail.media_type === 'movie'">
             <label class="hs-label">电影大小上限 (GB)</label>
             <el-input-number v-model="form.max_movie_size_gb" :min="0" :precision="1" :step="1" size="small" />
+          </div>
+          <div class="hs-item" v-if="detail.media_type === 'movie'">
+            <label class="hs-label">电影大小下限 (GB)</label>
+            <el-input-number v-model="form.min_movie_size_gb" :min="0" :precision="1" :step="0.1" size="small" />
           </div>
           <div class="hs-item">
             <label class="hs-label">巡检间隔 (分钟)</label>

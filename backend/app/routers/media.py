@@ -111,6 +111,8 @@ class MediaCreate(BaseModel):
 class MediaPatch(BaseModel):
     max_episode_size_gb: float | None = None
     max_movie_size_gb: float | None = None
+    min_episode_size_gb: float | None = None
+    min_movie_size_gb: float | None = None
     scan_interval_minutes: int | None = Field(default=None, ge=1, le=10080)
     status: str | None = None  # tracking / paused
 
@@ -294,6 +296,8 @@ def _media_dto(m: Media) -> dict:
         "scan_interval_minutes": m.scan_interval_minutes,
         "max_episode_size_gb": m.max_episode_size_gb,
         "max_movie_size_gb": m.max_movie_size_gb,
+        "min_episode_size_gb": m.min_episode_size_gb,
+        "min_movie_size_gb": m.min_movie_size_gb,
         "in_emby": m.in_emby,
         "last_scan_at": m.last_scan_at,
         "created_at": m.created_at,

@@ -68,7 +68,7 @@ def _patch_scan_base(monkeypatch, db, *, missing_codes=None):
     monkeypatch.setattr(scan_mod, "async_session", db)
     emby_mock = AsyncMock(return_value=missing_codes if missing_codes is not None else [None])
     monkeypatch.setattr(scan_mod, "_emby_missing_codes", emby_mock)
-    monkeypatch.setattr(scan_mod, "_read_size_limits", AsyncMock(return_value=(100.0, 100.0)))
+    monkeypatch.setattr(scan_mod, "_read_size_limits", AsyncMock(return_value=(0.0, 100.0, 0.0, 100.0)))
     monkeypatch.setattr(scan_mod, "_trigger_transfer", AsyncMock(return_value=None))
     return scan_mod
 

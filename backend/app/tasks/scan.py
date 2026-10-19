@@ -24,7 +24,7 @@ import re
 import time
 from datetime import date, datetime, timezone
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import and_, delete, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
@@ -223,7 +223,7 @@ def _result_message(*, enqueued: int, unmatched: int, size_filtered: int,
     - unrelated_filtered>0（A2 全量模式文件级校验拒绝数）→ 报「N 个无关/超集号文件过滤」。
     - full_mode_limit>0（tv 未收录全量限批生效）且 enqueued 达上限 → 追加限批提示。
     - enqueued>0         → 「已入队 N 个资源」开头，后接存在的
-                          M 个文件未匹配 / K 个超大小限制跳过 / J 个非视频 / 已有跳过
+                          M 个文件未匹配 / K 个大小不符跳过 / J 个非视频 / 已有跳过
     - enqueued=0 & unmatched>0 → 未找到缺失集资源（搜索文件均不匹配：多为已收录旧集或其它版本，
                           可能尚未更新），括号补充其余过滤计数
     - enqueued=0 & unmatched=0 & 有过滤 → 未找到可入队资源 + 计数
@@ -240,7 +240,7 @@ def _result_message(*, enqueued: int, unmatched: int, size_filtered: int,
         if unmatched:
             parts.append(f"{unmatched} 个文件未匹配")
         if size_filtered:
-            parts.append(f"{size_filtered} 个超大小限制跳过")
+            parts.append(f"{size_filtered} 个大小不符跳过")
         if unrelated_filtered:
             parts.append(f"{unrelated_filtered} 个无关/超集号文件过滤")
         if non_video:
@@ -257,7 +257,7 @@ def _result_message(*, enqueued: int, unmatched: int, size_filtered: int,
         )
         extra = []
         if size_filtered:
-            extra.append(f"{size_filtered} 个超大小限制跳过")
+            extra.append(f"{size_filtered} 个大小不符跳过")
         if unrelated_filtered:
             extra.append(f"{unrelated_filtered} 个无关/超集号文件过滤")
         if non_video:
@@ -268,7 +268,7 @@ def _result_message(*, enqueued: int, unmatched: int, size_filtered: int,
     if size_filtered or non_video or existing_skipped or unrelated_filtered:
         parts = []
         if size_filtered:
-            parts.append(f"{size_filtered} 个超大小限制跳过")
+            parts.append(f"{size_filtered} 个大小不符跳过")
         if unrelated_filtered:
             parts.append(f"{unrelated_filtered} 个无关/超集号文件过滤")
         if non_video:
@@ -285,14 +285,18 @@ def _result_message(*, enqueued: int, unmatched: int, size_filtered: int,
         )
     return "无候选命中"
 
-# P3-1 done→failed 循环上限——对齐 transfer._RETRY_LIMIT（3 次）。
-# _resolve_done_states 中 done→failed 算一次循环（retry_count +1），达到上限后
-# 转为 node='failed'/state='failed' 终态（P1-5：与其它失败终态对齐），经 queue.py
-# retry_task 人工解锁继续（此前保持 done 仅写 error，retry 只认 failed 无法干预卡死）。
+# 宽限轮次上限（沿用 retry_count，对齐 transfer._RETRY_LIMIT=3）：
+# _resolve_done_states 中 done→failed / failed→failed 各消耗一轮（retry_count +1），
+# 用尽后进入自动重下（auto_redownload_count < _AUTO_REDOWNLOAD_LIMIT）或 failed 终态。
 _DONE_FAIL_RETRY_LIMIT = 3
+# Emby 侧删除后自动重下次数上限（宽限轮次用尽后按 retry_task 语义重置为 pending 的次数；
+# 人工 retry_task 会清零该计数，重新给足预算）。达上限仍缺失 → failed 终态。
+_AUTO_REDOWNLOAD_LIMIT = 3
 # 转 failed 与达上限两种 error 文案（供测试与人工排查识别）
 _DONE_FAIL_ERROR = "下载完成但 Emby 未入库，请人工确认"
 _DONE_LIMIT_ERROR = "下载完成但 Emby 未入库已达循环上限，请人工核实 Emby 端"
+# _resolve_done_states 只接管本规则产生的失败行（两个标记任一命中即可）
+_DONE_RULE_ERRORS = (_DONE_FAIL_ERROR, _DONE_LIMIT_ERROR)
 
 
 # ---------------------------------------------------------------------------
@@ -481,113 +485,153 @@ async def _filter_aired(media, missing) -> tuple[list[dict | None], set[int]]:
     return kept, failed
 
 
-async def _resolve_done_states(media, missing_keys: set[str], movie_missing: bool) -> None:
-    """done 防重解除（P1-1 语义迁移至 DownloadQueue）：Emby 二次确认入库 → 解除防重；仍未入库 → 转 failed 人工确认。
+async def _resolve_done_states(media, missing_keys: set[str], movie_missing: bool) -> int:
+    """done / 本规则失败行 防重解除与 Emby 侧删除后自动重下（P1-1 + change 车道 B / 3.1）。
 
-    影视下载两队列重设计后防重权威源 = download_queue（UNIQUE(media_id, episode)，§3.2），
-    此处操作对象从 episode_state/transfer_queue/download_task 旧三表迁移为 download_queue。
+    影视下载两队列重设计后防重权威源 = download_queue（UNIQUE(media_id, episode)，§3.2）。
 
-    在 Emby 基线之后、搜索/入队之前执行（_scan_one 步骤 2b），对该 media 全部
-    status='done' 的 download_queue 逐条判定：
+    在 Emby 基线之后、搜索/入队之前执行（_scan_one 步骤 2b），接管范围：
+    - status='done'；或
+    - status='failed' 且 error/node_error 任一属于 _DONE_RULE_ERRORS
+      （只接管本规则产生的失败，不碰其它失败类型）。
 
-    - tv 模式：episode key 不在 missing_keys → Emby 已确认入库 → 删除 download_queue
-      （解除防重，允许后续探测重新入队）；仍在 missing_keys（Emby 仍缺失）→ 未入库 →
-      条件更新转 failed。
-    - movie 全量模式：episode=文件名。movie_missing=True（Emby 整部缺失）→ 未入库 → 转 failed；
-      movie 已入库（missing=[]，movie_missing=False）→ 全部视为确认 → 删除。
+    对每条：
+    - Emby 已确认收录（集不在 missing_keys，或 movie 且 movie_missing=False）→ 删除该行
+      （done 与本规则 failed 行都适用），解除防重、修复失败行泄漏。
+    - 仍缺失时按宽限轮次（retry_count，上限 _DONE_FAIL_RETRY_LIMIT=3）递进：
+      1) retry_count < 上限 → 保持/转 failed 并 retry_count+1（done→failed 与
+         failed→failed 都推进宽限计数）；
+      2) 宽限用尽且 auto_redownload_count < _AUTO_REDOWNLOAD_LIMIT → 按 queue.py
+         retry_task 的重置语义置为 pending，并 auto_redownload_count+1（复用已有行，
+         不新建 task_queue，也不引入 _trigger_transfer 之外的新机制）；
+      3) 自动重下次数用尽 → 写 failed 终态（_DONE_LIMIT_ERROR 文案），仅在该行当前
+         不是该终态时才写（避免无谓改写 updated_at）；用户仍可人工 retry_task。
 
-    P3-1 done→failed 循环上限：转 failed 消耗一次 retry_count（SQL 表达式 +1），
-    条件 `retry_count < _DONE_FAIL_RETRY_LIMIT`（对齐 transfer._RETRY_LIMIT=3）——未达上限
-    才转 failed；已达上限的记录同样写 status='failed'（P1-5：与其它失败终态对齐，
-    node_error/node_attempt 同步），使 queue.py retry_task 可人工解锁重试（此前保持 done
-    仅写 error，retry 只认 failed 无法干预 → 卡死）。上限分支不通知（巡检避免噪音），
-    task_run 由 _scan_one 主流程统一记录。
+    全程条件更新/删除（WHERE status=读取时状态，CAS）：未命中即跳过该条，不中断巡检；
+    异常由调用方 try/except 兜底，不阻断巡检。
 
-    全程条件删除/更新（WHERE 当前状态）不影响其他数据；异常由调用方 try/except 兜底，不阻断巡检。
+    返回本轮重置为 pending 的自动重下条数（供调用方立即触发转存消费，避免只依赖
+    每分钟兜底 job）。
     """
     async with async_session() as tx:
         async with tx.begin():
-            done_rows = (
+            rows = (
                 (
                     await tx.execute(
                         select(DownloadQueue).where(
                             DownloadQueue.media_id == media.id,
-                            DownloadQueue.status == "done",
+                            or_(
+                                DownloadQueue.status == "done",
+                                and_(
+                                    DownloadQueue.status == "failed",
+                                    or_(
+                                        DownloadQueue.error.in_(_DONE_RULE_ERRORS),
+                                        DownloadQueue.node_error.in_(_DONE_RULE_ERRORS),
+                                    ),
+                                ),
+                            ),
                         )
                     )
                 )
                 .scalars()
                 .all()
             )
-            if not done_rows:
-                return
+            if not rows:
+                return 0
             now = _now()
             confirmed = 0
             to_retry = 0
+            redownloaded = 0
             at_limit = 0
-            for dq in done_rows:
+            for dq in rows:
                 if movie_missing or dq.episode in missing_keys:
-                    if dq.retry_count >= _DONE_FAIL_RETRY_LIMIT:
-                        # P3-1 + P1-5：已达循环上限 → 写 status='failed' 终态（与其它
-                        # 失败终态对齐：node_error/node_attempt 同步），使 queue.py
-                        # retry_task 可人工解锁。node_attempt 置上限值（retry 后由
-                        # queue.py 重置为 0）；error 与 node_error 均写上限文案。
-                        # 防无限循环语义不变：转 failed 消耗本轮，须人工 retry 才可再次
-                        # done→failed，杜绝自动无限循环。status 改 failed 后下一轮
-                        # select(status='done') 天然不命中。
-                        await tx.execute(
+                    if (dq.retry_count or 0) < _DONE_FAIL_RETRY_LIMIT:
+                        # 宽限期内：保持/转 failed 并推进宽限计数（done→failed / failed→failed）
+                        r_dq = await tx.execute(
                             update(DownloadQueue)
                             .where(
                                 DownloadQueue.media_id == media.id,
                                 DownloadQueue.episode == dq.episode,
-                                DownloadQueue.status == "done",
-                                DownloadQueue.retry_count >= _DONE_FAIL_RETRY_LIMIT,
+                                DownloadQueue.status == dq.status,
+                                DownloadQueue.retry_count < _DONE_FAIL_RETRY_LIMIT,
                             )
                             .values(
                                 status="failed",
-                                node_error=_DONE_LIMIT_ERROR,
-                                node_attempt=_DONE_FAIL_RETRY_LIMIT,
-                                error=_DONE_LIMIT_ERROR,
+                                error=_DONE_FAIL_ERROR,
+                                retry_count=DownloadQueue.retry_count + 1,
                                 updated_at=now,
                             )
                         )
-                        at_limit += 1
+                        if r_dq.rowcount > 0:
+                            to_retry += 1
                         continue
-                    # Emby 仍未入库且未达上限 → 转 failed 进人工 retry 路径（防重保留）；
-                    # P3-1：done→failed 算一次循环，retry_count SQL 自增（对齐 transfer 上限语义）
+                    if (dq.auto_redownload_count or 0) < _AUTO_REDOWNLOAD_LIMIT:
+                        # 宽限用尽 → 按 retry_task 语义重置 pending（计数 +1，复用已有行）
+                        r_dq = await tx.execute(
+                            update(DownloadQueue)
+                            .where(
+                                DownloadQueue.media_id == media.id,
+                                DownloadQueue.episode == dq.episode,
+                                DownloadQueue.status == dq.status,
+                                DownloadQueue.retry_count >= _DONE_FAIL_RETRY_LIMIT,
+                                DownloadQueue.auto_redownload_count < _AUTO_REDOWNLOAD_LIMIT,
+                            )
+                            .values(
+                                status="pending",
+                                retry_count=0,
+                                node_attempt=0,
+                                node_error=None,
+                                node_started_at=None,
+                                node_finished_at=None,
+                                save_task_id=None,
+                                save_attempt_at=None,
+                                error=None,
+                                enqueued_at=now,
+                                updated_at=now,
+                                auto_redownload_count=DownloadQueue.auto_redownload_count + 1,
+                            )
+                        )
+                        if r_dq.rowcount > 0:
+                            redownloaded += 1
+                        continue
+                    # 自动重下次数用尽 → failed 终态；已是该终态则不重复改写
+                    if (dq.status == "failed" and dq.error == _DONE_LIMIT_ERROR
+                            and dq.node_error == _DONE_LIMIT_ERROR):
+                        continue
                     r_dq = await tx.execute(
                         update(DownloadQueue)
                         .where(
                             DownloadQueue.media_id == media.id,
                             DownloadQueue.episode == dq.episode,
-                            DownloadQueue.status == "done",
-                            DownloadQueue.retry_count < _DONE_FAIL_RETRY_LIMIT,
+                            DownloadQueue.status == dq.status,
                         )
                         .values(
                             status="failed",
-                            error=_DONE_FAIL_ERROR,
-                            retry_count=DownloadQueue.retry_count + 1,
+                            node_error=_DONE_LIMIT_ERROR,
+                            node_attempt=_DONE_FAIL_RETRY_LIMIT,
+                            error=_DONE_LIMIT_ERROR,
                             updated_at=now,
                         )
                     )
                     if r_dq.rowcount > 0:
-                        to_retry += 1
+                        at_limit += 1
                 else:
                     # Emby 已确认入库 → 解除防重：删除 download_queue（条件删除，P1-4：
-                    # 与同块 update(WHERE status='done') 对称，防误删 downloading 等
-                    # 非 done 记录）
+                    # 与 update(WHERE status=读取时状态) 对称，防误删其他状态记录）
                     await tx.execute(
                         delete(DownloadQueue).where(
                             DownloadQueue.media_id == media.id,
                             DownloadQueue.episode == dq.episode,
-                            DownloadQueue.status == "done",
+                            DownloadQueue.status == dq.status,
                         )
                     )
                     confirmed += 1
             logger.info(
-                "[scan] media=%s done 防重解除：Emby 确认入库删除 %d 条 / 未入库转 failed %d 条 / 达循环上限保持 done %d 条",
-                media.id, confirmed, to_retry, at_limit,
+                "[scan] media=%s done/自动重下解除：Emby 确认入库删除 %d 条 / 宽限内转 failed %d 条"
+                " / 重置 pending 自动重下 %d 条 / 自动重下用尽转终态 %d 条",
+                media.id, confirmed, to_retry, redownloaded, at_limit,
             )
+            return redownloaded
 
 
 # ---------------------------------------------------------------------------
@@ -1264,20 +1308,38 @@ async def _search_and_rank(media, missing_keys: set[str]) -> list[dict]:
 # 大小过滤（§6.1）：media 覆盖 > system_config 全局 > settings 默认
 # ---------------------------------------------------------------------------
 
-async def _size_limits(session, media) -> tuple[float, float]:
+async def _size_limits(session, media) -> tuple[float, float, float, float]:
+    """返回 (ep_min, ep_max, movie_min, movie_max)，单位 GB。
+
+    优先级：media 覆盖 > system_config 全局 > settings 默认；None/0 表示该侧不限制。
+    """
     global_ep = await get_config_value(
         session, "max_episode_size_gb", settings.DEFAULT_MAX_EPISODE_SIZE_GB
     )
     global_movie = await get_config_value(
         session, "max_movie_size_gb", settings.DEFAULT_MAX_MOVIE_SIZE_GB
     )
+    global_ep_min = await get_config_value(
+        session, "min_episode_size_gb", settings.DEFAULT_MIN_EPISODE_SIZE_GB
+    )
+    global_movie_min = await get_config_value(
+        session, "min_movie_size_gb", settings.DEFAULT_MIN_MOVIE_SIZE_GB
+    )
     ep = media.max_episode_size_gb if media.max_episode_size_gb is not None else float(global_ep)
     movie = media.max_movie_size_gb if media.max_movie_size_gb is not None else float(global_movie)
-    return ep, movie
+    ep_min = (
+        media.min_episode_size_gb
+        if media.min_episode_size_gb is not None else float(global_ep_min)
+    )
+    movie_min = (
+        media.min_movie_size_gb
+        if media.min_movie_size_gb is not None else float(global_movie_min)
+    )
+    return ep_min, ep, movie_min, movie
 
 
-async def _read_size_limits(media) -> tuple[float, float]:
-    """独立短 session 读取大小过滤上限（P1-1：主流程网络 IO 阶段不持有 DB session）。
+async def _read_size_limits(media) -> tuple[float, float, float, float]:
+    """独立短 session 读取大小过滤上下限（P1-1：主流程网络 IO 阶段不持有 DB session）。
 
     内部自行开启/关闭短 session 读取 system_config，不依赖外层长事务；
     media 为 detached 对象（expire_on_commit=False），其覆盖值属性可直接读取。
@@ -1286,8 +1348,25 @@ async def _read_size_limits(media) -> tuple[float, float]:
         return await _size_limits(s, media)
 
 
-def _size_limit_gb(media, ep_limit: float, movie_limit: float) -> float:
-    return movie_limit if media.media_type == "movie" else ep_limit
+def _size_bounds_gb(media, ep_min: float, ep_max: float,
+                    movie_min: float, movie_max: float) -> tuple[float, float]:
+    """按媒体类型选生效的 (min_gb, max_gb)：movie 用电影组，其余用单集组。"""
+    if media.media_type == "movie":
+        return movie_min, movie_max
+    return ep_min, ep_max
+
+
+def _size_out_of_bounds(file_size: int, min_gb, max_gb) -> str | None:
+    """大小越界判定：返回 "low"/"high"，放行返回 None。
+
+    None/0 表示该侧不限制；边界值放行（< 下限 / > 上限才算越界）。
+    主循环与纯数字兜底分支共用，保证两处语义一致。
+    """
+    if min_gb and file_size < min_gb * 1024 ** 3:
+        return "low"
+    if max_gb and file_size > max_gb * 1024 ** 3:
+        return "high"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1817,12 +1896,18 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
     movie_missing = any(m is None for m in missing)
 
     # 2b. done 防重解除（P1-1，Oracle 审查）：Emby 二次确认入库 → 删除 es/tq/dl 解除防重；
-    #     仍未入库 → 转 failed 人工确认。异常仅告警，不阻断巡检。
+    #     仍未入库 → 宽限递进 / 自动重下 / 终态（见 _resolve_done_states）。异常仅告警，不阻断巡检。
     #     _resolve_done_states 自带短 session，此处不涉及任何长事务。
+    redownloaded = 0
     try:
-        await _resolve_done_states(media, missing_keys, movie_missing)
+        redownloaded = await _resolve_done_states(media, missing_keys, movie_missing)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[scan] media=%s done 防重解除失败（不阻断巡检）: %s", media_id, exc)
+
+    # 2b-1. 自动重下重置为 pending 后立即触发转存消费：与其他触发点同款事件触发，
+    #       避免「本轮无新入队」时只能依赖每分钟兜底 job 或下一轮巡检。
+    if redownloaded:
+        await _trigger_transfer()
 
     # scan_detail 装配：拿到 aired-only 后的 Emby 基线即可填充 missing_items
     # （每个缺失集 episode → result 初始 not_found；入队成功后改 enqueued）。
@@ -1906,18 +1991,18 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
     scan_detail["search_status"] = "ok" if candidates else "no_candidates"
 
     # 4-6. share-info(500ms 串行) → share-list 递归遍历文件 → 大小过滤 → 三重匹配 → 入队
-    #      （大小上限经独立短 session _read_size_limits 读取，网络 IO 阶段不持 DB session）
+    #      （大小上下限经独立短 session _read_size_limits 读取，网络 IO 阶段不持 DB session）
     #                                                 —— phase: match + enqueue
     try:
-        ep_limit, movie_limit = await _read_size_limits(media)
-    except Exception as exc:  # noqa: BLE001  大小上限读取失败，fail-closed 中止
+        ep_min, ep_max, movie_min, movie_max = await _read_size_limits(media)
+    except Exception as exc:  # noqa: BLE001  大小上下限读取失败，fail-closed 中止
         _phase_error(phases, "match")
         scan_detail["failed_phase"] = "match"
         return await _finish(
-            "error", f"巡检中止: 大小过滤上限读取失败: {exc}",
+            "error", f"巡检中止: 大小过滤上下限读取失败: {exc}",
             touch_last_scan_at=False,
         )
-    limit_gb = _size_limit_gb(media, ep_limit, movie_limit)
+    min_gb, max_gb = _size_bounds_gb(media, ep_min, ep_max, movie_min, movie_max)
     skip_enqueue = media.status == "downloading"  # 有进行中任务本轮不入队，但仍检查遗漏
 
     # A2/A3/A4：tv 未收录全量模式（Emby 未收录 + scan_baseline_required=False，
@@ -2060,12 +2145,19 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
                     media_id, file_name,
                 )
                 continue
-            if limit_gb and file_size and file_size > limit_gb * 1024 ** 3:
+            out_of_bounds = _size_out_of_bounds(file_size, min_gb, max_gb)
+            if out_of_bounds:
                 size_filtered += 1
-                logger.info(
-                    "[scan] media=%s %s 超限 %.2fG > %.1fG，跳过",
-                    media_id, file_name, file_size / 1024 ** 3, limit_gb,
-                )
+                if out_of_bounds == "low":
+                    logger.info(
+                        "[scan] media=%s %s 低于下限 %.2fG < %.1fG，跳过",
+                        media_id, file_name, file_size / 1024 ** 3, min_gb,
+                    )
+                else:
+                    logger.info(
+                        "[scan] media=%s %s 高于上限 %.2fG > %.1fG，跳过",
+                        media_id, file_name, file_size / 1024 ** 3, max_gb,
+                    )
                 continue
 
             if skip_enqueue:
@@ -2104,7 +2196,8 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
                 if cand["f"].get("size_unknown"):
                     size_filtered += 1
                     continue
-                if limit_gb and cand["file_size"] and cand["file_size"] > limit_gb * 1024 ** 3:
+                out_of_bounds = _size_out_of_bounds(cand["file_size"], min_gb, max_gb)
+                if out_of_bounds:
                     size_filtered += 1
                     continue
                 if skip_enqueue:

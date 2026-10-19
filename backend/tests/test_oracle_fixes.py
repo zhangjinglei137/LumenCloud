@@ -67,7 +67,7 @@ async def read_row(db, model, obj_id):
 
 
 async def seed_done_state(db, *, episode="S01E01", file_name="ep.mkv", dl_status="complete",
-                          media_id=None, retry_count=0):
+                          media_id=None, retry_count=0, auto_redownload_count=0):
     """media + download_queue(done)。返回 (mid, dq_id)。
 
     影视下载两队列重设计后 done 防重权威源 = download_queue（dl_status 并入 dq，
@@ -86,7 +86,8 @@ async def seed_done_state(db, *, episode="S01E01", file_name="ep.mkv", dl_status
             share_code="sc", stoken="st", receive_code="rc", fids="[]",
             fid_tokens="[]", folder_id="fd", status="done",
             aria2_gid="g1", quark_path=f"/quark/{file_name}",
-            retry_count=retry_count, node_attempt=0, updated_at=_now(),
+            retry_count=retry_count, node_attempt=0,
+            auto_redownload_count=auto_redownload_count, updated_at=_now(),
         )
         s.add(dq)
         await s.flush()
@@ -544,23 +545,24 @@ def test_done_resolution_failed_respects_retry_count_below_limit(db, monkeypatch
 
 
 def test_done_resolution_hit_retry_limit_marks_failed(db, monkeypatch):
-    """P3-1/P1-5：达循环上限（retry_count=3）→ 写 status='failed' 终态
-    （与其它失败终态对齐，queue.py retry_task 可人工解锁；此前保持 done 仅写 error
-    导致 retry 只认 failed 无法干预而卡死），上限分支不联动其他行（retry 时再由
-    queue.py 单表重置）。"""
+    """达宽限上限（retry_count=3）且自动重下预算未用尽（auto=0）→ 按 retry_task 语义
+    重置为 pending 并 auto_redownload_count+1（复用已有 download_queue 行，不新建
+    task_queue）；retry_count/node_attempt/error/node_error 一并清空。"""
     from app.tasks import scan as scan_mod
 
     monkeypatch.setattr(scan_mod, "async_session", db)
-    mid, dq_id = run(seed_done_state(db, episode="S01E01", retry_count=3))
+    mid, dq_id = run(seed_done_state(db, episode="S01E01", retry_count=3,
+                                     auto_redownload_count=0))
     run(scan_mod._resolve_done_states(types.SimpleNamespace(id=mid), {"S01E01"}, False))
 
     dq = run(read_row(db, DownloadQueue, dq_id))
     assert dq is not None
-    assert dq.status == "failed"
-    assert dq.retry_count == 3  # 不消耗 / 不再递增
-    assert dq.node_attempt == scan_mod._DONE_FAIL_RETRY_LIMIT  # 达上限值
-    assert dq.node_error == scan_mod._DONE_LIMIT_ERROR  # 上限 error 文案，人工核实 Emby 端
-    assert dq.error == scan_mod._DONE_LIMIT_ERROR
+    assert dq.status == "pending"
+    assert dq.retry_count == 0
+    assert dq.node_attempt == 0
+    assert dq.node_error is None
+    assert dq.error is None
+    assert dq.auto_redownload_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -677,19 +679,24 @@ def test_scan_all_media_force_skips_due_filter(db, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_done_resolution_limit_error_not_rewritten(db, monkeypatch):
-    """m1：已达上限记录 error 已写上限文案后，再次 resolve 不再重复写（updated_at 稳定）。"""
+    """m1：自动重下次数已用尽 → 写 failed 终态；再次 resolve 不再重复写（updated_at 稳定）。"""
     from app.tasks import scan as scan_mod
 
     monkeypatch.setattr(scan_mod, "async_session", db)
-    mid, dq_id = run(seed_done_state(db, episode="S01E01", retry_count=3))
+    mid, dq_id = run(seed_done_state(db, episode="S01E01", retry_count=3,
+                                     auto_redownload_count=scan_mod._AUTO_REDOWNLOAD_LIMIT))
 
     run(scan_mod._resolve_done_states(types.SimpleNamespace(id=mid), {"S01E01"}, False))
     dq1 = run(read_row(db, DownloadQueue, dq_id))
+    assert dq1.status == "failed"
     assert dq1.error == scan_mod._DONE_LIMIT_ERROR
-    first_ts = dq1.updated_at  # 首次写入 error 时的时间戳
+    assert dq1.node_error == scan_mod._DONE_LIMIT_ERROR
+    assert dq1.node_attempt == scan_mod._DONE_FAIL_RETRY_LIMIT
+    first_ts = dq1.updated_at  # 首次写入终态时的时间戳
 
     run(scan_mod._resolve_done_states(types.SimpleNamespace(id=mid), {"S01E01"}, False))
     dq2 = run(read_row(db, DownloadQueue, dq_id))
-    # 第二轮不再改写：error 保持上限文案、updated_at 未被污染
+    # 第二轮不再改写：已是该终态、error 保持上限文案、updated_at 未被污染
+    assert dq2.status == "failed"
     assert dq2.error == scan_mod._DONE_LIMIT_ERROR
     assert dq2.updated_at == first_ts

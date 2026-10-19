@@ -501,49 +501,35 @@ def test_retry_old_state_failed_still_works(db, transfer_env, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_done_limit_marks_failed_terminal_and_retryable(db, transfer_env, monkeypatch):
-    """构造达上限场景（dq status='done' + retry_count=3，Emby 仍缺失）：
+    """达宽限上限（retry_count=3）且自动重下预算未用尽（auto=0）：
 
-    resolve 后 dq → status='failed'（node_error 非空、node_attempt 达上限值、
-    retry_count 不消耗）；随后 retry_task 可解锁（→ pending + 计数归零），
-    并可被 process_transfer_queue 取走。
+    resolve 按 retry_task 重置语义把该行置为 pending（retry_count/node_attempt/error
+    归零）并 auto_redownload_count+1；复用已有 download_queue 行，随后可被
+    process_transfer_queue 直接取走（无需人工 retry）。
     """
     monkeypatch.setattr(scan_mod, "async_session", db)
     monkeypatch.setattr(transfer_mod, "async_session", db)
     monkeypatch.setattr(transfer_mod, "trigger_transfer", AsyncMock(return_value=None))
     mid, dq_id = run(_seed_done_at_limit(db, retry_count=3))
 
-    # tv 模式：episode 仍在 Emby 缺失集 → 未入库 → done 防重判定
+    # tv 模式：episode 仍在 Emby 缺失集 → 未入库 → 宽限用尽 → 自动重下
     run(scan_mod._resolve_done_states(types.SimpleNamespace(id=mid), {"S01E01"}, False))
 
     dq = run(read_row(db, DownloadQueue, dq_id))
-    assert dq.status == "failed"
-    assert dq.node_error == scan_mod._DONE_LIMIT_ERROR  # 非空上限文案
-    assert dq.node_attempt == scan_mod._DONE_FAIL_RETRY_LIMIT  # 达上限值
-    assert dq.error == scan_mod._DONE_LIMIT_ERROR
-    assert dq.retry_count == 3  # 不再递增，上限语义保持
+    assert dq.status == "pending"
+    assert dq.retry_count == 0
+    assert dq.node_attempt == 0
+    assert dq.node_error is None
+    assert dq.error is None
+    assert dq.auto_redownload_count == 1  # 自动重下次数 +1
 
-    # 可 retry：解锁（dq 以失败终态被定位 → 重置 pending）
-    async def do_retry():
-        async with db() as s:
-            return await queue_mod.retry_task(
-                task_id=dq.id, admin=types.SimpleNamespace(role="admin"), session=s,
-            )
-
-    assert run(do_retry()) == {"ok": True}
-    dq2 = run(read_row(db, DownloadQueue, dq_id))
-    assert dq2.status == "pending"
-    assert dq2.node_attempt == 0
-    assert dq2.node_error is None
-    assert dq2.retry_count == 0
-    assert dq2.error is None
-
-    # 取走闭环（P1-3 + P1-5 联动后队列可消费）
+    # 取走闭环（P1-3 + 自动重下复用已有行）
     run(transfer_mod.process_transfer_queue())
     assert len(transfer_env["cloudsaver"].save_calls) == 1
 
 
 def test_done_limit_resolve_is_idempotent_after_transition(db, monkeypatch):
-    """P1-5：上限分支转 failed 后再次 resolve 不再改写（status 已非 done，天然幂等）。"""
+    """达宽限上限重置 pending 后再次 resolve 不再改写（pending 不在接管范围，天然幂等）。"""
     monkeypatch.setattr(scan_mod, "async_session", db)
 
     async def seed():
@@ -565,10 +551,11 @@ def test_done_limit_resolve_is_idempotent_after_transition(db, monkeypatch):
 
     run(scan_mod._resolve_done_states(types.SimpleNamespace(id=mid), {"S01E01"}, False))
     dq1 = run(read_row(db, DownloadQueue, dq_id))
-    assert dq1.status == "failed" and dq1.node_error == scan_mod._DONE_LIMIT_ERROR
+    assert dq1.status == "pending" and dq1.auto_redownload_count == 1
     first_ts = dq1.updated_at
 
     run(scan_mod._resolve_done_states(types.SimpleNamespace(id=mid), {"S01E01"}, False))
     dq2 = run(read_row(db, DownloadQueue, dq_id))
-    assert dq2.status == "failed"
-    assert dq2.updated_at == first_ts  # 第二轮 select(status='done') 不命中，无改写
+    assert dq2.status == "pending"
+    assert dq2.auto_redownload_count == 1  # 不重复计数
+    assert dq2.updated_at == first_ts  # 第二轮不命中 pending，无改写

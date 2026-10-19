@@ -599,6 +599,7 @@ async def retry_task(
                 status="pending",
                 retry_count=0,
                 node_attempt=0,
+                auto_redownload_count=0,  # 人工介入视为重新给足自动重下预算
                 node_error=None,
                 node_started_at=None,
                 node_finished_at=None,

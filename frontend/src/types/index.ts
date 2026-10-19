@@ -59,6 +59,8 @@ export interface MediaItem {
   last_scan_at: string | null
   max_episode_size_gb: number | null
   max_movie_size_gb: number | null
+  min_episode_size_gb: number | null
+  min_movie_size_gb: number | null
   scan_interval_minutes?: number | null
   episode_stats?: EpisodeStats | null
   last_task_run?: TaskRunBrief | null
@@ -112,6 +114,8 @@ export interface MediaDetail extends MediaItem {
 export interface MediaPatch {
   max_episode_size_gb?: number | null
   max_movie_size_gb?: number | null
+  min_episode_size_gb?: number | null
+  min_movie_size_gb?: number | null
   /** @deprecated 已废弃：巡检改为全局统一调度，该字段仅为兼容历史数据保留，不再生效 */
   scan_interval_minutes?: number | null
   status?: string
