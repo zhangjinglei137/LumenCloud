@@ -414,6 +414,31 @@ async def _alert_scan_error(media_id: int, title: str | None,
     )
 
 
+async def _alert_baseline_suspect(media_id: int, title: str | None, detail: dict) -> None:
+    """基线矛盾告警（D3）：同影视同原因 24h 冷却，正文含三源计数、比值/阈值与来源。"""
+    if not _scan_alert_allowed(f"{media_id}:baseline_suspect", "baseline_suspect"):
+        return
+    name = title or str(media_id)
+    # mismatch 抑制替换时仍保留两源并集，文案不得声称已收敛到 TMDB 轴
+    tail = (
+        "两源季结构不一致，本轮保留两源并集候选。"
+        if detail.get("season_mismatch")
+        else "已按 TMDB 已播轴收敛本轮候选。"
+    )
+    await _notify_scan_alert(
+        f"基线异常：{name}",
+        (
+            f"「{name}」Emby 缺集 {detail.get('emby_missing_count', 0)} 集 / "
+            f"TMDB 已播 {detail.get('tmdb_aired_count', 0)} 集 / "
+            f"已入库 {detail.get('ingested_count', 0)} 集；"
+            f"缺集比 {float(detail.get('ratio') or 0.0):.2f}"
+            f"（阈值 {detail.get('threshold')}），采用来源：{detail.get('source_used')}。"
+            + tail
+        ),
+        media_id,
+    )
+
+
 async def _scan_no_candidates_alert_rounds() -> int:
     """读取连续无资源告警轮次阈值（system_config；缺失/非法回退默认 3）。"""
     try:
@@ -693,6 +718,189 @@ async def _filter_aired(media, missing) -> tuple[list[dict | None], set[int]]:
     return kept, failed
 
 
+# 基线交叉校验（missing-baseline-integrity P1）：TMDB 已播轴 × Emby Shows/Missing。
+# 阈值默认 0.5，P2 的自检判定读取同一来源（system_config 缺失/非法按默认值）。
+_BASELINE_SUSPECT_RATIO_DEFAULT = 0.5
+
+
+def _baseline_suspect_ratio() -> float:
+    """基线异常比例阈值（system_config.scan_baseline_suspect_ratio，默认 0.5）。"""
+    raw = config_store.get("scan_baseline_suspect_ratio", _BASELINE_SUSPECT_RATIO_DEFAULT)
+    try:
+        ratio = float(raw)
+    except (TypeError, ValueError):
+        return _BASELINE_SUSPECT_RATIO_DEFAULT
+    return ratio if ratio >= 0 else _BASELINE_SUSPECT_RATIO_DEFAULT
+
+
+def _baseline_suspect(detail: dict) -> bool:
+    """基线矛盾判定（D2 修订版）：双口径硬矛盾 + 比例阈值（含已入库>0 门槛）。
+
+    - 硬矛盾：`emby_missing_count + ingested_count > tmdb_aired_count`（Emby 两个口径
+      之和超过 TMDB 认为存在的总集数，不依赖阈值）；
+    - 比例异常：`ingested_count > 0` 且 `tmdb_aired_count > 0` 且 `ratio > threshold`；
+      整剧未入库（ingested=0）时比例天然接近 1，不得据此误判新剧；
+    - 降级轮 / 已播轴为空 → False（缺少可信对照，视为无法自检）。
+    """
+    if not detail or detail.get("degraded"):
+        return False
+    aired = int(detail.get("tmdb_aired_count") or 0)
+    missing = int(detail.get("emby_missing_count") or 0)
+    ingested = int(detail.get("ingested_count") or 0)
+    if aired == 0:
+        return False
+    if missing + ingested > aired:
+        return True
+    if ingested <= 0:
+        return False
+    try:
+        threshold = float(detail.get("threshold"))
+        ratio = float(detail.get("ratio") or 0.0)
+    except (TypeError, ValueError):
+        return False
+    return ratio > threshold
+
+
+async def _tmdb_aired_axis(media) -> tuple[set[str], list[int]] | None:
+    """TMDB 已播轴：episode_info_cache 中 air_date <= today 的集，归一为 SxxExx。
+
+    None 表示轴不可用（缺 tmdb_id / 非 tv / 缓存为空），调用方据此降级。
+    缓存有集但全部未播出 → 返回空集合（轴可用但为空，不视为降级）。
+    返回 (aired_codes, sorted_seasons)，季号集合供 baseline_detail.season_mismatch。
+    只读缓存（tmdb.get_episode_info），不写回。
+    """
+    if media.tmdb_id is None or (media.media_type or "").lower() != "tv":
+        return None
+    try:
+        episodes = await tmdb.get_episode_info(media.tmdb_id)
+    except Exception as exc:  # noqa: BLE001  缓存读取失败按轴不可用降级，不阻断巡检
+        logger.warning(
+            "[scan] media=%s episode_info_cache 读取失败（按不可用降级）: %s", media.id, exc,
+        )
+        return None
+    if not episodes:
+        return None
+    today = date.today()
+    aired = {
+        _fmt_episode(int(e["season"]), int(e["episode"]))
+        for e in episodes
+        if e.get("season") is not None and e.get("episode") is not None
+        and episode_aired(e.get("air_date"), today)
+    }
+    # 缓存有集但全未播：轴可用但为空（≠ cache_empty，避免新剧误报降级原因）
+    return aired, sorted({_season_of_key(c) for c in aired})
+
+
+def _merge_baseline_candidates(emby_missing, tmdb_axis_missing) -> list[dict | None]:
+    """并集候选并逐项标 baseline_source（both / emby_missing / tmdb_axis）。
+
+    Emby 项的 premiere_date 原样保留（_filter_aired 的兜底门控依赖）；
+    None 哨兵（全量/电影）原样透传，不参与合并。
+    """
+    merged: list[dict | None] = []
+    by_code: dict[str, dict] = {}
+    for m in emby_missing:
+        if m is None or not m.get("code"):
+            merged.append(m)
+            continue
+        item = {
+            "code": m["code"],
+            "premiere_date": m.get("premiere_date"),
+            "baseline_source": "emby_missing",
+        }
+        merged.append(item)
+        by_code[item["code"]] = item
+    for m in tmdb_axis_missing:
+        if m is None or not m.get("code"):
+            continue
+        if m["code"] in by_code:
+            by_code[m["code"]]["baseline_source"] = "both"
+            continue
+        item = {
+            "code": m["code"],
+            "premiere_date": m.get("premiere_date"),
+            "baseline_source": "tmdb_axis",
+        }
+        merged.append(item)
+        by_code[item["code"]] = item
+    return merged
+
+
+async def _resolve_baseline_candidates(
+    media, emby_missing,
+) -> tuple[list[dict | None], dict | None]:
+    """统一入口：交叉校验后返回 (候选缺失集, baseline_detail)。
+
+    - 正常：emby_missing ∪ (TMDB 已播轴 - Emby 已入库)，逐项标 baseline_source；
+    - 降级（缺 tmdb_id/非 tv、缓存为空、已入库取数 EmbyUnavailable）：候选回退为
+      emby_missing 单源，source_used="degraded_emby" + degraded_reason；
+    - [None] 全量哨兵：不并入 TMDB 轴、不产出 baseline_detail（未做交叉校验，
+      不得伪造基线结论）；
+    - suspect 轮丢弃 Emby 候选，仅返回 TMDB 轴缺失（source_used="tmdb_axis"）；
+      但 season_mismatch 非空时抑制替换（两源季结构不可比，保留并集，见 D6）。
+    """
+    emby_codes = {m["code"] for m in emby_missing if m and m.get("code")}
+    detail = {
+        "emby_missing_count": len(emby_codes),
+        "tmdb_aired_count": 0,
+        "ingested_count": 0,
+        "ratio": 0.0,
+        "threshold": _baseline_suspect_ratio(),
+        "source_used": "emby_missing",
+        "degraded": False,
+        "degraded_reason": None,
+        "season_mismatch": [],
+    }
+
+    def _degraded(reason: str, aired_count: int = 0):
+        detail.update({
+            "tmdb_aired_count": aired_count,
+            "source_used": "degraded_emby",
+            "degraded": True,
+            "degraded_reason": reason,
+        })
+        return _merge_baseline_candidates(emby_missing, []), detail
+
+    if any(m is None for m in emby_missing):
+        # 全量/电影模式：缺失集实体不预知，无逐集基线可交叉校验
+        return list(emby_missing), None
+
+    axis = await _tmdb_aired_axis(media)
+    if axis is None:
+        no_axis = media.tmdb_id is None or (media.media_type or "").lower() != "tv"
+        return _degraded("no_tmdb_id" if no_axis else "cache_empty")
+    aired_codes, aired_seasons = axis
+    detail["tmdb_aired_count"] = len(aired_codes)
+
+    try:
+        ingested = await emby.get_ingested_episode_codes(media.tmdb_id, media.title)
+    except emby.EmbyUnavailable:
+        return _degraded("ingested_unavailable", len(aired_codes))
+    detail["ingested_count"] = len(ingested)
+
+    tmdb_axis_codes = aired_codes - ingested
+    tmdb_axis_missing = [
+        {"code": c, "premiere_date": None, "baseline_source": "tmdb_axis"}
+        for c in sorted(tmdb_axis_codes)
+    ]
+    candidates = _merge_baseline_candidates(emby_missing, tmdb_axis_missing)
+
+    detail["ratio"] = len(emby_codes) / len(aired_codes) if aired_codes else 0.0
+    detail["season_mismatch"] = sorted(
+        {_season_of_key(c) for c in emby_codes} ^ set(aired_seasons)
+    )
+    if emby_codes and tmdb_axis_codes:
+        detail["source_used"] = "both"
+    elif tmdb_axis_codes:
+        detail["source_used"] = "tmdb_axis"
+    if _baseline_suspect(detail) and not detail["season_mismatch"]:
+        # 2.2 suspect 轮：丢弃 Emby 候选，仅按 TMDB 已播轴收敛（搜索/入队照常继续）。
+        # season_mismatch 非空 → 两源季结构不可比，抑制替换、保留并集（仍标 suspect 告警）。
+        detail["source_used"] = "tmdb_axis"
+        return tmdb_axis_missing, detail
+    return candidates, detail
+
+
 async def _resolve_done_states(media, missing_keys: set[str], movie_missing: bool) -> int:
     """done / 本规则失败行 防重解除与 Emby 侧删除后自动重下（P1-1 + change 车道 B / 3.1）。
 
@@ -706,6 +914,8 @@ async def _resolve_done_states(media, missing_keys: set[str], movie_missing: boo
     对每条：
     - Emby 已确认收录（集不在 missing_keys，或 movie 且 movie_missing=False）→ 删除该行
       （done 与本规则 failed 行都适用），解除防重、修复失败行泄漏。
+      missing_keys 为**合并前**的 Emby Shows/Missing 集号（不含仅 TMDB 轴新增的集），
+      避免交叉校验把已入库集误推入宽限/自动重下。
     - 仍缺失时按宽限轮次（retry_count，上限 _DONE_FAIL_RETRY_LIMIT=3）递进：
       1) retry_count < 上限 → 保持/转 failed 并 retry_count+1（done→failed 与
          failed→failed 都推进宽限计数）；
@@ -2117,7 +2327,16 @@ async def _scan_one_impl(media_id: int, media, run_id: int, state: dict,
 
     async def _finish(status: str, message: str, *,
                       touch_last_scan_at: bool = False) -> int:
-        """原地收尾同一条 task_run（当前 phases / scan_detail 快照随调用一并落库）。"""
+        """原地收尾同一条 task_run（当前 phases / scan_detail 快照随调用一并落库）。
+
+        基线结论统一在此收口：解析过基线（state["baseline_detail"] 非空）就把明细并入
+        scan_detail，并在顶层写 baseline_suspect（唯一事实来源），使 no_missing /
+        gated_out / no_candidates 等短路分支都能带上结论。
+        """
+        baseline_detail = state.get("baseline_detail")
+        if baseline_detail and scan_detail is not None:
+            scan_detail["baseline_detail"] = baseline_detail
+            scan_detail["baseline_suspect"] = _baseline_suspect(baseline_detail)
         return await _finish_scan_run(
             run_id, media_id, status, message,
             phases=phases,
@@ -2170,7 +2389,20 @@ async def _scan_one_impl(media_id: int, media, run_id: int, state: dict,
             touch_last_scan_at=False,
         )
 
-    # 2a. 已播出门控（Task 5）：按 TMDB air_date（缺失回退 Emby premiere_date）剔除
+    # 2a. 基线交叉校验（missing-baseline-integrity P1/P2）：Emby 缺失 ∪（TMDB 已播轴 -
+    #     已入库）；suspect 轮仅用 TMDB 轴。emby_missing 为空时跳过（保持 no_missing 快速
+    #     路径，不为无缺失的剧多做 TMDB/Emby 取数）。
+    #     emby_missing_keys 留存「合并前」Emby 口径，供 2b 的 done 防重解除判定（6.4）：
+    #     仅 TMDB 轴新增的集不得让已 done 行进入宽限/自动重下。
+    emby_missing_keys = {m["code"] for m in missing if m and m.get("code")}
+    if missing:
+        missing, baseline_detail = await _resolve_baseline_candidates(media, missing)
+        if baseline_detail is not None:  # 全量哨兵轮不产出基线结论（6.3）
+            state["baseline_detail"] = baseline_detail
+            if _baseline_suspect(baseline_detail):
+                await _alert_baseline_suspect(media_id, media.title, baseline_detail)
+
+    # 2a-1. 已播出门控（Task 5）：按 TMDB air_date（缺失回退 Emby premiere_date）剔除
     #     「未来才播」的集，避免为未播出资源搜索/入队占中转空间。None 哨兵项
     #     （全量/电影）由 _filter_aired 原样保留、不套用门控。
     missing_before = [m["code"] for m in missing if m and m.get("code")]
@@ -2206,10 +2438,11 @@ async def _scan_one_impl(media_id: int, media, run_id: int, state: dict,
 
     # 2b. done 防重解除（P1-1，Oracle 审查）：Emby 二次确认入库 → 删除 es/tq/dl 解除防重；
     #     仍未入库 → 宽限递进 / 自动重下 / 终态（见 _resolve_done_states）。异常仅告警，不阻断巡检。
-    #     _resolve_done_states 自带短 session，此处不涉及任何长事务。
+    #     「已收录」判定用合并前 Emby 缺失集（emby_missing_keys）：仅 TMDB 轴新增的集
+    #     不会把已 done 行推入宽限/自动重下（6.4）。短 session，无长事务。
     redownloaded = 0
     try:
-        redownloaded = await _resolve_done_states(media, missing_keys, movie_missing)
+        redownloaded = await _resolve_done_states(media, emby_missing_keys, movie_missing)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[scan] media=%s done 防重解除失败（不阻断巡检）: %s", media_id, exc)
 
@@ -2226,6 +2459,9 @@ async def _scan_one_impl(media_id: int, media, run_id: int, state: dict,
     # 主循环里实时补入（缺失集实体不预知，missing_total 以基线长度表达 + 动态追加）。
     scan_missing = list(missing)
     missing_total = len(scan_missing)
+    # 降级轮无交叉校验，来源统一由 baseline_detail.source_used 表达；逐项 baseline_source
+    # 只在正常/suspect 轮写入（D5），保持降级轮 missing_items 结构与旧版一致。
+    per_item_source = not (state.get("baseline_detail") or {}).get("degraded")
     missing_items: list[dict] = []
     missing_items_by_key: dict[str, dict] = {}
     if not movie_missing:
@@ -2233,6 +2469,8 @@ async def _scan_one_impl(media_id: int, media, run_id: int, state: dict,
             if m is None:
                 continue
             item = {"episode": m["code"], "result": "not_found"}
+            if per_item_source and m.get("baseline_source"):
+                item["baseline_source"] = m["baseline_source"]
             missing_items.append(item)
             missing_items_by_key[m["code"]] = item
     scan_detail = state["scan_detail"] = _result_detail_skeleton(trigger_source=trigger_source)
