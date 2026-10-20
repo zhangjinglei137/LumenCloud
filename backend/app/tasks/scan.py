@@ -34,6 +34,7 @@ from app.models import DownloadQueue, Media, TaskQueue, TaskRun
 # 两队列重设计：探测结果落 task_queue，经 promote 产出 download_queue（执行层），
 # 防重权威源 = download_queue.UNIQUE(media_id, episode)。见 docs/影视下载两队列重设计.md §3。
 from app.services import cloudsaver, config_store, emby, tmdb
+from app.services.notifier import EVENT_FLOW_ERROR, NotifyEvent, notifier
 from app.tasks import as_bool, get_config_value, record_task_run
 # tasks 层公共纯函数（app.utils，仅标准库）：统一时间源与集级匹配函数
 from app.utils import (
@@ -179,16 +180,28 @@ def _fail_phase(phases: dict) -> str | None:
 
 
 def _result_detail_skeleton(failed_phase: str | None = None,
-                            search_status: str | None = None) -> dict:
+                            search_status: str | None = None,
+                            trigger_source: str | None = None) -> dict:
     """scan_detail 最小骨架（装配前失败时的 fallback，保证前端可解析 failed_phase）。
 
     search_status（可观测，供日志/排查；前端暂不读，加键不破坏既有结构）：
     - "ok"：搜索阶段有 ≥1 个关键词成功（后续可能无候选 → message 走缺集文案）
     - "failed"：全部搜索关键词失败（_search_and_rank 抛 ScanSearchUnavailable）
     - "no_candidates"：搜索成功但无任何候选分享
+
+    归因键（scan-outcome-attribution D1/D1a）：所有结束分支（含四个提前 return 的
+    短路分支）都必须落骨架 + `skip_reason`，否则前端与告警读不到本轮结论。
+    - skip_reason：9 类取值见 _skip_message；正常产出（有入队/无需归因）为 None
+    - gated_out：被已播门控剔除的集数与集号（count / episodes）
+    - missing_aired_total：本轮已播缺失集数
+    - trigger_source：auto / manual（手动触发留痕由 P2 填充，此处只预留键位）
     """
     return {
         "missing_total": 0,
+        "missing_aired_total": 0,
+        "gated_out": {"count": 0, "episodes": []},
+        "skip_reason": None,
+        "trigger_source": trigger_source,
         "enqueued": 0,
         "existing_skipped": 0,
         "size_filtered": 0,
@@ -284,6 +297,201 @@ def _result_message(*, enqueued: int, unmatched: int, size_filtered: int,
             "（搜索无匹配候选，资源可能尚未更新）"
         )
     return "无候选命中"
+
+
+# skip_reason 枚举（design D1）：9 类互不混淆的巡检结论——status_paused / status_error /
+# baseline_unavailable / airdate_unavailable / no_missing / not_aired / gated_out /
+# no_candidates / skip_enqueue（文案见 _skip_message）
+
+
+def _format_episode_list(codes: list[str] | tuple[str, ...] | None, limit: int = 10) -> str:
+    """集号列表 → message 用短串（最多 limit 个，超出追加「等 N 集」）。
+
+    仅约束人话文案；结构化数据（scan_detail.gated_out.episodes）保留完整列表。
+    """
+    codes = list(codes or ())
+    shown = ",".join(codes[:limit])
+    if len(codes) > limit:
+        shown += f" 等 {len(codes)} 集"
+    return shown
+
+
+def _skip_message(reason: str, *, title: str | None = None, detail: str | None = None,
+                  missing_aired_total: int = 0,
+                  missing_episodes: list[str] | tuple[str, ...] | None = None,
+                  gated_out_episodes: list[str] | tuple[str, ...] | None = None,
+                  not_enqueued: int = 0) -> str:
+    """按 skip_reason 生成结论文案（design D6：语义文案与 _result_message 的纯计数分离）。
+
+    9 类 reason 各自一句、互不混淆；「无遗漏集」只用于真正的 no_missing，
+    不得用于表达「搜不到资源」；「因下载中未入队」不得写成「已有任务跳过」。
+    """
+    name = f"「{title}」" if title else ""
+    if reason == "status_paused":
+        return f"media.status=paused，跳过巡检（{name}已暂停，本轮无需进一步动作）"
+    if reason == "status_error":
+        return f"media.status=error，跳过巡检（{name}状态异常，本轮无需进一步动作）"
+    if reason == "baseline_unavailable":
+        return (
+            "Emby 未收录该剧集，防重基线强制（scan_baseline_required=True），本轮跳过"
+            + (f"；{name}待 Emby 收录后恢复巡检" if title else "")
+        )
+    if reason == "airdate_unavailable":
+        return f"TMDB 播出日期取数失败（{detail or '取数不可用'}），本轮跳过"
+    if reason == "no_missing":
+        return f"{name}无遗漏集（Emby 基线已覆盖），跳过巡检（本轮无需进一步动作）"
+    if reason == "not_aired":
+        return f"{name}缺失集均未播出，TMDB 无已播出集（未开播），本轮跳过"
+    if reason == "gated_out":
+        eps = _format_episode_list(gated_out_episodes) or "集号未知"
+        return (
+            f"{name}缺失集 {len(gated_out_episodes or ())} 集均未播出"
+            f"（已播门控剔除：{eps}），本轮无需搜索"
+        )
+    if reason == "no_candidates":
+        eps = _format_episode_list(missing_episodes)
+        tail = f"（缺失集 {eps}）" if eps else ""
+        return f"{name}存在已播缺失 {missing_aired_total} 集{tail}，本轮未获取到任何资源"
+    if reason == "skip_enqueue":
+        return (
+            f"{name}因正在下载未入队 {not_enqueued} 集"
+            f"（已播缺失 {missing_aired_total} 集）"
+        )
+    raise ValueError(f"未知 skip_reason: {reason}")
+
+# 巡检告警冷却（design D3）：notifier 没有通用节流设施，故在 scan 维护模块级 TTL 表。
+# key = f"{media_id}:{reason}"（reason 取 error / no_candidates），窗口 24h。
+# 已知代价：进程重启后冷却丢失，最坏多推一条同类告警（连续轮次判定仍查 DB，准确）。
+_SCAN_ALERT_COOLDOWN_SECONDS = 24 * 3600.0
+_scan_alert_cooldown: dict[str, tuple[float, str]] = {}
+# 连续 N 轮 no_candidates 告警阈值（system_config 可配；缺失/非法按默认 3）
+_SCAN_NO_CANDIDATES_ALERT_ROUNDS_KEY = "scan_no_candidates_alert_rounds"
+_DEFAULT_SCAN_NO_CANDIDATES_ALERT_ROUNDS = 3
+
+
+def _scan_alert_allowed(key: str, bucket: str) -> bool:
+    """同 key 同 bucket 在 24h 窗口内只允许告警一次（对齐 transfer._alert_cooldown）。
+
+    TTL 清理：停留超过 2 倍窗口的条目不可能再命中，遍历删除防无界增长。
+    """
+    now = time.monotonic()
+    for _key, (_ts, _b) in list(_scan_alert_cooldown.items()):
+        if now - _ts > 2 * _SCAN_ALERT_COOLDOWN_SECONDS:
+            _scan_alert_cooldown.pop(_key, None)
+    last_ts, last_bucket = _scan_alert_cooldown.get(key, (0.0, None))
+    if last_bucket == bucket and (now - last_ts) < _SCAN_ALERT_COOLDOWN_SECONDS:
+        logger.info("[scan] 告警冷却中（24h 内同类重复 %s）", key)
+        return False
+    _scan_alert_cooldown[key] = (now, bucket)
+    return True
+
+
+async def _notify_scan_alert(title: str, body: str, media_id: int) -> None:
+    """发巡检告警；任何通知异常只记日志，不影响巡检结果落库。"""
+    try:
+        await notifier.notify(NotifyEvent(
+            event_type=EVENT_FLOW_ERROR,
+            title=title,
+            body=body,
+            recipient=None,
+            extra={"media_id": media_id},
+        ))
+    except Exception:  # noqa: BLE001  告警失败不得反噬巡检
+        logger.exception("[scan] media=%s 巡检告警发送失败", media_id)
+
+
+async def _alert_scan_error(media_id: int, title: str | None,
+                            failed_phase: str | None, message: str) -> None:
+    """巡检以 error 结束 → 立即告警（含影视名、失败阶段、原因），同因 24h 冷却。"""
+    key = f"{media_id}:error"
+    bucket = failed_phase or "error"
+    if not _scan_alert_allowed(key, bucket):
+        return
+    await _notify_scan_alert(
+        f"巡检失败：{title or media_id}",
+        f"「{title or media_id}」巡检失败（阶段：{failed_phase or '未知'}）：{message}",
+        media_id,
+    )
+
+
+async def _scan_no_candidates_alert_rounds() -> int:
+    """读取连续无资源告警轮次阈值（system_config；缺失/非法回退默认 3）。"""
+    try:
+        async with async_session() as s:
+            raw = await get_config_value(
+                s, _SCAN_NO_CANDIDATES_ALERT_ROUNDS_KEY,
+                _DEFAULT_SCAN_NO_CANDIDATES_ALERT_ROUNDS,
+            )
+        rounds = int(raw)
+        return rounds if rounds > 0 else _DEFAULT_SCAN_NO_CANDIDATES_ALERT_ROUNDS
+    except Exception:  # noqa: BLE001  配置读取失败按默认值运行
+        return _DEFAULT_SCAN_NO_CANDIDATES_ALERT_ROUNDS
+
+
+async def _recent_scan_details(media_id: int, limit: int) -> list[dict]:
+    """该 media 最近 limit 条 scan_media 的 scan_detail（新→旧），用于连续轮次推导。
+
+    连续轮次不靠内存计数：查 DB 保证进程重启后仍准确（design D3）。
+    """
+    async with async_session() as s:
+        rows = (await s.execute(
+            select(TaskRun.scan_detail)
+            .where(TaskRun.media_id == media_id, TaskRun.task_type == "scan_media")
+            .order_by(TaskRun.id.desc())
+            .limit(limit)
+        )).scalars().all()
+    out: list[dict] = []
+    for raw in rows:
+        try:
+            out.append(json.loads(raw) if raw else {})
+        except (TypeError, ValueError):
+            out.append({})
+    return out
+
+
+async def _maybe_alert_no_candidates(media_id: int, title: str | None,
+                                     scan_detail: dict) -> None:
+    """连续 N 轮 no_candidates 且 missing_aired_total>0 → 告警一次。
+
+    - N 读 system_config（默认 3），连续轮次查该 media 最近 N 条 task_run 推导；
+    - 冷却 key = f"{media_id}:no_candidates"，24h；
+    - missing_aired_total 较上一轮下降 → 清除冷却键，使再次恶化能重新告警。
+    """
+    total = int(scan_detail.get("missing_aired_total") or 0)
+    if total <= 0:
+        return
+    try:
+        rounds = await _scan_no_candidates_alert_rounds()
+        recent = await _recent_scan_details(media_id, rounds + 1)
+        if len(recent) < rounds:
+            return
+        if any(r.get("skip_reason") != "no_candidates" for r in recent[:rounds]):
+            return
+        key = f"{media_id}:no_candidates"
+        prev_total = (
+            int(recent[1].get("missing_aired_total") or 0) if len(recent) > 1 else None
+        )
+        if prev_total is not None and total < prev_total:
+            had_cooldown = key in _scan_alert_cooldown
+            _scan_alert_cooldown.pop(key, None)
+            logger.info(
+                "[scan] media=%s 缺失集数量下降 %s→%s，清除无资源告警冷却",
+                media_id, prev_total, total,
+            )
+            if had_cooldown:
+                return
+        if not _scan_alert_allowed(key, "no_candidates"):
+            return
+        await _notify_scan_alert(
+            f"巡检告警：{title or media_id} 连续 {rounds} 轮未获取到资源",
+            (
+                f"「{title or media_id}」已连续 {rounds} 轮巡检存在已播缺失 {total} 集，"
+                f"但未获取到任何资源；最近一次尝试：{_now():%Y-%m-%d %H:%M}。"
+            ),
+            media_id,
+        )
+    except Exception:  # noqa: BLE001  告警判定/发送失败不影响巡检结果
+        logger.exception("[scan] media=%s 无资源告警判定失败", media_id)
 
 # 宽限轮次上限（沿用 retry_count，对齐 transfer._RETRY_LIMIT=3）：
 # _resolve_done_states 中 done→failed / failed→failed 各消耗一轮（retry_count +1），
@@ -1559,25 +1767,46 @@ async def _trigger_transfer() -> None:
         logger.exception("[scan] 触发 transfer 失败")
 
 
-def trigger_scan_background(media_id: int, *, manual: bool = False) -> None:
-    """E-1（P1）：单部巡检 fire-and-forget 触发（HTTP 层不再同步等待完整巡检，
-    防止 504 与 FastAPI 取消协程中断巡检）。复用 _background 强引用集合防 GC
-    （与 _trigger_transfer 同模式）；内部持 per-media 锁（scan_media 自带）。
+def trigger_scan_background(media_id: int, *, manual: bool = False) -> asyncio.Task:
+    """单部巡检受理入口（受理建记录 + fire-and-forget 执行）。
+
+    P2（design D5）：受理时先建 status='running' 的 task_run（trigger_source=manual/
+    auto），再把 run_id 透传给 `_scan_one` 复用——**不得**再让 `_scan_one` 自建
+    第二条记录。返回 asyncio.Task：路由 await 它即可拿到 run id（只等受理建记录，
+    不等完整巡检，保持 E-1 防 504 语义）；巡检本身是另一个后台 task。
+    既有 fire-and-forget 调用方（approvals / queue probe / add task）忽略返回值即可，
+    受理与巡检仍会照常执行。内部持 per-media 锁（scan_media 自带）。
 
     manual=True（所有手动触发点：media 扫描按钮 / queue 探测 / 加集 / 审批通过）。
     queue-flow-rework Task 3 起：静默 unmatched 预过滤已移除，manual 不再改变
-    _scan_one 行为（缺失集一律照常搜索，搜不到下轮自然重试）；参数保留仅为
-    兼容既有调用契约（路由层仍按 manual=True 触发）。
+    _scan_one 行为（缺失集一律照常搜索，搜不到下轮自然重试）。
     """
-    async def _run() -> None:
+    async def _run_scan(run_id: int) -> None:
         try:
-            await scan_media(media_id, manual=manual)
-        except Exception:  # noqa: BLE001
+            await scan_media(media_id, manual=manual, run_id=run_id)
+        except Exception:  # noqa: BLE001  后台巡检异常：_scan_one 已收敛记录，此处只记日志
             logger.exception("[scan] 后台巡检异常 media=%s", media_id)
 
-    task = asyncio.create_task(_run())
+    async def _accept() -> int | None:
+        try:
+            run_id = await _create_scan_run(
+                media_id, trigger_source="manual" if manual else "auto",
+            )
+        except Exception:  # noqa: BLE001  受理失败返回 None，由路由反馈 accepted=False
+            logger.exception("[scan] media=%s 巡检受理建记录失败", media_id)
+            return None
+        if run_id is None:
+            # media 不存在 / running 记录建立失败：不启动巡检，避免无主记录
+            return None
+        scan_task = asyncio.create_task(_run_scan(run_id))
+        _background.add(scan_task)
+        scan_task.add_done_callback(_background.discard)
+        return run_id
+
+    task = asyncio.create_task(_accept())
     _background.add(task)
     task.add_done_callback(_background.discard)
+    return task
 
 
 # ---------------------------------------------------------------------------
@@ -1610,8 +1839,13 @@ def _scan_lock_idle(lock: asyncio.Lock) -> bool:
     return not waiters
 
 
-async def scan_media(media_id: int, *, manual: bool = False) -> int | None:
+async def scan_media(media_id: int, *, manual: bool = False,
+                     run_id: int | None = None) -> int | None:
     """单影视巡检（API /api/media/{id}/scan 手动触发入口），返回最近一条 task_run id。
+
+    run_id（P2 design D5）：手动触发已在 `trigger_scan_background` 受理时建好
+    status='running' 的记录，此处透传给 `_scan_one` 复用；None 表示定时路径，
+    由 `_scan_one` 自建（trigger_source=auto）。
 
     manual（queue-flow-rework Task 3 起为兼容保留）：静默 unmatched 预过滤已移除，
     手动/定时触发行为一致——缺失集一律照常搜索，搜不到下轮自然重试。
@@ -1633,7 +1867,10 @@ async def scan_media(media_id: int, *, manual: bool = False) -> int | None:
     lock = _scan_locks.setdefault(media_id, asyncio.Lock())
     async with lock:
         try:
-            return await _scan_one(media_id, manual=manual)
+            if run_id is None:
+                # 定时路径保持旧调用签名（既有测试/桩以 (media_id, *, manual) 替换）
+                return await _scan_one(media_id, manual=manual)
+            return await _scan_one(media_id, manual=manual, run_id=run_id)
         finally:
             # 清理：无等待者时才移除（新调用方会重新创建，等待中的调用方仍持有旧锁引用）
             if _scan_lock_idle(lock):
@@ -1722,15 +1959,20 @@ async def scan_all_media(force: bool = False) -> None:
             logger.exception("[scan] media=%s 巡检异常", media.id)
 
 
-async def _create_scan_run(media_id: int) -> int | None:
-    """巡检可见性改造（第一段）：插入一条 status='running' 的 task_run 并 commit，返回 id。
+async def _create_scan_run(media_id: int, *, trigger_source: str = "auto") -> int | None:
+    """插入一条 status='running' 的 task_run 并 commit，返回 id。
 
     触发巡检即落 running 中间态——HTTP 触发到巡检结束（数十秒）期间前端队列即可
-    看到「正在巡检」记录。running 记录不含 phases/scan_detail（跑完才一次性落库）。
+    看到「正在巡检」记录。running 记录带 scan_detail 骨架（含 trigger_source），
+    跑完由 `_finish_scan_run` 原地 UPDATE 为终态。
 
-    media 不存在时调用方（_scan_one）在预检前即 return None，不建立记录（保持现状）。
+    media 不存在时返回 None（不建立无主记录）。
     """
     async with async_session() as s:
+        if await s.get(Media, media_id) is None:
+            logger.warning("[scan] media=%s 不存在，不建立巡检记录", media_id)
+            return None
+        detail = _result_detail_skeleton(trigger_source=trigger_source)
         run = TaskRun(
             task_type="scan_media",
             media_id=media_id,
@@ -1739,6 +1981,7 @@ async def _create_scan_run(media_id: int) -> int | None:
             started_at=_now(),
             finished_at=None,
             duration_seconds=None,
+            scan_detail=_json_dumps(detail),
         )
         s.add(run)
         await s.commit()
@@ -1766,6 +2009,10 @@ async def _finish_scan_run(
     短事务：不借用外层长事务，写完即释放（沿用旧实现的 P1-1 约定）。
     """
     async with async_session() as s:
+        media_title = None
+        if status == "error":
+            media_row = await s.get(Media, media_id)
+            media_title = media_row.title if media_row is not None else None
         if touch_last_scan_at:
             await s.execute(
                 update(Media).where(Media.id == media_id).values(last_scan_at=_now())
@@ -1783,16 +2030,27 @@ async def _finish_scan_run(
             )
         )
         await s.commit()
-        return run_id
+    # 告警在落库之后发送：通知失败只记日志，不影响巡检结果（P2 2.1）
+    if status == "error":
+        await _alert_scan_error(
+            media_id, media_title,
+            (scan_detail or {}).get("failed_phase"),
+            message,
+        )
+    return run_id
 
 
-async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
+async def _scan_one(media_id: int, *, manual: bool = False,
+                    run_id: int | None = None) -> int | None:
     """严格按设计文档 §4.3 巡检主流程，阶段2 只到入队为止（不转存）。
 
     巡检可见性改造：入口先建 status='running' 的 task_run（_create_scan_run），
     全部返回分支改走 _finish_scan_run 原地 UPDATE 同一条为终态，附 5 阶段进度
     （phases JSON）与结果摘要（scan_detail JSON）。巡检是快任务——阶段打点全部
     在内存进行（_phase_start/_phase_done），结束时一次性落库，运行中不实时写 DB。
+
+    run_id（P2 design D5）：手动触发由 `trigger_scan_background` 受理时建好记录，
+    此处复用；None 表示定时路径，自建 trigger_source=auto 的记录。不得重复建记录。
 
     P1-1（延后项）：长事务拆分——Emby 基线 / 搜索 / share-info / share-list 递归
     等网络 IO 全程**不持有 DB session**（SQLite 单连接被长事务占住会阻塞其他写）；
@@ -1803,8 +2061,12 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
 
     manual（queue-flow-rework Task 3 起为兼容保留）：静默 unmatched 预过滤已移除，
     手动/定时调度行为一致——缺失集一律照常搜索，搜不到下轮全局巡检自然重试。
+
+    scan-outcome-attribution 3.2：异常逃逸时把当前 task_run 收敛为 error（保留原因）
+    后**继续上抛**，由调用方记录；进程内异常不再留下永久 running 记录。
     """
     t0 = time.monotonic()  # Q8①：真实耗时（单部巡检）
+    trigger_source = "manual" if manual else "auto"
 
     # 0. 短事务读取 media（立即关闭；detached 属性后续安全）
     async with async_session() as s:
@@ -1815,13 +2077,43 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
         return None
 
     # 0b. 巡检可见性：触发即落 running 中间态（前端可立即看到「正在巡检」）。
-    #     此后所有分支（含异常）都以 _finish_scan_run 原地 UPDATE 同一记录为终态。
-    run_id = await _create_scan_run(media_id)
+    #     手动路径已由 trigger_scan_background 建好记录，此处复用（不产生第二条）。
+    if run_id is None:
+        run_id = await _create_scan_run(media_id, trigger_source=trigger_source)
     if run_id is None:
         # running 记录建立失败（极小概率）→ 保持旧行为，不阻断巡检主流程
         return None
-    phases = _new_phases()
-    scan_detail = None  # 无遗漏/被跳过等短路分支无结果摘要；正常流程开始后才装配
+
+    # state 供异常兜底读取「当前」phases / scan_detail（_scan_one_impl 内同步写回）
+    state: dict = {"phases": _new_phases(), "scan_detail": None}
+    try:
+        return await _scan_one_impl(media_id, media, run_id, state, t0, trigger_source)
+    except Exception as exc:  # noqa: BLE001  收敛后继续上抛，不吞异常
+        phases = state["phases"]
+        failed_phase = _fail_phase(phases)
+        if failed_phase:
+            _phase_error(phases, failed_phase)
+        detail = state["scan_detail"] or _result_detail_skeleton(
+            failed_phase, trigger_source=trigger_source,
+        )
+        detail["failed_phase"] = failed_phase
+        try:
+            await _finish_scan_run(
+                run_id, media_id, "error", f"巡检异常中止: {exc}",
+                phases=phases,
+                scan_detail=detail,
+                duration_seconds=time.monotonic() - t0,
+            )
+        except Exception:  # noqa: BLE001  收尾失败不得掩盖原始异常
+            logger.exception("[scan] media=%s 异常收尾失败（run_id=%s）", media_id, run_id)
+        raise
+
+
+async def _scan_one_impl(media_id: int, media, run_id: int, state: dict,
+                         t0: float, trigger_source: str = "auto") -> int | None:
+    """_scan_one 主体（run 已建立；phases / scan_detail 同步写回 state 供异常兜底）。"""
+    phases = state["phases"]
+    scan_detail = state["scan_detail"]
 
     async def _finish(status: str, message: str, *,
                       touch_last_scan_at: bool = False) -> int:
@@ -1838,8 +2130,11 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
     #    但按其各自间隔到期判断（≠ 绕过冷却），仅本轮不入队（skip_enqueue）
     if media.status in ("paused", "error"):
         _phase_skip_remaining(phases, "check")  # 尚未开始的阶段标记 skipped（未达完成态）
+        skip_reason = "status_paused" if media.status == "paused" else "status_error"
+        scan_detail = state["scan_detail"] = _result_detail_skeleton(trigger_source=trigger_source)
+        scan_detail["skip_reason"] = skip_reason
         return await _finish(
-            "skipped", f"media.status={media.status}，跳过巡检",
+            "skipped", _skip_message(skip_reason, title=media.title),
         )
 
     # 2. Emby 防重基线（网络 IO，无 DB session）——phase: check
@@ -1851,7 +2146,9 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
         # 既有 queued/failed 任务保留原样（阶段2 无转存逻辑，无需额外处理）
         _phase_error(phases, "check")  # 阶段定位 error
         # 基线失败发生在 scan_detail 装配前 → 落最小骨架，failed_phase 供前端定位
-        scan_detail = _result_detail_skeleton("check")
+        scan_detail = state["scan_detail"] = _result_detail_skeleton(
+            "check", trigger_source=trigger_source,
+        )
         return await _finish(
             "error",
             f"Emby 故障，fail-safe 暂停新缺集发现: {exc}",
@@ -1865,23 +2162,35 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
         # 旧行为）才返回 None；False（默认）返回全量模式 [None]，走下方搜索入队路径。
         # 此处保留旧行为（本轮跳过），并区分文案以与全量模式日志区分。
         _phase_skip_remaining(phases, "search")  # search/match/enqueue/finish 未执行 → skipped
+        scan_detail = state["scan_detail"] = _result_detail_skeleton(trigger_source=trigger_source)
+        scan_detail["skip_reason"] = "baseline_unavailable"
         return await _finish(
             "skipped",
-            "Emby 未收录该剧集，防重基线强制（scan_baseline_required=True），本轮跳过",
+            _skip_message("baseline_unavailable", title=media.title),
             touch_last_scan_at=False,
         )
 
     # 2a. 已播出门控（Task 5）：按 TMDB air_date（缺失回退 Emby premiere_date）剔除
     #     「未来才播」的集，避免为未播出资源搜索/入队占中转空间。None 哨兵项
     #     （全量/电影）由 _filter_aired 原样保留、不套用门控。
+    missing_before = [m["code"] for m in missing if m and m.get("code")]
     missing, aired_failed = await _filter_aired(media, missing)
+    kept_codes = {m["code"] for m in missing if m and m.get("code")}
+    # 归因：被已播门控剔除的集号（TMDB 取数失败季的集不算门控剔除，单独由 fail-safe 处理）
+    gated_out_episodes = [
+        c for c in missing_before
+        if c not in kept_codes and _season_of_key(c) not in aired_failed
+    ]
+    missing_aired_total = len(kept_codes)  # 已播缺失集数（全量模式下方按实际条目兜底）
     if aired_failed and not missing:
         # fail-safe（Ruling 2 简化）：TMDB 某季取数失败且门控后无可保留项 → 本轮不
         # 搜索（否则会把「取数失败」误当「无遗漏」而错失补齐机会），message 标明季号。
         _phase_skip_remaining(phases, "search")
+        scan_detail = state["scan_detail"] = _result_detail_skeleton(trigger_source=trigger_source)
+        scan_detail["skip_reason"] = "airdate_unavailable"
         return await _finish(
             "skipped",
-            f"TMDB 播出日期取数失败（季 {sorted(aired_failed)}），本轮跳过",
+            _skip_message("airdate_unavailable", detail=f"季 {sorted(aired_failed)}"),
             touch_last_scan_at=False,
         )
 
@@ -1926,15 +2235,25 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
             item = {"episode": m["code"], "result": "not_found"}
             missing_items.append(item)
             missing_items_by_key[m["code"]] = item
-    scan_detail = _result_detail_skeleton()
+    scan_detail = state["scan_detail"] = _result_detail_skeleton(trigger_source=trigger_source)
     scan_detail["missing_total"] = missing_total
     scan_detail["missing_items"] = missing_items
+    scan_detail["missing_aired_total"] = missing_aired_total
+    scan_detail["gated_out"] = {
+        "count": len(gated_out_episodes),
+        "episodes": gated_out_episodes,
+    }
 
     if not missing_keys and not movie_missing:
-        # 无遗漏 → 短路结束（消灭 P3 空跑）
+        # 无遗漏 → 短路结束（消灭 P3 空跑）。区分「本来就没有缺失集」与
+        # 「有缺失集但全部被已播门控剔除」（后者不得报成「无遗漏集」）。
         _phase_skip_remaining(phases, "search")  # 后续阶段未执行 → skipped
+        skip_reason = "gated_out" if gated_out_episodes else "no_missing"
+        scan_detail["skip_reason"] = skip_reason
         return await _finish(
-            "skipped", "无遗漏集（Emby 基线已覆盖），跳过",
+            "skipped",
+            _skip_message(skip_reason, title=media.title,
+                          gated_out_episodes=gated_out_episodes),
             touch_last_scan_at=True,
         )
 
@@ -1945,18 +2264,24 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
     #     中转空间。真电影全量（media_type=="movie"）语义不同，不套用本门控。
     #     已播出剧不短路：文件循环内再按 SxxExx 逐文件拒绝未播出集（aired_by_key）。
     aired_by_key: dict[tuple[int, int], bool] = {}
+    full_mode_aired_total = 0  # 全量模式已播缺失数（缺失集实体不预知，供归因兜底）
     if movie_missing and (media.media_type or "").strip().lower() != "movie":
         if media.tmdb_id is None:
             _phase_skip_remaining(phases, "search")  # search/match/enqueue/finish 未执行 → skipped
+            scan_detail["skip_reason"] = "airdate_unavailable"
             return await _finish(
-                "skipped", "全量兜底：缺 tmdb_id，无法判定播出日期，本轮跳过",
+                "skipped",
+                _skip_message("airdate_unavailable",
+                              detail="缺 tmdb_id，无法判定播出日期"),
                 touch_last_scan_at=False,
             )
         all_eps = await tmdb.get_tv_all_episodes(media.tmdb_id)
         if all_eps is None:
             _phase_skip_remaining(phases, "search")
+            scan_detail["skip_reason"] = "airdate_unavailable"
             return await _finish(
-                "skipped", "全量兜底：TMDB 播出日期取数失败，本轮跳过",
+                "skipped",
+                _skip_message("airdate_unavailable", detail="全集取数失败"),
                 touch_last_scan_at=False,
             )
         today = date.today()
@@ -1964,10 +2289,14 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
             (e["season"], e["episode"]): episode_aired(e.get("air_date"), today)
             for e in all_eps
         }
+        # 搜索零候选时 missing_items 为空，用门控确认的已播集数兜底归因
+        full_mode_aired_total = sum(1 for aired in aired_by_key.values() if aired)
         if aired_by_key and not any(aired_by_key.values()):
             _phase_skip_remaining(phases, "search")
+            scan_detail["skip_reason"] = "not_aired"
             return await _finish(
-                "skipped", "全量兜底：TMDB 无已播出集（未开播），本轮跳过",
+                "skipped",
+                _skip_message("not_aired", title=media.title),
                 touch_last_scan_at=False,
             )
 
@@ -2013,6 +2342,7 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
     total_episodes = await _media_total_episodes(media) if tv_full_mode else None
 
     enqueued = existing_skipped = size_filtered = unmatched = non_video = 0
+    downloading_skipped_keys: set[str] = set()  # 因 downloading 本轮未入队的集（按集去重）
     unrelated_filtered = 0  # A2：全量模式文件级校验拒绝计数（无关/超集号文件）
     enqueue_limited = False  # A4：全量模式限批触发标记（停止遍历后续分享/文件）
     unmatched_files: list[str] = []  # 未匹配文件名样例（至多收集 3 个，供 message 定位）
@@ -2161,7 +2491,8 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
                 continue
 
             if skip_enqueue:
-                existing_skipped += 1
+                # 因该影视正在下载而未入队：单独计数（不得表述为「已有任务跳过」）
+                downloading_skipped_keys.add(matched_key)
                 continue
 
             payload = _enqueue_payload(info, f)
@@ -2201,7 +2532,7 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
                     size_filtered += 1
                     continue
                 if skip_enqueue:
-                    existing_skipped += 1  # downloading 状态本轮不入队（同主循环语义）
+                    downloading_skipped_keys.add(ep_key)  # downloading 本轮不入队（同主循环语义）
                     break
                 payload = _enqueue_payload(cand["info"], cand["f"])
                 res = await _enqueue(
@@ -2236,6 +2567,26 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
     #     时优先报「候选分享验证均失败」。episodes 取 scan_detail.missing_items 的
     #     episode（如 S01E190；全量模式含文件名）。N 用实际尝试过的候选数
     #     （share_info_fail：candidates 可能有 _MAX_SHARE_TRY 上限截断，未验证的不计入）。
+    # 归因结论（D1）：本轮无产出时区分「因下载中未入队」与「未获取到资源」。
+    # 已有任务（existing）视为有资源，不算 no_candidates（否则告警会误报）；
+    # unmatched / size_filtered / non_video > 0 表示已找到过资源（只是未匹配/被过滤），
+    # 同样不得置 no_candidates，否则 P2 会误报「资源尚未更新」。
+    if movie_missing:
+        # 全量模式缺失集实体不预知：优先按实际收集条目数；搜索零候选时回退已播缺失数
+        # （真电影整缺 = 1 个缺失实体；tv 未收录软全量 = 2c 门控确认的已播集数），
+        # 避免「有已播缺集但零候选」被归因为 None（P2 告警会系统性漏报）。
+        missing_aired_total = len(missing_items) or (
+            full_mode_aired_total if tv_full_mode else 1
+        )
+    if downloading_skipped_keys:
+        skip_reason = "skip_enqueue"
+    elif (enqueued == 0 and missing_aired_total > 0 and existing_skipped == 0
+          and unmatched == 0 and size_filtered == 0 and non_video == 0
+          and unrelated_filtered == 0):
+        skip_reason = "no_candidates"
+    else:
+        skip_reason = None
+
     share_info_all_failed = share_info_fail if (candidates and share_info_ok == 0) else 0
     message = _result_message(
         enqueued=enqueued, unmatched=unmatched,
@@ -2247,10 +2598,27 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
         if scan_detail["missing_items"] else None,
         share_info_all_failed_candidates=share_info_all_failed,
     )
+    if skip_reason:
+        skip_clause = _skip_message(
+            skip_reason, title=media.title,
+            missing_aired_total=missing_aired_total,
+            missing_episodes=[item["episode"] for item in scan_detail["missing_items"]]
+            if scan_detail["missing_items"] else None,
+            not_enqueued=len(downloading_skipped_keys),
+        )
+        # 因下载中未入队时计数消息会误报「未找到缺失集资源」，只保留归因文案
+        message = skip_clause if skip_reason == "skip_enqueue" else f"{message}；{skip_clause}"
     scan_detail.update({
         # 全量模式：基线表达为 missing（[None]），实际缺失实体是搜索到的具体文件，
         # 此处以实际收集到的缺失集条目数兜底（缺失集实体不预知，契约允许宽松填充）。
         "missing_total": len(missing_items) if movie_missing else missing_total,
+        "missing_aired_total": missing_aired_total,
+        "gated_out": {
+            "count": len(gated_out_episodes),
+            "episodes": gated_out_episodes,
+        },
+        "skip_reason": skip_reason,
+        "trigger_source": trigger_source,
         "enqueued": enqueued,
         "existing_skipped": existing_skipped,
         "size_filtered": size_filtered,
@@ -2269,6 +2637,9 @@ async def _scan_one(media_id: int, *, manual: bool = False) -> int | None:
         "success" if enqueued else "skipped", message,
         touch_last_scan_at=True,
     )
+    # P2 2.2：连续 N 轮无资源告警（落库后判定；失败只记日志，不影响巡检结果）
+    if skip_reason == "no_candidates":
+        await _maybe_alert_no_candidates(media_id, media.title, scan_detail)
     # 6b. 入队成功后触发转存消费（§4.4 事件触发；transfer lane 未就绪时静默跳过）
     #     fire-and-forget 在 DB session 外触发（_background 强引用集合防 GC）
     if enqueued:

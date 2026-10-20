@@ -1,0 +1,9 @@
+{
+  "openspec_proposal": "docs/openspec/changes/scan-outcome-attribution/proposal.md",
+  "openspec_design": "docs/openspec/changes/scan-outcome-attribution/design.md",
+  "openspec_tasks": "docs/openspec/changes/scan-outcome-attribution/tasks.md",
+  "openspec_delta_spec": "docs/openspec/changes/scan-outcome-attribution/specs/media-pipeline/spec.md",
+  "handoff_context": "docs/openspec/changes/archive/2026-10-20-scan-outcome-attribution/.comet/handoff/spec-context.json",
+  "handoff_markdown": "docs/openspec/changes/archive/2026-10-20-scan-outcome-attribution/.comet/handoff/spec-context.md",
+  "archive_directory": "docs/openspec/changes/archive/2026-10-20-scan-outcome-attribution"
+}

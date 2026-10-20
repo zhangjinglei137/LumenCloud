@@ -87,7 +87,14 @@ export function deleteMediaApi(id: number) {
 }
 
 export function scanMediaApi(id: number) {
-  return http.post<{ ok: boolean; task_run_id: number | null }>(`/media/${id}/scan`).then((r) => r.data)
+  return http
+    .post<{
+      ok: boolean
+      task_run_id: number | null
+      run_id: number | null
+      accepted: boolean
+    }>(`/media/${id}/scan`)
+    .then((r) => r.data)
 }
 
 // ---------- TMDB ----------

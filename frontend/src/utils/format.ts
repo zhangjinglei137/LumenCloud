@@ -431,6 +431,7 @@ const TASK_TYPE_MAP: Record<string, [string, string]> = {
   recover: ['超时恢复', 'danger'],
   sync_nastools: ['目录同步入库', 'success'],
   notify: ['通知', 'info'],
+  queue_retry: ['手动重试', 'success'],
   // 历史别名兜底（已不再写入，仅存量数据展示）
   media_scan: ['影视巡检', 'primary'],
   recovery: ['超时恢复', 'danger'],

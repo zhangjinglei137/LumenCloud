@@ -36,11 +36,11 @@ import logging
 import time
 from datetime import datetime, timedelta
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 
 from app.config import settings
 from app.database import async_session
-from app.models import DownloadQueue, Media, SystemConfig
+from app.models import DownloadQueue, Media, SystemConfig, TaskRun
 from app.services import alist, aria2, emby
 from app.services.aria2 import Aria2Unavailable
 from app.tasks import record_task_run
@@ -64,25 +64,31 @@ _LIBRARY_TIMEOUT_CONFIG_KEY = "library_revert_timeout_hours"
 _SCRAPE_TIMEOUT_DEFAULT_HOURS = 4.0
 _LIBRARY_TIMEOUT_DEFAULT_HOURS = 6.0
 
+# 巡检运行记录回收（scan-outcome-attribution 3.1 / design D4）：默认 30 分钟。
+# 巡检实际最长约 30 秒，30 分钟只兜「进程中断/崩溃」的残留 running。
+_SCAN_RUN_TIMEOUT_CONFIG_KEY = "scan_run_timeout_minutes"
+_SCAN_RUN_TIMEOUT_DEFAULT_MINUTES = 30.0
+_SCAN_RUN_TIMEOUT_MARK = "超时回收"
+
 
 def _deadline(hours: float) -> datetime:
     return _now() - timedelta(hours=hours)
 
 
-async def _load_timeout_hours(config_key: str, default: float) -> float:
-    """读取超时阈值（system_config 键优先；缺失/非法/异常 → 传入默认值）。"""
+async def _load_config_float(config_key: str, default: float) -> float:
+    """读取数值型 system_config（键优先；缺失/非法/异常 → 传入默认值）。"""
     try:
         async with async_session() as session:
             row = await session.get(SystemConfig, config_key)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("读取 %s 失败，用默认超时 %.1fh: %s", config_key, default, exc)
+        logger.warning("读取 %s 失败，用默认值 %s: %s", config_key, default, exc)
         return default
     if row is None or not row.value:
         return default
     try:
         return float(row.value)
     except (TypeError, ValueError):
-        logger.warning("%s 非数值 %r，用默认超时 %.1fh", config_key, row.value, default)
+        logger.warning("%s 非数值 %r，用默认值 %s", config_key, row.value, default)
         return default
 
 
@@ -141,6 +147,39 @@ async def _library_already_collected(row: DownloadQueue) -> bool | None:
     return True
 
 
+async def _recover_stale_scan_runs() -> int:
+    """回收长期 running 的巡检运行记录（design D4，独立于 download_queue 早退）。
+
+    task_run.status='running' 且 started_at 超过阈值（`scan_run_timeout_minutes`，
+    默认 30 分钟）→ status='error' + message 标注超时回收 + 补 finished_at。
+    返回回收条数（不参与 recover_stale_tasks 的返回值语义）。
+    """
+    minutes = await _load_config_float(
+        _SCAN_RUN_TIMEOUT_CONFIG_KEY, _SCAN_RUN_TIMEOUT_DEFAULT_MINUTES
+    )
+    deadline = _now() - timedelta(minutes=minutes)
+    async with async_session() as session:
+        res = await session.execute(
+            update(TaskRun)
+            .where(
+                TaskRun.task_type == "scan_media",
+                TaskRun.status == "running",
+                # started_at 缺失的 running 记录视为最旧（与下载队列兜底同语义）
+                or_(TaskRun.started_at.is_(None), TaskRun.started_at < deadline),
+            )
+            .values(
+                status="error",
+                message=f"{_SCAN_RUN_TIMEOUT_MARK}：巡检超过 {minutes:g} 分钟未结束，已结束为失败",
+                finished_at=_now(),
+            )
+        )
+        await session.commit()
+        recovered = res.rowcount or 0
+    if recovered:
+        logger.warning("[recover] 回收超时巡检运行记录 %d 条（阈值 %g 分钟）", recovered, minutes)
+    return recovered
+
+
 async def recover_stale_tasks() -> int:
     """全节点超时回退（§4.2）：transferring/downloading/scrape/library → pending。
 
@@ -156,14 +195,23 @@ async def recover_stale_tasks() -> int:
 
     幂等可重复执行（回退后 status='pending' 不再命中）。返回实际回退条数
     （CAS 冲突行 / library 已收录完成行 / Emby 故障跳过行不计）。
+
+    scan-outcome-attribution 3.1：巡检运行记录回收放在本函数最前、`if not candidates:
+    return 0` 早退**之前**（design D4）——否则「无下载超时任务时永不回收巡检记录」。
+    该回收失败不影响下载任务回收，也不改变本函数返回值语义。
     """
-    ep_hours = await _load_timeout_hours(
+    try:
+        await _recover_stale_scan_runs()
+    except Exception:  # noqa: BLE001  巡检记录回收失败不得拖垮下载任务回收
+        logger.exception("[recover] 巡检运行记录回收失败（不影响下载任务回收）")
+
+    ep_hours = await _load_config_float(
         _EPISODE_TIMEOUT_CONFIG_KEY, settings.EPISODE_STATE_TIMEOUT_HOURS
     )
-    scrape_hours = await _load_timeout_hours(
+    scrape_hours = await _load_config_float(
         _SCRAPE_TIMEOUT_CONFIG_KEY, _SCRAPE_TIMEOUT_DEFAULT_HOURS
     )
-    lib_hours = await _load_timeout_hours(
+    lib_hours = await _load_config_float(
         _LIBRARY_TIMEOUT_CONFIG_KEY, _LIBRARY_TIMEOUT_DEFAULT_HOURS
     )
     t0 = time.monotonic()  # Q8①：真实耗时

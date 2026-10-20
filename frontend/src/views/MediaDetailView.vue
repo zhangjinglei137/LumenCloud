@@ -186,9 +186,13 @@ async function saveSettings() {
 async function onScan() {
   scanning.value = true
   try {
-    const taskRunId = await store.scan(mediaId)
-    // E-1：巡检 fire-and-forget，task_run_id 不再同步返回；结果轮询运行日志页
-    ElMessage.success(taskRunId != null ? `已触发巡检（任务 #${taskRunId}）` : '已触发巡检，结果见运行日志')
+    const { accepted, runId } = await store.scan(mediaId)
+    // E-1：巡检 fire-and-forget，run id 可能为 null（结果轮询运行日志页）
+    if (accepted) {
+      ElMessage.success(runId != null ? `已触发巡检（任务 #${runId}）` : '已触发巡检，结果见运行日志')
+    } else {
+      ElMessage.warning('巡检未被受理，请稍后重试或查看运行日志')
+    }
   } finally {
     scanning.value = false
   }

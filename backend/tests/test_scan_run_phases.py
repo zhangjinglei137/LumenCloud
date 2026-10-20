@@ -213,7 +213,9 @@ def test_scan_one_skipped_paused_updates_same_row(db, monkeypatch):
     assert runs[0].status == "skipped"
     assert "media.status=paused，跳过巡检" in runs[0].message
     assert runs[0].phases is not None
-    assert runs[0].scan_detail is None  # 短路分支无结果摘要
+    # scan-outcome-attribution 1.1/D1a：短路分支也落 scan_detail 骨架（归因可查）
+    import json
+    assert json.loads(runs[0].scan_detail)["skip_reason"] == "status_paused"
 
 
 # ---------------------------------------------------------------------------

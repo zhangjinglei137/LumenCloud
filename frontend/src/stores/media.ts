@@ -47,9 +47,10 @@ export const useMediaStore = defineStore('media', {
       await deleteMediaApi(id)
     },
     // E-1：巡检 fire-and-forget，task_run_id 可能为 null（结果轮询运行日志页）
-    async scan(id: number): Promise<number | null> {
+    // accepted 是受理结果：false 表示未建巡检记录（如 media 已删除），调用方不得提示成功
+    async scan(id: number): Promise<{ accepted: boolean; runId: number | null }> {
       const r = await scanMediaApi(id)
-      return r.task_run_id
+      return { accepted: r.accepted, runId: r.run_id }
     },
   },
 })

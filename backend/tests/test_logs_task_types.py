@@ -21,7 +21,8 @@ from app.main import app  # noqa: E402
 # 期望完整集合：静态常量，与 backend/app/tasks/*.py record_task_run 写入值一致
 # （scan.py: scan_media/scan_all_media；transfer.py: transfer；cleanup.py:
 # cleanup/prune_history；capacity_alert.py: capacity_alert；recovery.py: recover；
-# nastools_sync.py: sync_nastools；notification_scan.py: notify）。
+# nastools_sync.py: sync_nastools；notification_scan.py: notify；queue.py retry:
+# queue_retry）。
 _EXPECTED_TYPES = [
     "scan_media",
     "scan_all_media",
@@ -32,6 +33,7 @@ _EXPECTED_TYPES = [
     "recover",
     "sync_nastools",
     "notify",
+    "queue_retry",
 ]
 
 
@@ -83,6 +85,8 @@ def test_task_types_admin_returns_full_type_list():
         body = r.json()
         assert isinstance(body, dict) and "types" in body
         assert body["types"] == _EXPECTED_TYPES
+        # P2 4.2：手动重试留痕类型必须可被日志页筛选
+        assert "queue_retry" in body["types"]
 
 
 async def _create_guest() -> None:

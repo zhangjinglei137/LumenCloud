@@ -371,3 +371,65 @@ def test_recover_no_candidates_returns_zero(db, env, monkeypatch):
 
     assert run(recovery_mod.recover_stale_tasks()) == 0
     env["alist"].remove.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# task_run 超时回收（scan-outcome-attribution 3.1 / design D4）
+# ---------------------------------------------------------------------------
+
+async def seed_scan_run(db, *, minutes_ago=31, status="running", task_type="scan_media"):
+    async with db() as s:
+        tr = TaskRun(
+            task_type=task_type, media_id=None, status=status, message="正在巡检",
+            started_at=_now() - timedelta(minutes=minutes_ago), finished_at=None,
+        )
+        s.add(tr)
+        await s.commit()
+        return tr.id
+
+
+async def read_task_run(db, run_id):
+    async with db() as s:
+        return await s.get(TaskRun, run_id)
+
+
+def test_recover_stale_scan_runs_marks_error(db, monkeypatch):
+    """超阈值 running 巡检记录 → error + 超时回收标记 + 补 finished_at。"""
+    patch_db(monkeypatch, db)
+    rid = run(seed_scan_run(db, minutes_ago=31))
+
+    assert run(recovery_mod._recover_stale_scan_runs()) == 1
+
+    tr = run(read_task_run(db, rid))
+    assert tr.status == "error"
+    assert "超时回收" in tr.message
+    assert tr.finished_at is not None
+
+
+def test_recover_stale_scan_runs_keeps_fresh(db, monkeypatch):
+    """未超阈值的 running 巡检记录保持不动。"""
+    patch_db(monkeypatch, db)
+    rid = run(seed_scan_run(db, minutes_ago=5))
+
+    assert run(recovery_mod._recover_stale_scan_runs()) == 0
+    assert run(read_task_run(db, rid)).status == "running"
+
+
+def test_recover_stale_scan_runs_without_dq_candidates(db, monkeypatch):
+    """D4：无 download_queue 候选（早退路径）时仍回收巡检记录，返回值语义不变。"""
+    patch_db(monkeypatch, db)
+    rid = run(seed_scan_run(db, minutes_ago=31))
+
+    assert run(recovery_mod.recover_stale_tasks()) == 0  # 只计 download_queue 回退数
+
+    assert run(read_task_run(db, rid)).status == "error"
+
+
+def test_recover_stale_scan_runs_config_threshold(db, monkeypatch):
+    """阈值走 system_config（scan_run_timeout_minutes，默认 30）。"""
+    patch_db(monkeypatch, db)
+    run(set_config(db, "scan_run_timeout_minutes", "1"))
+    rid = run(seed_scan_run(db, minutes_ago=2))
+
+    assert run(recovery_mod._recover_stale_scan_runs()) == 1
+    assert run(read_task_run(db, rid)).status == "error"

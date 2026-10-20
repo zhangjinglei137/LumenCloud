@@ -41,7 +41,8 @@ def test_scan_media_route_fire_and_forget(monkeypatch):
 
     res = run(scan_media_route(7, admin=AKA))
 
-    assert res == {"ok": True, "task_run_id": None}
+    # scan-outcome-attribution 4.4：响应恒含 run_id / accepted（同步桩无 run id → 未受理）
+    assert res == {"ok": True, "task_run_id": None, "run_id": None, "accepted": False}
     assert trigger_calls == [7]
 
 
@@ -55,4 +56,5 @@ def test_scan_media_route_trigger_unready_fallback(monkeypatch):
 
     res = run(scan_media_route(7, admin=MagicMock()))
 
-    assert res == {"ok": True, "task_run_id": None}
+    # scan-outcome-attribution 4.4：响应恒含 run_id / accepted（同步桩无 run id → 未受理）
+    assert res == {"ok": True, "task_run_id": None, "run_id": None, "accepted": False}

@@ -31,6 +31,7 @@
 暂停开关/在途任务数等展示数据）；其余端点（写操作 + progress）均需 admin；
 网盘凭据（stoken/fids 等）一律不返回。
 """
+import json
 import logging
 import time
 from datetime import datetime, timedelta, timezone
@@ -47,6 +48,7 @@ from app.models import (
     Media,
     SystemConfig,
     TaskQueue,
+    TaskRun,
     User,
 )
 from app.routers.deps import get_current_admin, get_current_user, get_session
@@ -575,6 +577,35 @@ async def skip_task(
     return {"ok": True}
 
 
+async def _record_manual_retry(session: AsyncSession, *, media_id: int,
+                               episode: str | None) -> None:
+    """记录一次人工重试（P2 4.2）：运行记录带 trigger_source=manual。
+
+    重试不是巡检，不触发 scan；只留可追溯的受理记录。写入失败不影响重试结果。
+    """
+    now = _now()
+    try:
+        session.add(TaskRun(
+            task_type="queue_retry",
+            media_id=media_id,
+            status="success",
+            message=f"手动重试：{episode or '未知集'}",
+            started_at=now,
+            finished_at=now,
+            duration_seconds=0.0,
+            scan_detail=json.dumps({"trigger_source": "manual"}, ensure_ascii=False),
+        ))
+        await session.commit()
+    except Exception:  # noqa: BLE001  留痕失败不得反噬重试
+        # commit 失败后 session 处于待回滚状态；不 rollback 会在 teardown/后续 commit
+        # 抛 PendingRollbackError，让已成功的重试变成 500。
+        try:
+            await session.rollback()
+        except Exception:  # noqa: BLE001  回滚也失败时只能记录，仍不阻断重试结果
+            logger.exception("[queue] 手动重试留痕回滚失败 media=%s", media_id)
+        logger.exception("[queue] 手动重试留痕失败 media=%s episode=%s", media_id, episode)
+
+
 @router.post("/queue/{task_id}/retry")
 async def retry_task(
     task_id: int,
@@ -613,6 +644,7 @@ async def retry_task(
         if r.rowcount == 0:
             raise HTTPException(status_code=409, detail="任务状态已变化，请稍后重试")
         await session.commit()
+        await _record_manual_retry(session, media_id=dq.media_id, episode=dq.episode)
         await _trigger_consume()
         return {"ok": True}
 
@@ -630,6 +662,7 @@ async def retry_task(
         if r.rowcount == 0:
             raise HTTPException(status_code=409, detail="任务状态已变化，请稍后重试")
         await session.commit()
+        await _record_manual_retry(session, media_id=tq.media_id, episode=tq.episode)
         return {"ok": True}
 
     # 3) 兼容回退：旧三表语义（task_id 可为 episode_state.id 或 transfer_queue.id）
@@ -694,6 +727,7 @@ async def retry_task(
         if r.rowcount == 0:
             raise HTTPException(status_code=409, detail="任务状态已变化，请刷新后重试")
     await session.commit()
+    await _record_manual_retry(session, media_id=es.media_id, episode=es.episode)
     await _trigger_consume()
     return {"ok": True}
 

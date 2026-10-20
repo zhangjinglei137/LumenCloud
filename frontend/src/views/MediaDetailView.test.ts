@@ -5,6 +5,15 @@ import { reactive } from 'vue'
 import MediaDetailView from './MediaDetailView.vue'
 import type { ActiveTask } from '../types'
 
+// ElMessage 是 JS 服务（非组件），mock 掉以断言受理结果的提示分支
+vi.mock('element-plus', () => ({
+  ElMessage: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() },
+  ElMessageBox: { confirm: vi.fn().mockResolvedValue('confirm') },
+}))
+import { ElMessage } from 'element-plus'
+
+const { scanMock } = vi.hoisted(() => ({ scanMock: vi.fn() }))
+
 // 可变 route mock：新增测试通过覆盖 mockRouteParams 模拟非法路由参数（C11 守卫）
 let mockRouteParams: Record<string, unknown> = { id: '1' }
 const pushMock = vi.fn()
@@ -59,7 +68,7 @@ vi.mock('../stores/media', () => ({
     loading: false,
     fetchDetail: fetchDetailMock,
     patch: patchMock,
-    scan: vi.fn().mockResolvedValue(null),
+    scan: scanMock,
     remove: vi.fn().mockResolvedValue(undefined),
   }),
 }))
@@ -346,6 +355,39 @@ describe('MediaDetailView 大小下限设置（media-min-size-and-emby-redownloa
       1,
       expect.objectContaining({ min_episode_size_gb: null, min_movie_size_gb: null }),
     )
+    wrapper.unmount()
+  })
+})
+
+describe('MediaDetailView 巡检受理反馈（scan-outcome-attribution 4.4）', () => {
+  type ScanVm = { onScan: () => Promise<void> }
+
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    scanMock.mockReset()
+    vi.mocked(ElMessage.success).mockClear()
+    vi.mocked(ElMessage.warning).mockClear()
+  })
+
+  it('受理成功 → 成功提示带 run id', async () => {
+    scanMock.mockResolvedValue({ accepted: true, runId: 12 })
+    const wrapper = mountView()
+    await flushPromises()
+    await (wrapper.vm as unknown as ScanVm).onScan()
+
+    expect(ElMessage.success).toHaveBeenCalledWith('已触发巡检（任务 #12）')
+    expect(ElMessage.warning).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('受理失败（accepted=false）→ 不出现成功提示，改为警告', async () => {
+    scanMock.mockResolvedValue({ accepted: false, runId: null })
+    const wrapper = mountView()
+    await flushPromises()
+    await (wrapper.vm as unknown as ScanVm).onScan()
+
+    expect(ElMessage.success).not.toHaveBeenCalled()
+    expect(ElMessage.warning).toHaveBeenCalled()
     wrapper.unmount()
   })
 })

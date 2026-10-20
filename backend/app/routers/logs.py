@@ -25,8 +25,8 @@ router = APIRouter(prefix="/logs", tags=["logs"])
 # record_task_run 写入值一一对应（scan.py: scan_media/scan_all_media；
 # transfer.py: transfer；cleanup.py: cleanup/prune_history；capacity_alert.py:
 # capacity_alert；recovery.py: recover；nastools_sync.py: sync_nastools；
-# notification_scan.py: notify）。新增任务类型须同步此处（与前端
-# TASK_TYPE_MAP 维护纪律一致）。不含 media_scan/recovery 历史别名（仅存量数据，筛选不提供）。
+# notification_scan.py: notify；queue.py retry 留痕: queue_retry）。新增任务类型须同步
+# 此处（与前端 TASK_TYPE_MAP 维护纪律一致）。不含 media_scan/recovery 历史别名（仅存量数据，筛选不提供）。
 _TASK_TYPES = [
     "scan_media",
     "scan_all_media",
@@ -37,6 +37,7 @@ _TASK_TYPES = [
     "recover",
     "sync_nastools",
     "notify",
+    "queue_retry",
 ]
 
 

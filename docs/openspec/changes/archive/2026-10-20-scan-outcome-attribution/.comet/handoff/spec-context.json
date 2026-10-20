@@ -1,0 +1,41 @@
+{
+  "change": "scan-outcome-attribution",
+  "phase": "design",
+  "mode": "beta",
+  "task_hash_policy": "task-content-v1",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "c34cecd63570efa101c0eaede8dee136175df4e0a86ad05c964a92693cd1adcb",
+  "files": [
+    {
+      "path": "docs/openspec/changes/scan-outcome-attribution/proposal.md",
+      "sha256": "682a1aae6aee298bdab1ec51dbaa3274ddca5312863a52504dcfc1c76ed88f00",
+      "role": "supporting"
+    },
+    {
+      "path": "docs/openspec/changes/scan-outcome-attribution/design.md",
+      "sha256": "acad09eb171cb55b0c350800836acfdb79490835bffddc1c160a6dbe86790d15",
+      "role": "supporting"
+    },
+    {
+      "path": "docs/openspec/changes/scan-outcome-attribution/tasks.md",
+      "sha256": "275c4d0bef374548d84db2a075fbdb70b75a9fc9fd12d94dc36bd8ced6b32a45",
+      "role": "supporting"
+    },
+    {
+      "path": "docs/openspec/changes/scan-outcome-attribution/.openspec.yaml",
+      "sha256": "ff4326f8b42dcf8851877f4f3989c7fecb8f97d8154686d7d74b7281b70e6b9b",
+      "role": "supporting"
+    },
+    {
+      "path": "docs/openspec/changes/scan-outcome-attribution/specs/media-pipeline/spec.md",
+      "sha256": "a84f86bcc22ccf5464f61f04fc3157cfe253269652ff8c203613a23e0cd796ad",
+      "role": "spec"
+    },
+    {
+      "path": "docs/openspec/changes/scan-outcome-attribution/specs/notifications/spec.md",
+      "sha256": "2e41a8333edd70392e33770d72d6aee997ae48bafd467700481f57d7a8955c4e",
+      "role": "spec"
+    }
+  ]
+}

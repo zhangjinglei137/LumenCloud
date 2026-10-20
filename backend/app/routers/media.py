@@ -9,6 +9,7 @@
 """
 import asyncio
 from datetime import date, datetime, timezone
+import inspect
 import logging
 import re
 
@@ -955,14 +956,19 @@ async def scan_media_route(
     """admin 手动触发一次媒体巡检（§4.3 搜索→入队）。
 
     E-1（P1）：fire-and-forget 立即返回，不再同步等待完整巡检（防 504）。
-    响应 task_run_id=None（结果需前端轮询 /api/logs 获取；scan 完成会写
-    task_run 记录）；scan 启动失败静默返回 ok 并告警（无副作用）。
+    P2（design D5）：受理时同步建 manual task_run 并返回 run id；后台巡检复用该记录。
+    响应含 accepted/run_id（受理结果）；旧 mock（同步返回 None）保持 task_run_id=None。
     """
     try:
         from app.tasks.scan import trigger_scan_background  # 延迟导入，防 import 链断裂
     except ImportError:
         logger.warning("[media] trigger_scan_background 未就绪，跳过触发")
-        return {"ok": True, "task_run_id": None}
+        return {"ok": True, "task_run_id": None, "run_id": None, "accepted": False}
 
-    trigger_scan_background(media_id, manual=True)  # 手动触发：绕过静默期立即重试
-    return {"ok": True, "task_run_id": None}
+    triggered = trigger_scan_background(media_id, manual=True)  # 手动触发：绕过静默期立即重试
+    if not inspect.isawaitable(triggered):
+        # 兼容既有同步桩/旧契约：无法取得 run id
+        return {"ok": True, "task_run_id": None, "run_id": None, "accepted": False}
+    run_id = await triggered
+    return {"ok": True, "task_run_id": run_id, "run_id": run_id,
+            "accepted": run_id is not None}
