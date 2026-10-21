@@ -565,6 +565,40 @@ export function episodeDisplayName(row: Record<string, unknown>): string {
   return '—'
 }
 
+// ---------- 更新诊断（media-detail-update-diagnosis）----------
+
+/** 不巡检原因 → 中文；空值/未知值 → null（不渲染原因行） */
+const NOT_SCHEDULED_REASON_MAP: Record<string, string> = {
+  paused: '已暂停',
+  status_not_allowed: '状态不允许巡检',
+  scheduler_disabled: '巡检调度已关闭',
+}
+
+export function notScheduledReasonLabel(reason: string | null | undefined): string | null {
+  if (!reason) return null
+  return NOT_SCHEDULED_REASON_MAP[reason] ?? null
+}
+
+/** 诊断三态 → tag type（文案直接用后端 intervention.label，前端只做颜色映射） */
+export function diagnosisLevelType(level: string | null | undefined): string {
+  if (level === 'intervention') return 'danger'
+  if (level === 'processing') return 'primary'
+  return 'info'
+}
+
+/** 基线来源 → 中文；空值 → —，未知值回退原值 */
+const BASELINE_SOURCE_MAP: Record<string, string> = {
+  emby_missing: 'Emby 缺集基线',
+  tmdb_axis: 'TMDB 全集轴基线',
+  both: 'Emby + TMDB 双基线',
+  degraded_emby: '降级 Emby 基线',
+}
+
+export function baselineSourceLabel(source: string | null | undefined): string {
+  if (!source) return '—'
+  return BASELINE_SOURCE_MAP[source] ?? source
+}
+
 // ---------- 通知事件类型 → 铃铛呈现（fix-notification-templates） ----------
 
 /** 通知事件类型的铃铛呈现元信息（label / icon 组件 / 强调色） */

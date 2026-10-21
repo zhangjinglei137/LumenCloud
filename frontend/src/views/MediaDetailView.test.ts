@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { reactive } from 'vue'
 import MediaDetailView from './MediaDetailView.vue'
+import { formatTime } from '../utils/format'
 import type { ActiveTask } from '../types'
 
 // ElMessage 是 JS 服务（非组件），mock 掉以断言受理结果的提示分支
@@ -109,6 +110,10 @@ const EP_STUBS = {
           episode: 'S01E001',
           status: 'downloading',
           source: 'dq',
+          state: 'in_library',
+          error: '历史失败原因不应展示',
+          retry_count: 3,
+          last_attempt_at: '2026-01-01T00:00:00Z',
           __tag: { label: '已在库', type: 'success', reason: '冒烟样例行' },
           size_gb: 1.5,
           updated_at: '2026-01-01T00:00:00Z',
@@ -388,6 +393,329 @@ describe('MediaDetailView 巡检受理反馈（scan-outcome-attribution 4.4）',
 
     expect(ElMessage.success).not.toHaveBeenCalled()
     expect(ElMessage.warning).toHaveBeenCalled()
+    wrapper.unmount()
+  })
+})
+describe('MediaDetailView 更新诊断卡片（media-detail-update-diagnosis）', () => {
+  const DIAG = {
+    has_scan: true,
+    scan_started_at: '2026-10-20T10:00:00Z',
+    scan_finished_at: null,
+    scan_status: 'success',
+    skip_reason: null,
+    skip_reason_text: '没有发现缺失集',
+    missing_aired_total: 0,
+    missing_episodes: [],
+    missing_more: 0,
+    gated_out_count: 0,
+    baseline_suspect: false,
+    baseline_source: null,
+    baseline_degraded: false,
+    baseline_detail: null,
+    intervention: { level: 'intervention', label: '需要人工处理', reason: '连续无候选' },
+    next_scan_at: null,
+    not_scheduled_reason: 'paused',
+    active_episode: null,
+    active_stage: null,
+  }
+
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  afterEach(() => {
+    delete (detail as Record<string, unknown>).diagnosis
+  })
+
+  it('有 diagnosis 时渲染卡片（位于 header 之下、集数表之上），无 diagnosis 不渲染', async () => {
+    ;(detail as Record<string, unknown>).diagnosis = DIAG
+    const wrapper = mountView()
+    await flushPromises()
+    const card = wrapper.find('.diagnosis-card')
+    expect(card.exists()).toBe(true)
+    expect(wrapper.text()).toContain('需要人工处理')
+    // 位置：header 之后
+    const header = wrapper.find('.detail-header')
+    expect(header.exists()).toBe(true)
+    wrapper.unmount()
+
+    const wrapper2 = mountView()
+    await flushPromises()
+    // afterEach 未跑，这里先删
+    delete (detail as Record<string, unknown>).diagnosis
+    const wrapper3 = mountView()
+    await flushPromises()
+    expect(wrapper3.find('.diagnosis-card').exists()).toBe(false)
+    wrapper2.unmount()
+    wrapper3.unmount()
+  })
+})
+
+describe('MediaDetailView 集数表尝试列（media-detail-update-diagnosis 3.x）', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  it('新增「最近尝试时间/尝试次数/失败原因」三列（stub 不渲染表头，断言列单元格行为）', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const text = wrapper.text()
+    // 样例行无 last_attempt_at/retry_count → 时间列 —、次数列 —、失败原因列空态
+    expect(text).toContain('尚未尝试下载')
+    // in_library 样例行不渲染历史失败原因（D5）
+    expect(text).not.toContain('历史失败原因不应展示')
+    wrapper.unmount()
+  })
+
+  it('无尝试数据显示「尚未尝试下载」，不显示为失败', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    // el-table-column stub 的样例行无 retry_count/last_attempt_at → 空态文案
+    expect(wrapper.text()).toContain('尚未尝试下载')
+    wrapper.unmount()
+  })
+})
+
+// 5.1（comet task 0a356367）：三场景端到端渲染——真实 MediaDetailView + 真实诊断卡片，
+// 仅 mock store/api。fixture 与后端 _build_diagnosis / scan._skip_message 的产物一致。
+describe('MediaDetailView 诊断三场景（media-detail-update-diagnosis 5.1）', () => {
+  type DiagFixture = Record<string, unknown>
+
+  function baseDiag(): DiagFixture {
+    return {
+      has_scan: true,
+      scan_started_at: '2026-10-20T10:00:00Z',
+      scan_finished_at: '2026-10-20T10:02:00Z',
+      scan_status: 'success',
+      skip_reason: null,
+      skip_reason_text: null,
+      missing_aired_total: 0,
+      missing_episodes: [],
+      missing_more: 0,
+      gated_out_count: 0,
+      baseline_suspect: false,
+      baseline_source: 'both',
+      baseline_degraded: false,
+      baseline_detail: null,
+      intervention: { level: 'waiting', label: '等待下一轮巡检', reason: '等待下一轮巡检' },
+      next_scan_at: '2026-10-21T10:00:00Z',
+      not_scheduled_reason: null,
+      active_episode: null,
+      active_stage: null,
+    }
+  }
+
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  afterEach(() => {
+    delete (detail as Record<string, unknown>).diagnosis
+  })
+
+  it('有缺集无资源（no_candidates）→ intervention 卡片默认展开，含缺失集数与未获取到任何资源', async () => {
+    const skipText = '测试剧存在已播缺失 4 集（S05E188、S05E189），本轮未获取到任何资源'
+    ;(detail as Record<string, unknown>).diagnosis = {
+      ...baseDiag(),
+      scan_status: 'skipped',
+      skip_reason: 'no_candidates',
+      skip_reason_text: skipText,
+      missing_aired_total: 4,
+      missing_episodes: ['S05E188', 'S05E189'],
+      missing_more: 2,
+      intervention: {
+        level: 'intervention',
+        label: '已失败需干预',
+        reason: '连续 3 轮巡检未获取到资源，资源可能尚未更新',
+      },
+    }
+    const wrapper = mountView()
+    await flushPromises()
+
+    const card = wrapper.find('.diagnosis-card')
+    expect(card.exists()).toBe(true)
+    // intervention 默认展开 + 高亮
+    expect(wrapper.find('.diagnosis-card--intervention').exists()).toBe(true)
+    expect(wrapper.find('.diag-detail').exists()).toBe(true)
+
+    const cardText = card.text()
+    expect(cardText).toContain('已失败需干预')
+    expect(cardText).toContain('缺失 4 集')
+    expect(cardText).toContain('S05E188')
+    expect(cardText).toContain('等 2 集')
+    expect(cardText).toContain('未获取到任何资源')
+    wrapper.unmount()
+  })
+
+  it('无缺失集（no_missing）→ waiting 卡片折叠为一行，不出现缺失集文案', async () => {
+    const skipText = '测试剧无遗漏集（Emby 基线已覆盖），跳过巡检（本轮无需进一步动作）'
+    ;(detail as Record<string, unknown>).diagnosis = {
+      ...baseDiag(),
+      scan_status: 'skipped',
+      skip_reason: 'no_missing',
+      skip_reason_text: skipText,
+      intervention: { level: 'waiting', label: '等待下一轮巡检', reason: skipText },
+    }
+    const wrapper = mountView()
+    await flushPromises()
+
+    const card = wrapper.find('.diagnosis-card')
+    expect(card.exists()).toBe(true)
+    // waiting 折叠：详情区不渲染
+    expect(wrapper.find('.diag-detail').exists()).toBe(false)
+    expect(wrapper.find('.diagnosis-card--intervention').exists()).toBe(false)
+    expect(card.text()).toContain('等待下一轮巡检')
+    expect(card.text()).not.toContain('缺失')
+    wrapper.unmount()
+  })
+
+  it('从未巡检（has_scan=false）→ waiting 卡片，展开后显示「尚未巡检」且不出现缺失/失败字样', async () => {
+    ;(detail as Record<string, unknown>).diagnosis = {
+      ...baseDiag(),
+      has_scan: false,
+      scan_started_at: null,
+      scan_finished_at: null,
+      scan_status: null,
+      skip_reason: null,
+      skip_reason_text: null,
+      baseline_source: null,
+      intervention: { level: 'waiting', label: '等待下一轮巡检', reason: '等待下一轮巡检' },
+    }
+    const wrapper = mountView()
+    await flushPromises()
+
+    const card = wrapper.find('.diagnosis-card')
+    expect(card.exists()).toBe(true)
+    // waiting 折叠：空态在详情区内，需展开查看（与 MediaDiagnosisCard.test.ts 一致）
+    expect(wrapper.find('.diag-detail').exists()).toBe(false)
+    await wrapper.find('.diag-summary').trigger('click')
+
+    const cardText = card.text()
+    expect(cardText).toContain('尚未巡检')
+    expect(cardText).not.toContain('缺失')
+    expect(cardText).not.toContain('失败')
+    wrapper.unmount()
+  })
+})
+
+// 5.1（comet task 0a356367）：集数表三列在三种行形态下的输出。
+// 覆写 el-table-column stub，用测试指定的行渲染 scoped slot（默认 stub 的行固定）。
+describe('MediaDetailView 集数表尝试三列（media-detail-update-diagnosis 5.1）', () => {
+  type Row = Record<string, unknown>
+
+  // el-table stub 未声明 props → 真实行数据在 $attrs.data；按它渲染 scoped slot，
+  // 从而走真实的 episode_state → __tag → 三列格式化链路（默认 stub 的行是写死的）。
+  function mountWithRow(row: Row) {
+    detail.episode_state = [{ ...row } as unknown as TestEpisodeState]
+    const stubs = {
+      ...EP_STUBS,
+      'el-table-column': {
+        template: '<div><slot v-for="r in ($parent.$attrs.data || [])" :row="r" /></div>',
+      },
+    }
+    return mount(MediaDetailView, {
+      global: { stubs, directives: { loading: () => {} } },
+      attachTo: document.body,
+    })
+  }
+
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    detail.episode_state = [{ id: 1, episode: 'S01E001', season: 1, episode_number: 1, name: '第一集' }]
+  })
+
+  afterEach(() => {
+    detail.episode_state = [
+      { id: 1, episode: 'S01E001', season: 1, episode_number: 1, name: '第一集' },
+      { id: 2, episode: 'S01E002', season: 1, episode_number: 2 },
+    ]
+  })
+
+  it('有尝试数据 → 最近尝试时间 + 尝试次数 + 失败原因', async () => {
+    const attemptAt = '2026-10-20T10:00:00Z'
+    const wrapper = mountWithRow({
+      season: 1,
+      episode_number: 1,
+      episode: 'S01E001',
+      name: '第一集',
+      state: 'error',
+      retry_count: 7,
+      last_attempt_at: attemptAt,
+      error: '源站无可用分享',
+      size_gb: null,
+      updated_at: null,
+    })
+    await flushPromises()
+    const text = wrapper.text()
+    expect(text).toContain(formatTime(attemptAt)) // 最近尝试时间（同一格式化工具）
+    expect(text).toContain('7') // 尝试次数
+    expect(text).toContain('源站无可用分享') // 失败原因
+    expect(text).not.toContain('尚未尝试下载')
+    wrapper.unmount()
+  })
+
+  it('无本地行 → 三列均为空态（尚未尝试下载 / —），不显示为失败', async () => {
+    const wrapper = mountWithRow({
+      season: 1,
+      episode_number: 2,
+      episode: 'S01E002',
+      name: '第二集',
+      state: 'not_aired',
+      retry_count: null,
+      last_attempt_at: null,
+      error: null,
+      size_gb: null,
+      updated_at: null,
+    })
+    await flushPromises()
+    const text = wrapper.text()
+    expect(text).toContain('尚未尝试下载')
+    expect(text).not.toContain('失败')
+    // 时间列与次数列回退 —
+    expect(text.match(/—/g)?.length ?? 0).toBeGreaterThanOrEqual(2)
+    wrapper.unmount()
+  })
+
+  it('超时回退行（有 error / retry_count，无 last_attempt_at）→ 照常显示失败原因，不误判为尚未尝试', async () => {
+    const wrapper = mountWithRow({
+      season: 1,
+      episode_number: 1,
+      episode: 'S01E001',
+      name: '第一集',
+      state: 'pending',
+      retry_count: 3,
+      last_attempt_at: null,
+      error: '超时回退（2h 无进展）',
+      size_gb: null,
+      updated_at: null,
+    })
+    await flushPromises()
+    const text = wrapper.text()
+    expect(text).toContain('超时回退（2h 无进展）')
+    expect(text).not.toContain('尚未尝试下载')
+    expect(text).toContain('3')
+    wrapper.unmount()
+  })
+
+  it('in_library → 不渲染历史失败原因（仍显示尝试时间与次数）', async () => {
+    const attemptAt = '2026-10-20T09:00:00Z'
+    const wrapper = mountWithRow({
+      season: 1,
+      episode_number: 1,
+      episode: 'S01E001',
+      name: '第一集',
+      state: 'in_library',
+      retry_count: 3,
+      last_attempt_at: attemptAt,
+      error: '历史失败原因不应展示',
+      size_gb: 1.5,
+      updated_at: attemptAt,
+    })
+    await flushPromises()
+    const text = wrapper.text()
+    expect(text).toContain('已在库')
+    expect(text).toContain(formatTime(attemptAt))
+    expect(text).not.toContain('历史失败原因不应展示')
     wrapper.unmount()
   })
 })

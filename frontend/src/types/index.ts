@@ -80,6 +80,12 @@ export interface EpisodeState {
   in_emby?: boolean
   /** TMDB 首播日期 "YYYY-MM-DD"（后端契约新增；null = 未知/未提供） */
   air_date?: string | null
+  /** 尝试次数（merged_episodes 自 download_queue 补齐；无本地行为 null） */
+  retry_count?: number | null
+  /** 最近失败原因（in_library 集前端不渲染） */
+  error?: string | null
+  /** 最近尝试时间（download_queue.node_started_at；无本地行为 null） */
+  last_attempt_at?: string | null
   [key: string]: unknown
 }
 
@@ -101,6 +107,36 @@ export interface TmdbEpisode {
   in_emby?: boolean
 }
 
+/** 更新诊断干预三态（media-detail-update-diagnosis D3） */
+export interface DiagnosisIntervention {
+  level: 'intervention' | 'processing' | 'waiting' | string
+  label: string
+  reason: string
+}
+
+/** 详情接口 diagnosis 对象（D6 字段契约；空态语义见设计文档） */
+export interface MediaDiagnosis {
+  has_scan: boolean
+  scan_started_at: string | null
+  scan_finished_at: string | null
+  scan_status: string | null
+  skip_reason: string | null
+  skip_reason_text: string | null
+  missing_aired_total: number
+  missing_episodes: string[]
+  missing_more: number
+  gated_out_count: number
+  baseline_suspect: boolean
+  baseline_source: string | null
+  baseline_degraded: boolean
+  baseline_detail: Record<string, unknown> | null
+  intervention: DiagnosisIntervention
+  next_scan_at: string | null
+  not_scheduled_reason: string | null
+  active_episode: string | null
+  active_stage: string | null
+}
+
 export interface MediaDetail extends MediaItem {
   poster_path?: string | null
   episode_state?: EpisodeState[]
@@ -108,6 +144,8 @@ export interface MediaDetail extends MediaItem {
   tmdb_episodes?: TmdbEpisode[]
   /** episode-status-and-detail-polish：进行中任务（仅 tv；source=dq 用下载队列字典、task 用探测队列字典） */
   active_tasks?: ActiveTask[]
+  /** 更新诊断（media-detail-update-diagnosis）；旧后端未上线时为 undefined，前端不渲染卡片 */
+  diagnosis?: MediaDiagnosis | null
   [key: string]: unknown
 }
 

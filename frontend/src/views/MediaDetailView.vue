@@ -26,6 +26,7 @@ import {
   taskStatusType,
 } from '../utils/format'
 import { posterUrl } from '../utils/poster'
+import MediaDiagnosisCard from '../components/MediaDiagnosisCard.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -134,6 +135,11 @@ function episodeLabel(ep: Record<string, unknown>): string {
 /** 名称列展示（原 episodeName 函数替换为 format 层纯函数） */
 function episodeName(ep: Record<string, unknown>): string {
   return episodeDisplayName(ep)
+}
+
+/** 有任一尝试痕迹（次数/时间/失败原因）才算尝试过；超时回退会清 node_started_at 但保留 error+retry_count */
+function episodeHasAttempt(ep: Record<string, unknown>): boolean {
+  return ep.retry_count != null || !!ep.last_attempt_at || !!ep.error
 }
 
 /** 格式化 TMDB 集数为 S01E04 */
@@ -295,6 +301,9 @@ async function onDelete() {
         </div>
       </div>
 
+      <!-- 更新诊断（media-detail-update-diagnosis D2：header 之下、集数表之上） -->
+      <MediaDiagnosisCard v-if="detail.diagnosis" :diagnosis="detail.diagnosis" />
+
       <!-- 影视状态（电影：无集数概念，单列全宽） -->
       <div v-if="detail.media_type === 'movie'" class="lc-panel">
         <h3 class="lc-panel-title">影视状态</h3>
@@ -385,6 +394,25 @@ async function onDelete() {
           <el-table-column label="大小" width="100" align="right">
             <template #default="{ row }">
               {{ formatGb((row as Record<string, unknown>).size_gb as number | null | undefined) }}
+            </template>
+          </el-table-column>
+          <!-- 尝试三列（media-detail-update-diagnosis D5）：无本地行 → 尚未尝试下载，不显示为失败 -->
+          <el-table-column label="最近尝试时间" width="120">
+            <template #default="{ row }">
+              {{ formatTime((row as Record<string, unknown>).last_attempt_at as string | null | undefined) }}
+            </template>
+          </el-table-column>
+          <el-table-column label="尝试次数" width="90" align="center">
+            <template #default="{ row }">
+              {{ (row as Record<string, unknown>).retry_count ?? '—' }}
+            </template>
+          </el-table-column>
+          <el-table-column label="失败原因" min-width="140">
+            <template #default="{ row }">
+              <!-- in_library 集不渲染历史失败原因（D5）；无尝试数据 → 尚未尝试下载 -->
+              <template v-if="(row as Record<string, unknown>).state === 'in_library'">—</template>
+              <template v-else-if="!episodeHasAttempt(row as Record<string, unknown>)">尚未尝试下载</template>
+              <template v-else>{{ ((row as Record<string, unknown>).error as string | null) || '—' }}</template>
             </template>
           </el-table-column>
           <el-table-column label="更新时间">

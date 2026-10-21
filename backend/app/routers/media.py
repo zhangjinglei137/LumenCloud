@@ -8,8 +8,9 @@
 - POST   /api/media/{id}/scan  admin 手动触发巡检（§9.1 写操作鉴权）
 """
 import asyncio
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import inspect
+import json
 import logging
 import re
 
@@ -18,6 +19,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.models import (
     DownloadQueue,
     DownloadTask,
@@ -590,6 +592,155 @@ async def create_media(
     return _media_dto(media)
 
 
+async def _build_diagnosis(session, media, dq_rows, tq_rows) -> dict:
+    """详情诊断 DTO（design D1/D3/D4/D6）：最近一条 scan_media 的结论 + 三态 + 下次巡检。
+
+    数据源：`task_type='scan_media'` 最近一条 task_run 的 scan_detail（缺失/旧记录 →
+    空态，不猜测结论）；归因文案复用 scan._skip_message（唯一来源），连续轮次复用
+    scan._recent_scan_details。延迟导入 tasks/scheduler 避免路由层与调度层导入环。
+    """
+    from app.scheduler import get_job_enabled
+    from app.tasks.scan import (
+        _recent_scan_details,
+        _scan_no_candidates_alert_rounds,
+        _skip_message,
+    )
+
+    latest_scan = (
+        (
+            await session.execute(
+                select(TaskRun)
+                .where(TaskRun.media_id == media.id, TaskRun.task_type == "scan_media")
+                .order_by(TaskRun.started_at.desc(), TaskRun.id.desc())
+                .limit(1)
+            )
+        )
+        .scalars()
+        .first()
+    )
+    detail: dict = {}
+    if latest_scan is not None and latest_scan.scan_detail:
+        try:
+            parsed = json.loads(latest_scan.scan_detail)
+            if isinstance(parsed, dict):
+                detail = parsed
+        except (TypeError, ValueError):
+            detail = {}
+
+    baseline_detail = detail.get("baseline_detail")
+    if not isinstance(baseline_detail, dict):
+        baseline_detail = None
+    baseline_suspect = bool(detail.get("baseline_suspect"))
+    baseline_source = (baseline_detail or {}).get("source_used")
+
+    missing_items = [it for it in (detail.get("missing_items") or []) if isinstance(it, dict)]
+    missing_codes = [it.get("episode") for it in missing_items if it.get("episode")]
+    gated_out = detail.get("gated_out") or {}
+
+    skip_reason = detail.get("skip_reason")
+    skip_reason_text = None
+    if skip_reason:
+        try:
+            skip_reason_text = _skip_message(
+                skip_reason,
+                title=media.title,
+                missing_aired_total=int(detail.get("missing_aired_total") or 0),
+                missing_episodes=missing_codes,
+                gated_out_episodes=gated_out.get("episodes") or [],
+                # shortcut: scan_detail 未持久化 not_enqueued，按「缺失条目 - 本轮入队数」近似；
+                # 入队口径与缺失口径分离（去重/重试/门控）时偏差变大，届时改为持久化真实 not_enqueued
+                not_enqueued=max(0, len(missing_items) - int(detail.get("enqueued") or 0)),
+            )
+        except ValueError:  # 未知/未来 reason：空态而非猜测
+            skip_reason_text = None
+
+    active_row = next((r for r in dq_rows if r.status in _DQ_ACTIVE_STATUSES), None)
+    if active_row is None:
+        active_row = next((r for r in tq_rows if r.status in _TQ_ACTIVE_STATUSES), None)
+
+    # 非 dict 的旧/异常 scan_detail 行按未知处理（不计数、不抛错）
+    # 阈值与告警同源（design D3）：scan_no_candidates_alert_rounds，默认 3、可配
+    no_candidates_rounds = await _scan_no_candidates_alert_rounds()
+    recent = [
+        r for r in await _recent_scan_details(media.id, no_candidates_rounds)
+        if isinstance(r, dict)
+    ]
+    consecutive_no_candidates = (
+        len(recent) >= no_candidates_rounds
+        and all(r.get("skip_reason") == "no_candidates" for r in recent)
+    )
+    scan_error = latest_scan is not None and latest_scan.status == "error"
+
+    if scan_error or baseline_suspect or consecutive_no_candidates:
+        if scan_error:
+            reason = f"最近一轮巡检失败：{latest_scan.message or '未知原因'}"
+        elif baseline_suspect:
+            reason = "基线异常：Emby 与 TMDB 集数不一致，本轮候选可能不可信"
+        else:
+            reason = f"连续 {no_candidates_rounds} 轮巡检未获取到资源，资源可能尚未更新"
+        intervention = {"level": "intervention", "label": "已失败需干预", "reason": reason}
+    elif active_row is not None:
+        intervention = {
+            "level": "processing",
+            "label": "正在处理",
+            "reason": f"正在处理 {active_row.episode}（{active_row.status}）",
+        }
+    else:
+        intervention = {
+            "level": "waiting",
+            "label": "等待下一轮巡检",
+            "reason": skip_reason_text or "等待下一轮巡检",
+        }
+
+    if media.status == "paused":
+        not_scheduled_reason = "paused"
+    elif (media.status or "") not in ("tracking", "downloading"):
+        not_scheduled_reason = "status_not_allowed"
+    else:
+        try:
+            scheduler_on = await get_job_enabled("scan_all_media")
+        except Exception as exc:  # noqa: BLE001  开关读取失败按未知处理，不阻断详情
+            logger.warning("[media] 详情调度开关读取降级 media=%s: %s", media.id, exc)
+            scheduler_on = True
+        not_scheduled_reason = None if scheduler_on else "scheduler_disabled"
+
+    next_scan_at = None
+    if not_scheduled_reason is None:
+        if media.last_scan_at is None:
+            # _due_filter：last_scan_at IS NULL 即本轮到期（D4），不是「等一个间隔」
+            next_scan_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        else:
+            # COALESCE 语义：0 是合法间隔（每轮到期），仅 NULL 回退全局默认
+            interval = (
+                media.scan_interval_minutes
+                if media.scan_interval_minutes is not None
+                else settings.SCAN_INTERVAL_MINUTES
+            )
+            next_scan_at = media.last_scan_at + timedelta(minutes=interval)
+
+    return {
+        "has_scan": latest_scan is not None,
+        "scan_started_at": latest_scan.started_at if latest_scan else None,
+        "scan_finished_at": latest_scan.finished_at if latest_scan else None,
+        "scan_status": latest_scan.status if latest_scan else None,
+        "skip_reason": skip_reason,
+        "skip_reason_text": skip_reason_text,
+        "missing_aired_total": int(detail.get("missing_aired_total") or 0),
+        "missing_episodes": missing_codes[:10],
+        "missing_more": max(0, len(missing_codes) - 10),
+        "gated_out_count": int(gated_out.get("count") or 0),
+        "baseline_suspect": baseline_suspect,
+        "baseline_source": baseline_source,
+        "baseline_degraded": bool((baseline_detail or {}).get("degraded")),
+        "baseline_detail": baseline_detail,
+        "intervention": intervention,
+        "next_scan_at": next_scan_at,
+        "not_scheduled_reason": not_scheduled_reason,
+        "active_episode": active_row.episode if active_row is not None else None,
+        "active_stage": active_row.status if active_row is not None else None,
+    }
+
+
 @router.get("/media/{media_id}")
 async def get_media(
     media_id: int,
@@ -722,12 +873,21 @@ async def get_media(
         file_size = None
         updated_at = None
         file_name = None
+        # 尝试字段（design D5）：无本地行 → 全 None（空态，不伪造失败状态）
+        retry_count = None
+        error = None
+        last_attempt_at = None
+        node_error = None
         if local is not None:
             local_status = getattr(local, "status", None) or getattr(local, "state", None)
             file_size = getattr(local, "file_size", None)
             updated_at = getattr(local, "updated_at", None)
             file_name = getattr(local, "file_name", None)
-        merged_episodes.append({
+            retry_count = getattr(local, "retry_count", None)
+            error = getattr(local, "error", None)
+            last_attempt_at = getattr(local, "node_started_at", None)
+            node_error = getattr(local, "node_error", None)
+        ep_dto = {
             "episode": code,
             "season": s,
             "episode_number": e,
@@ -740,7 +900,13 @@ async def get_media(
             "size_gb": round(file_size / _GB, 2) if file_size else None,
             "file_name": file_name,
             "updated_at": updated_at,
-        })
+            "retry_count": retry_count,
+            "error": error,
+            "last_attempt_at": last_attempt_at,
+        }
+        if is_admin:
+            ep_dto["node_error"] = node_error
+        merged_episodes.append(ep_dto)
 
     tq_rows = (
         (
@@ -847,6 +1013,8 @@ async def get_media(
         if latest_run
         else None
     )
+    # 诊断 DTO（design D1）：新对象，`last_task_run` 语义保持不变。
+    media_dto["diagnosis"] = await _build_diagnosis(session, media, dq_rows, tq_rows)
 
     # episode-status-and-detail-polish：tv 详情附加「当前进行中任务」列表；
     # movie 不返回该字段（前端当前无电影进行中任务视图）。

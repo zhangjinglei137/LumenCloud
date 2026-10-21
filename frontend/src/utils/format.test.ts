@@ -219,3 +219,45 @@ describe('DOWNLOAD_ACTIVE_STATUSES（仅看活跃过滤，fix-audit-issues）', 
     )
   })
 })
+
+// ---------- 更新诊断（media-detail-update-diagnosis）----------
+import { notScheduledReasonLabel, diagnosisLevelType, baselineSourceLabel } from './format'
+
+describe('notScheduledReasonLabel（不巡检原因文案）', () => {
+  it('三种已知原因 → 中文', () => {
+    expect(notScheduledReasonLabel('paused')).toBe('已暂停')
+    expect(notScheduledReasonLabel('status_not_allowed')).toBe('状态不允许巡检')
+    expect(notScheduledReasonLabel('scheduler_disabled')).toBe('巡检调度已关闭')
+  })
+  it('空值 / 未知值 → null（不渲染原因行）', () => {
+    expect(notScheduledReasonLabel(null)).toBeNull()
+    expect(notScheduledReasonLabel(undefined)).toBeNull()
+    expect(notScheduledReasonLabel('whatever')).toBeNull()
+  })
+})
+
+describe('diagnosisLevelType（诊断三态 tag 颜色）', () => {
+  it('intervention 红 / processing 主色 / waiting 灰', () => {
+    expect(diagnosisLevelType('intervention')).toBe('danger')
+    expect(diagnosisLevelType('processing')).toBe('primary')
+    expect(diagnosisLevelType('waiting')).toBe('info')
+  })
+  it('未知值回退 info', () => {
+    expect(diagnosisLevelType(null)).toBe('info')
+    expect(diagnosisLevelType('x')).toBe('info')
+  })
+})
+
+describe('baselineSourceLabel（基线来源文案）', () => {
+  it('已知来源 → 中文', () => {
+    expect(baselineSourceLabel('emby_missing')).toBe('Emby 缺集基线')
+    expect(baselineSourceLabel('tmdb_axis')).toBe('TMDB 全集轴基线')
+    expect(baselineSourceLabel('both')).toBe('Emby + TMDB 双基线')
+    expect(baselineSourceLabel('degraded_emby')).toBe('降级 Emby 基线')
+  })
+  it('空值 / 未知值 → —', () => {
+    expect(baselineSourceLabel(null)).toBe('—')
+    expect(baselineSourceLabel(undefined)).toBe('—')
+    expect(baselineSourceLabel('x')).toBe('x')
+  })
+})
